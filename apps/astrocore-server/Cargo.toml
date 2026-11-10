@@ -1,0 +1,30 @@
+[package]
+name = "astrocore-server"
+description = "Headless-сервер Astrocore: загрузка мира, фиксированный тик, журнал и снимки"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "astrocore_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "astrocore-server"
+path = "src/main.rs"
+
+[dependencies]
+astrocore-bevy.workspace = true
+astrocore-core.workspace = true
+astrocore-persistence.workspace = true
+astrocore-world.workspace = true
+bevy.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+astrocore-math.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

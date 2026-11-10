@@ -1,0 +1,23 @@
+[package]
+name = "astrocore-vertical-slice"
+description = "AC-VS1 (headless-часть): трёхэтажное здание, дверь, разрушение стены, репликация, сохранение"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-world.workspace = true
+astrocore-geometry.workspace = true
+astrocore-spatial.workspace = true
+astrocore-navigation.workspace = true
+astrocore-sprites.workspace = true
+astrocore-persistence.workspace = true
+astrocore-protocol.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

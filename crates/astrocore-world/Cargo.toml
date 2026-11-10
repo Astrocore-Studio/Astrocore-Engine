@@ -1,0 +1,16 @@
+[package]
+name = "astrocore-world"
+description = "Каноническая модель мира Astrocore: структурные элементы, команды, ревизии, dirty-регионы"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

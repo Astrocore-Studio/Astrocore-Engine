@@ -1,0 +1,15 @@
+[package]
+name = "astrocore-sprites"
+description = "Directional billboards: выбор направления по камере и чтение метаданных RSI"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-math.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

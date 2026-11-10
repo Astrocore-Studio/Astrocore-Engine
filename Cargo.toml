@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/astrocore-math",
+    "crates/astrocore-core",
+    "crates/astrocore-world",
+    "crates/astrocore-geometry",
+    "crates/astrocore-spatial",
+    "crates/astrocore-navigation",
+    "crates/astrocore-sprites",
+    "crates/astrocore-persistence",
+    "crates/astrocore-protocol",
+    "crates/astrocore-bevy",
+    "apps/astrocore-server",
+    "examples/vertical-slice",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Внутренние крейты
+astrocore-math = { path = "crates/astrocore-math" }
+astrocore-core = { path = "crates/astrocore-core" }
+astrocore-world = { path = "crates/astrocore-world" }
+astrocore-geometry = { path = "crates/astrocore-geometry" }
+astrocore-spatial = { path = "crates/astrocore-spatial" }
+astrocore-navigation = { path = "crates/astrocore-navigation" }
+astrocore-sprites = { path = "crates/astrocore-sprites" }
+astrocore-persistence = { path = "crates/astrocore-persistence" }
+astrocore-protocol = { path = "crates/astrocore-protocol" }
+astrocore-bevy = { path = "crates/astrocore-bevy" }
+
+# Внешние. Версии Bevy-семейства закреплены по ADR-0002.
+bevy = { version = "=0.20.1", default-features = false }
+glam = { version = "0.33", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+postcard = { version = "1", features = ["use-std"] }
+crc32fast = "1"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

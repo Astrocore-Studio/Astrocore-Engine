@@ -1,0 +1,54 @@
+{
+  "format_version": 1,
+  "world_revision": 2,
+  "content_hash": 9020655476380283975,
+  "world": {
+    "schema_version": 1,
+    "id": "golden",
+    "config": {
+      "chunk_size_m": 32.0,
+      "grid_step_m": 1.0
+    },
+    "floors": [
+      {
+        "id": 0,
+        "name": "ground",
+        "base_y": 0.0,
+        "height": 3.0
+      }
+    ],
+    "elements": [
+      {
+        "id": "00000000-0000-0000-0000-0000000a11ce",
+        "kind": "Wall",
+        "placement": {
+          "Edge": {
+            "x": 0,
+            "z": 0,
+            "dir": "AlongX"
+          }
+        },
+        "floor": 0,
+        "material": "t:m",
+        "thickness": 0.2
+      }
+    ],
+    "revision": 2,
+    "chunk_revisions": [
+      [
+        {
+          "x": 0,
+          "z": -1
+        },
+        2
+      ],
+      [
+        {
+          "x": 0,
+          "z": 0
+        },
+        2
+      ]
+    ]
+  }
+}

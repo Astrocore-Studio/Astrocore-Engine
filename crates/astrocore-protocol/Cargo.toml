@@ -1,0 +1,19 @@
+[package]
+name = "astrocore-protocol"
+description = "Версионированный бинарный сетевой протокол Astrocore: сообщения, кодирование и проверка недоверенного ввода"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-world.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+astrocore-math.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,375 @@
+//! Сетевой протокол (раздел 15 дизайн-документа).
+//!
+//! Крейт описывает **сообщения и их кодирование**, но не транспорт: выбор
+//! транспорта (Lightyear/QUIC/UDP) — отдельный ADR. Благодаря этому протокол
+//! тестируется без сети, а код не зависит от рендера (запрещённая связь
+//! `protocol → asset-render code`).
+//!
+//! Правила безопасности:
+//! * размер пакета ограничен [`MAX_PACKET_BYTES`] до разбора;
+//! * версия протокола проверяется до разбора тела;
+//! * после разбора выполняется семантическая проверка (длины строк, диапазоны,
+//!   конечные числа);
+//! * лишние байты после сообщения — ошибка;
+//! * клиентские данные не доверенные: сервер обязан дополнительно проверять права.
+
+use astrocore_core::NetworkEntityId;
+use astrocore_world::{WorldCommand, WorldOp};
+use serde::{Deserialize, Serialize};
+
+/// Версия протокола. Меняется при любом несовместимом изменении сообщений.
+pub const PROTOCOL_VERSION: u16 = 1;
+/// Максимальный размер пакета (байты) — отбрасывается до разбора.
+pub const MAX_PACKET_BYTES: usize = 64 * 1024;
+pub const MAX_BUILD_LEN: usize = 64;
+pub const MAX_WORLD_ID_LEN: usize = 64;
+pub const MAX_REASON_LEN: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClientMessage {
+    /// Первое сообщение соединения: версии и идентификатор карты.
+    Hello {
+        build: String,
+        world_id: String,
+        world_hash: u64,
+    },
+    /// Ввод движения. Оси — `-1..=1`; `yaw` — радианы вокруг +Y.
+    Input {
+        seq: u32,
+        move_x: i8,
+        move_z: i8,
+        yaw: f32,
+    },
+    /// Взаимодействие с сущностью (дверь и т. п.).
+    Interact { target: NetworkEntityId },
+    /// Запрос структурной правки мира; сервер проверяет права и ревизию.
+    Edit {
+        base_revision: u64,
+        command: WorldCommand,
+    },
+    /// Клиент потерял состояние и просит базовый snapshot.
+    RequestSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ServerMessage {
+    Welcome {
+        tick_rate_hz: u8,
+        revision: u64,
+    },
+    /// Подтверждённая операция над миром — применять строго по порядку `seq`.
+    WorldOp(WorldOp),
+    InputAck {
+        seq: u32,
+    },
+    Reject {
+        reason: RejectReason,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RejectReason {
+    IncompatibleProtocol,
+    IncompatibleWorld,
+    NotAuthorized,
+    StaleRevision,
+    InvalidCommand,
+    RateLimited,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProtocolError {
+    #[error("пакет слишком велик: {0} байт")]
+    TooLarge(usize),
+    #[error("пакет слишком короткий")]
+    Truncated,
+    #[error("несовместимая версия протокола: {got} (ожидалась {PROTOCOL_VERSION})")]
+    VersionMismatch { got: u16 },
+    #[error("ошибка разбора: {0}")]
+    Decode(String),
+    #[error("после сообщения остались лишние байты ({0})")]
+    TrailingBytes(usize),
+    #[error("недопустимое значение: {0}")]
+    Invalid(&'static str),
+    #[error("ошибка кодирования: {0}")]
+    Encode(String),
+}
+
+/// Сообщения, которые можно проверить на смысл после разбора.
+pub trait Validate {
+    fn validate(&self) -> Result<(), ProtocolError>;
+}
+
+impl Validate for ClientMessage {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        match self {
+            ClientMessage::Hello {
+                build, world_id, ..
+            } => {
+                if build.len() > MAX_BUILD_LEN || build.chars().any(char::is_control) {
+                    return Err(ProtocolError::Invalid("build"));
+                }
+                if world_id.len() > MAX_WORLD_ID_LEN || world_id.chars().any(char::is_control) {
+                    return Err(ProtocolError::Invalid("world_id"));
+                }
+            }
+            ClientMessage::Input {
+                move_x,
+                move_z,
+                yaw,
+                ..
+            } => {
+                if !(-1..=1).contains(move_x) || !(-1..=1).contains(move_z) {
+                    return Err(ProtocolError::Invalid("move axis"));
+                }
+                if !yaw.is_finite() {
+                    return Err(ProtocolError::Invalid("yaw"));
+                }
+            }
+            ClientMessage::Interact { .. } | ClientMessage::RequestSnapshot => {}
+            ClientMessage::Edit { .. } => {}
+        }
+        Ok(())
+    }
+}
+
+impl Validate for ServerMessage {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if let ServerMessage::Reject { detail, .. } = self
+            && detail.len() > MAX_REASON_LEN
+        {
+            return Err(ProtocolError::Invalid("reject detail"));
+        }
+        Ok(())
+    }
+}
+
+/// Закодировать сообщение: `[версия: u16 LE][тело postcard]`.
+pub fn encode<T: Serialize + Validate>(msg: &T) -> Result<Vec<u8>, ProtocolError> {
+    msg.validate()?;
+    let mut out = PROTOCOL_VERSION.to_le_bytes().to_vec();
+    let body = postcard::to_stdvec(msg).map_err(|e| ProtocolError::Encode(e.to_string()))?;
+    out.extend_from_slice(&body);
+    if out.len() > MAX_PACKET_BYTES {
+        return Err(ProtocolError::TooLarge(out.len()));
+    }
+    Ok(out)
+}
+
+/// Разобрать недоверенный пакет. Никогда не паникует.
+pub fn decode<T: for<'de> Deserialize<'de> + Validate>(packet: &[u8]) -> Result<T, ProtocolError> {
+    if packet.len() > MAX_PACKET_BYTES {
+        return Err(ProtocolError::TooLarge(packet.len()));
+    }
+    let (version, body) = packet
+        .split_first_chunk::<2>()
+        .ok_or(ProtocolError::Truncated)?;
+    let version = u16::from_le_bytes(*version);
+    if version != PROTOCOL_VERSION {
+        return Err(ProtocolError::VersionMismatch { got: version });
+    }
+    let (msg, rest) =
+        postcard::take_from_bytes::<T>(body).map_err(|e| ProtocolError::Decode(e.to_string()))?;
+    if !rest.is_empty() {
+        return Err(ProtocolError::TrailingBytes(rest.len()));
+    }
+    msg.validate()?;
+    Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use astrocore_core::{ObjectId, PrototypeId};
+    use astrocore_math::GridEdge;
+    use astrocore_world::{FloorId, Placement, StructureElement, StructureKind};
+
+    fn hello() -> ClientMessage {
+        ClientMessage::Hello {
+            build: "dev".into(),
+            world_id: "w".into(),
+            world_hash: 0xDEAD_BEEF,
+        }
+    }
+
+    fn edit() -> ClientMessage {
+        ClientMessage::Edit {
+            base_revision: 5,
+            command: WorldCommand::PlaceElement(StructureElement {
+                id: ObjectId::from_u128(1),
+                kind: StructureKind::Wall,
+                placement: Placement::Edge(GridEdge::along_x(1, 2)),
+                floor: FloorId(0),
+                material: PrototypeId::new("t:m").unwrap(),
+                thickness: 0.2,
+            }),
+        }
+    }
+
+    #[test]
+    fn client_messages_roundtrip() {
+        for m in [
+            hello(),
+            ClientMessage::Input {
+                seq: 9,
+                move_x: -1,
+                move_z: 1,
+                yaw: 1.5,
+            },
+            ClientMessage::Interact {
+                target: NetworkEntityId(42),
+            },
+            ClientMessage::RequestSnapshot,
+            edit(),
+        ] {
+            let bytes = encode(&m).unwrap();
+            assert_eq!(decode::<ClientMessage>(&bytes).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn server_messages_roundtrip_including_world_op() {
+        let ClientMessage::Edit { command, .. } = edit() else {
+            unreachable!()
+        };
+        for m in [
+            ServerMessage::Welcome {
+                tick_rate_hz: 30,
+                revision: 12,
+            },
+            ServerMessage::WorldOp(WorldOp { seq: 13, command }),
+            ServerMessage::InputAck { seq: 9 },
+            ServerMessage::Reject {
+                reason: RejectReason::StaleRevision,
+                detail: "revision".into(),
+            },
+        ] {
+            let bytes = encode(&m).unwrap();
+            assert_eq!(decode::<ServerMessage>(&bytes).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn version_is_checked_before_body() {
+        let mut bytes = encode(&hello()).unwrap();
+        bytes[0] = 0xFF;
+        assert!(matches!(
+            decode::<ClientMessage>(&bytes),
+            Err(ProtocolError::VersionMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn size_limits_apply_both_ways() {
+        let big = vec![0u8; MAX_PACKET_BYTES + 1];
+        assert_eq!(
+            decode::<ClientMessage>(&big),
+            Err(ProtocolError::TooLarge(MAX_PACKET_BYTES + 1))
+        );
+        assert_eq!(decode::<ClientMessage>(&[]), Err(ProtocolError::Truncated));
+        assert_eq!(decode::<ClientMessage>(&[1]), Err(ProtocolError::Truncated));
+        let m = ClientMessage::Hello {
+            build: "x".repeat(MAX_BUILD_LEN + 1),
+            world_id: "w".into(),
+            world_hash: 0,
+        };
+        assert_eq!(encode(&m), Err(ProtocolError::Invalid("build")));
+    }
+
+    #[test]
+    fn semantic_validation_rejects_bad_values() {
+        let bad_axis = ClientMessage::Input {
+            seq: 0,
+            move_x: 5,
+            move_z: 0,
+            yaw: 0.0,
+        };
+        assert!(encode(&bad_axis).is_err());
+        let nan = ClientMessage::Input {
+            seq: 0,
+            move_x: 0,
+            move_z: 0,
+            yaw: f32::NAN,
+        };
+        assert!(encode(&nan).is_err());
+
+        // Те же значения, но «пришедшие по сети» в обход encode().
+        let mut raw = PROTOCOL_VERSION.to_le_bytes().to_vec();
+        raw.extend(postcard::to_stdvec(&bad_axis).unwrap());
+        assert_eq!(
+            decode::<ClientMessage>(&raw),
+            Err(ProtocolError::Invalid("move axis"))
+        );
+        let mut raw = PROTOCOL_VERSION.to_le_bytes().to_vec();
+        raw.extend(postcard::to_stdvec(&nan).unwrap());
+        assert_eq!(
+            decode::<ClientMessage>(&raw),
+            Err(ProtocolError::Invalid("yaw"))
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected() {
+        let mut bytes = encode(&ClientMessage::RequestSnapshot).unwrap();
+        bytes.push(0);
+        assert_eq!(
+            decode::<ClientMessage>(&bytes),
+            Err(ProtocolError::TrailingBytes(1))
+        );
+    }
+
+    #[test]
+    fn invalid_world_command_data_is_rejected_at_decode() {
+        // Некорректный PrototypeId не должен пройти десериализацию.
+        let mut bytes = encode(&edit()).unwrap();
+        let pos = bytes
+            .windows(3)
+            .position(|w| w == b"t:m")
+            .expect("строка материала в пакете");
+        bytes[pos] = b'T';
+        assert!(decode::<ClientMessage>(&bytes).is_err());
+    }
+
+    /// Простейший детерминированный генератор — без внешних зависимостей.
+    struct XorShift(u64);
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    #[test]
+    fn random_bytes_never_panic() {
+        let mut rng = XorShift(0x1234_5678_9ABC_DEF1);
+        for _ in 0..20_000 {
+            let len = (rng.next() % 200) as usize;
+            let mut packet: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            if packet.len() >= 2 && rng.next().is_multiple_of(2) {
+                packet[..2].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+            }
+            let _ = decode::<ClientMessage>(&packet);
+            let _ = decode::<ServerMessage>(&packet);
+        }
+    }
+
+    #[test]
+    fn mutated_valid_packets_never_panic() {
+        let mut rng = XorShift(0xDEAD_BEEF_CAFE_F00D);
+        let seeds = [encode(&hello()).unwrap(), encode(&edit()).unwrap()];
+        for _ in 0..20_000 {
+            let mut p = seeds[(rng.next() % 2) as usize].clone();
+            for _ in 0..(1 + rng.next() % 4) {
+                let i = (rng.next() as usize) % p.len();
+                p[i] = rng.next() as u8;
+            }
+            if rng.next().is_multiple_of(3) {
+                p.truncate((rng.next() as usize) % p.len());
+            }
+            let _ = decode::<ClientMessage>(&p);
+        }
+    }
+}

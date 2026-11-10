@@ -1,0 +1,17 @@
+[package]
+name = "astrocore-bevy"
+description = "Профили Bevy-плагинов Astrocore: расписание, headless-симуляция, связь канонического мира с ECS"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-world.workspace = true
+bevy.workspace = true
+
+[dev-dependencies]
+astrocore-math.workspace = true
+
+[lints]
+workspace = true

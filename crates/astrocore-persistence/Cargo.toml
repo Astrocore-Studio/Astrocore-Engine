@@ -1,0 +1,21 @@
+[package]
+name = "astrocore-persistence"
+description = "Сохранения: атомарные снимки, журнал операций с контрольными суммами, восстановление и миграции"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-world.workspace = true
+astrocore-core.workspace = true
+crc32fast.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+astrocore-math.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

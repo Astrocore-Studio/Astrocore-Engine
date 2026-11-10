@@ -1,0 +1,14 @@
+[package]
+name = "astrocore-geometry"
+description = "Генерация мешей структурной геометрии из канонического мира (без GPU)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-world.workspace = true
+
+[lints]
+workspace = true

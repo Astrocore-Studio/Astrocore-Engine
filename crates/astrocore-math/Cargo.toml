@@ -1,0 +1,13 @@
+[package]
+name = "astrocore-math"
+description = "Конвенция координат Astrocore (метры, Y-up, правосторонняя) и пространственные примитивы"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
