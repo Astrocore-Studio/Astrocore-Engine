@@ -1162,6 +1162,10 @@ impl GameServer {
             self.dispatch_hook(HookEvent::Collision { a, b }, &mut out);
         }
 
+        // Время для игровых модулей: таймеры действий, перезарядки и прочее, что идёт само.
+        let tick = self.tick;
+        self.dispatch_hook(HookEvent::Tick { tick, dt }, &mut out);
+
         self.replicate_entities(&mut out);
         self.pump_content(&mut out);
         self.metrics.messages_out += out.len() as u64;

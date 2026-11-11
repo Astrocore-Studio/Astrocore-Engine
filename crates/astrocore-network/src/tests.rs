@@ -1485,6 +1485,38 @@ mod game_commands {
     }
 
     #[test]
+    fn modules_receive_a_tick_with_the_tick_duration_every_server_tick() {
+        use std::sync::{Arc, Mutex};
+        struct Clock(Arc<Mutex<Vec<(u32, f32)>>>);
+        impl GameModule for Clock {
+            fn id(&self) -> &str {
+                "test.clock"
+            }
+            fn handle(&mut self, _: &mut HookContext<'_>, event: &HookEvent) {
+                if let HookEvent::Tick { tick, dt } = event {
+                    self.0.lock().unwrap().push((*tick, *dt));
+                }
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Clock(seen.clone()))).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        h.ticks(5);
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() >= 5, "{seen:?}");
+        assert!(
+            seen.windows(2).all(|w| w[1].0 == w[0].0 + 1),
+            "тики идут подряд"
+        );
+        let dt = 1.0 / f32::from(Harness::default_cfg().tick_hz);
+        assert!(seen.iter().all(|(_, d)| (*d - dt).abs() < 1e-6));
+    }
+
+    #[test]
     fn modules_learn_when_a_player_leaves_and_where_they_were() {
         use std::sync::{Arc, Mutex};
         struct Leave(Arc<Mutex<Vec<(astrocore_core::NetworkEntityId, f32)>>>);
