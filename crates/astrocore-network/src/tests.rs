@@ -1140,6 +1140,47 @@ mod components {
     }
 
     #[test]
+    fn owner_only_values_never_reach_other_clients_even_through_a_snapshot() {
+        let mut reg = ReplicationRegistry::new();
+        reg.register(kind(
+            "game.secret",
+            ReplicationChannel::ReliableOrdered,
+            Interest::Owner,
+        ))
+        .unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_replication(reg);
+        let mut h = Harness::with_server(server);
+        let (a, b) = (h.join("a"), h.join("b"));
+        let me = net_of(&h, a);
+        let outs = h
+            .server
+            .set_component(me, "game.secret", b"x".to_vec())
+            .unwrap();
+        h.deliver(outs);
+        assert_eq!(
+            h.client(a).component(me, "game.secret"),
+            Some(&b"x"[..]),
+            "владелец видит"
+        );
+        assert_eq!(
+            h.client(b).component(me, "game.secret"),
+            None,
+            "другой — нет"
+        );
+        // Новый игрок и повторный запрос снимка тоже не получают чужого.
+        let c = h.join("c");
+        assert_eq!(h.client(c).component(me, "game.secret"), None);
+        let p = h.client(b).snapshot_request_packet();
+        h.send(b, p);
+        assert_eq!(h.client(b).component(me, "game.secret"), None);
+        // А владелец после своего запроса снимка значение получает.
+        let p = h.client(a).snapshot_request_packet();
+        h.send(a, p);
+        assert_eq!(h.client(a).component(me, "game.secret"), Some(&b"x"[..]));
+    }
+
+    #[test]
     fn stale_sequence_numbers_are_ignored_by_the_client() {
         let mut h = harness_with_kinds();
         let a = h.join("a");

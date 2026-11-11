@@ -286,6 +286,7 @@ impl GameServer {
                 astrocore_api::Interest::Radius(r) => {
                     p.net == net || p.state.pos.distance(owner_pos) <= r
                 }
+                astrocore_api::Interest::Owner => p.net == net,
             })
             .map(|(&to, _)| Out::Send {
                 to,
@@ -743,7 +744,25 @@ impl GameServer {
                 },
             });
         }
+        let viewer = self.players.get(&conn).map(|p| (p.net, p.state.pos));
         for ((net, kind), (seq, data)) in &self.components {
+            // Те же правила видимости, что и при рассылке: чужое личное состояние не отдаём.
+            let allowed = match (self.replication.get(kind).map(|k| k.interest), viewer) {
+                (Some(astrocore_api::Interest::Everyone), _) => true,
+                (Some(astrocore_api::Interest::Owner), Some((v, _))) => v == *net,
+                (Some(astrocore_api::Interest::Radius(r)), Some((v, pos))) => {
+                    v == *net
+                        || self
+                            .players
+                            .values()
+                            .find(|p| p.net == *net)
+                            .is_some_and(|o| o.state.pos.distance(pos) <= r)
+                }
+                _ => false,
+            };
+            if !allowed {
+                continue;
+            }
             out.push(Out::Send {
                 to: conn,
                 msg: ServerMessage::ComponentDelta {
