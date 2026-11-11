@@ -237,3 +237,131 @@ impl Harness {
         self.events.remove(&id).unwrap_or_default()
     }
 }
+
+// ---- имитация сети для тестов UDP ----------------------------------------------------
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::rc::Rc;
+
+use crate::udp::Datagram;
+
+struct NetInner {
+    now: u64,
+    rng: u64,
+    loss: u64,
+    dup: u64,
+    min_delay: u64,
+    max_delay: u64,
+    partitioned: bool,
+    queues: HashMap<SocketAddr, Vec<(u64, Vec<u8>, SocketAddr)>>,
+    wire: Vec<Vec<u8>>,
+}
+
+impl NetInner {
+    fn rand(&mut self) -> u64 {
+        self.rng = self
+            .rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.rng >> 33
+    }
+}
+
+/// Сеть с потерями, дублями, задержками и перестановкой. Время задаёт тест.
+#[derive(Clone)]
+pub struct SimNet {
+    inner: Rc<RefCell<NetInner>>,
+}
+
+impl SimNet {
+    pub fn new(seed: u64, loss_percent: u64, dup_percent: u64, delay_ms: (u64, u64)) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(NetInner {
+                now: 0,
+                rng: seed,
+                loss: loss_percent,
+                dup: dup_percent,
+                min_delay: delay_ms.0,
+                max_delay: delay_ms.1.max(delay_ms.0),
+                partitioned: false,
+                queues: HashMap::new(),
+                wire: Vec::new(),
+            })),
+        }
+    }
+
+    pub fn set_time(&self, now_ms: u64) {
+        self.inner.borrow_mut().now = now_ms;
+    }
+
+    /// Разрыв связи: все датаграммы теряются, пока включено.
+    pub fn set_partitioned(&self, on: bool) {
+        self.inner.borrow_mut().partitioned = on;
+    }
+
+    pub fn socket(&self, addr: SocketAddr) -> SimSocket {
+        SimSocket {
+            net: self.clone(),
+            addr,
+        }
+    }
+
+    /// Всё, что «видел» наблюдатель на линии (для проверки отсутствия открытого текста).
+    pub fn wire(&self) -> Vec<Vec<u8>> {
+        self.inner.borrow().wire.clone()
+    }
+
+    /// Вбросить датаграмму от имени `from` адресату `to` (атакующий).
+    pub fn inject(&self, from: SocketAddr, to: SocketAddr, data: Vec<u8>) {
+        let mut n = self.inner.borrow_mut();
+        let at = n.now;
+        n.queues.entry(to).or_default().push((at, data, from));
+    }
+}
+
+pub struct SimSocket {
+    net: SimNet,
+    addr: SocketAddr,
+}
+
+impl Datagram for SimSocket {
+    fn send_to(&mut self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
+        let mut n = self.net.inner.borrow_mut();
+        n.wire.push(data.to_vec());
+        if n.partitioned || n.rand() % 100 < n.loss {
+            return Ok(());
+        }
+        let span = n.max_delay - n.min_delay + 1;
+        let at = n.now + n.min_delay + n.rand() % span;
+        n.queues
+            .entry(to)
+            .or_default()
+            .push((at, data.to_vec(), self.addr));
+        if n.rand() % 100 < n.dup {
+            let extra = n.rand() % 30;
+            n.queues
+                .entry(to)
+                .or_default()
+                .push((at + extra, data.to_vec(), self.addr));
+        }
+        Ok(())
+    }
+
+    fn recv_from(&mut self) -> std::io::Result<Option<(Vec<u8>, SocketAddr)>> {
+        let mut n = self.net.inner.borrow_mut();
+        let now = n.now;
+        let q = n.queues.entry(self.addr).or_default();
+        let best = q
+            .iter()
+            .enumerate()
+            .filter(|(_, (t, _, _))| *t <= now)
+            .min_by_key(|(_, (t, _, _))| *t)
+            .map(|(i, _)| i);
+        Ok(best.map(|i| {
+            let (_, data, from) = q.swap_remove(i);
+            (data, from)
+        }))
+    }
+}

@@ -45,6 +45,10 @@ pub struct ServerConfig {
     pub allow_edit: bool,
     /// Точка появления игроков.
     pub spawn: Option<[f32; 3]>,
+    /// Адрес UDP-слушателя (шифрованный транспорт). Требует `key_file`.
+    pub listen_udp: Option<String>,
+    /// Файл долговременного ключа сервера (создаётся, если нет).
+    pub key_file: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -58,6 +62,8 @@ impl ServerConfig {
             listen: None,
             allow_edit: false,
             spawn: None,
+            listen_udp: None,
+            key_file: None,
         }
     }
 }
@@ -219,7 +225,131 @@ impl ListenServer {
     }
 }
 
+/// Сетевой сервер на шифрованном UDP.
+pub struct UdpListenServer {
+    udp: astrocore_network::udp::UdpServer<astrocore_network::udp::SystemSocket>,
+    store: Store,
+    ticks: u64,
+    ops_since_snapshot: usize,
+    public_key: [u8; 32],
+    started: std::time::Instant,
+}
+
+impl UdpListenServer {
+    pub fn start(config: &ServerConfig) -> Result<Self, ServerError> {
+        use astrocore_network::server::{AllowAll, GameServer, ServerNetConfig};
+        let key_path = config
+            .key_file
+            .as_ref()
+            .ok_or_else(|| ServerError::Script("для UDP нужен --key-file".into()))?;
+        let keys = astrocore_network::secure::load_or_create_keypair(key_path)
+            .map_err(|e| ServerError::Script(e.to_string()))?;
+        let store = Store::open(&config.data_dir)?;
+        let (mut world, _) = load_or_create(&store, &config.world_id)?;
+        if let Some(path) = &config.script {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| ServerError::Script(e.to_string()))?;
+            let commands: Vec<WorldCommand> =
+                serde_json::from_str(&text).map_err(|e| ServerError::Script(e.to_string()))?;
+            for c in commands {
+                if let Ok(op) = world.apply(c) {
+                    store.append(&op)?;
+                }
+            }
+        }
+        let tick_hz = config.tick_hz.round().clamp(1.0, 240.0) as u8;
+        let mut net = ServerNetConfig {
+            tick_hz,
+            ..ServerNetConfig::default()
+        };
+        if let Some(s) = config.spawn {
+            net.spawn = astrocore_math::glam::Vec3::from_array(s);
+        }
+        let core = GameServer::new(
+            world,
+            net,
+            Box::new(AllowAll {
+                can_edit: config.allow_edit,
+            }),
+        );
+        let addr = config.listen_udp.as_deref().unwrap_or("127.0.0.1:0");
+        let socket = astrocore_network::udp::SystemSocket::bind(addr)
+            .map_err(|e| ServerError::Script(format!("UDP {addr}: {e}")))?;
+        let public_key = keys.public();
+        Ok(Self {
+            udp: astrocore_network::udp::UdpServer::new(socket, keys, core, tick_hz),
+            store,
+            ticks: 0,
+            ops_since_snapshot: 0,
+            public_key,
+            started: std::time::Instant::now(),
+        })
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.udp.socket().local_addr()
+    }
+
+    pub fn public_key_hex(&self) -> String {
+        astrocore_network::secure::hex(&self.public_key)
+    }
+
+    pub fn core(&self) -> &astrocore_network::server::GameServer {
+        self.udp.core()
+    }
+
+    pub fn step(&mut self) -> Result<(), ServerError> {
+        let now = self.started.elapsed().as_millis() as u64;
+        self.udp
+            .step(now)
+            .map_err(|e| ServerError::Script(e.to_string()))?;
+        self.ticks += 1;
+        for op in self.udp.core_mut().take_applied_ops() {
+            self.store.append(&op)?;
+            self.ops_since_snapshot += 1;
+        }
+        if self.ops_since_snapshot >= SNAPSHOT_EVERY_OPS {
+            self.store.save_snapshot(self.udp.core().world())?;
+            self.ops_since_snapshot = 0;
+        }
+        Ok(())
+    }
+
+    pub fn run(&mut self, max_ticks: Option<u64>) -> Result<RunReport, ServerError> {
+        let mut done = 0u64;
+        while max_ticks.is_none_or(|m| done < m) {
+            self.step()?;
+            done += 1;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.finish()
+    }
+
+    pub fn finish(&mut self) -> Result<RunReport, ServerError> {
+        let world = self.udp.core().world();
+        self.store.save_snapshot(world)?;
+        Ok(RunReport {
+            ticks: self.ticks,
+            revision: world.revision().0,
+            element_count: world.element_count(),
+            content_hash: world.content_hash(),
+            rejected: self.udp.core().metrics().rejected_packets as usize,
+            recovered: false,
+        })
+    }
+}
+
 pub fn run(config: &ServerConfig) -> Result<RunReport, ServerError> {
+    if config.listen_udp.is_some() {
+        let mut s = UdpListenServer::start(config)?;
+        println!(
+            "UDP: {}, открытый ключ сервера: {}",
+            s.local_addr().map(|a| a.to_string()).unwrap_or_default(),
+            s.public_key_hex()
+        );
+        // Ограниченный запуск крутится по `max_ticks` шагов ввода-вывода (2 мс), как и в TCP-режиме.
+        return s.run(config.max_ticks);
+    }
     if config.listen.is_some() {
         return ListenServer::start(config)?.run(config.tick_hz, config.max_ticks);
     }
@@ -503,6 +633,73 @@ mod tests {
         let restored = run(&again).unwrap();
         assert!(restored.recovered);
         assert_eq!(restored.content_hash, report.content_hash);
+    }
+
+    #[test]
+    fn udp_server_serves_an_encrypted_client_and_persists_edits() {
+        use astrocore_network::client::ClientCore;
+        use astrocore_network::udp::{SystemSocket, UdpClient};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = ServerConfig::new(dir.path().join("data"));
+        cfg.world_id = "udp-world".into();
+        cfg.listen_udp = Some("127.0.0.1:0".into());
+        cfg.key_file = Some(dir.path().join("server.key"));
+        cfg.allow_edit = true;
+        let mut server = UdpListenServer::start(&cfg).unwrap();
+        let addr = server.local_addr().unwrap();
+        let key = astrocore_network::secure::parse_hex32(&server.public_key_hex()).unwrap();
+
+        let mut udp =
+            UdpClient::connect(SystemSocket::bind("127.0.0.1:0").unwrap(), addr, key).unwrap();
+        let mut core = ClientCore::new("editor", "udp-world", 0);
+        let start = std::time::Instant::now();
+        let (mut hello, mut sent) = (false, false);
+        while start.elapsed() < Duration::from_secs(10) {
+            server.step().unwrap();
+            let now = start.elapsed().as_millis() as u64;
+            udp.step(now).unwrap();
+            if udp.is_established() && !hello {
+                udp.send(true, &core.hello_packet()).unwrap();
+                hello = true;
+            }
+            for p in udp.take_packets() {
+                core.on_packet(&p).unwrap();
+            }
+            if core.is_ready() && !sent {
+                udp.send(true, &core.edit_packet(wall(4242, 3)).unwrap())
+                    .unwrap();
+                sent = true;
+            }
+            if sent
+                && core
+                    .world()
+                    .is_some_and(|w| w.element(ObjectId::from_u128(4242)).is_some())
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            core.world()
+                .is_some_and(|w| w.element(ObjectId::from_u128(4242)).is_some())
+        );
+        let report = server.finish().unwrap();
+        drop(server);
+        // Перезапуск без сети восстанавливает мир, ключ при этом остаётся тем же.
+        let mut again = ServerConfig::new(dir.path().join("data"));
+        again.max_ticks = Some(1);
+        let restored = run(&again).unwrap();
+        assert_eq!(restored.content_hash, report.content_hash);
+        let reloaded =
+            astrocore_network::secure::load_or_create_keypair(&dir.path().join("server.key"))
+                .unwrap();
+        assert_eq!(reloaded.public(), key);
+
+        // Без файла ключа UDP не запускается.
+        let mut no_key = ServerConfig::new(dir.path().join("data2"));
+        no_key.listen_udp = Some("127.0.0.1:0".into());
+        assert!(matches!(run(&no_key), Err(ServerError::Script(_))));
     }
 
     #[test]

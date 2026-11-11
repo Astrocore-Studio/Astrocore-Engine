@@ -9,7 +9,8 @@ astrocore-server — headless-сервер Astrocore
 Использование:
   astrocore-server --data-dir <каталог> [--world-id <id>] [--tick-hz <гц>]
                    [--ticks <N>] [--script <команды.json>]
-                   [--listen <адрес:порт>] [--allow-edit] [--spawn x,y,z]
+                   [--listen <адрес:порт>] [--listen-udp <адрес:порт> --key-file <файл>]
+                   [--allow-edit] [--spawn x,y,z]
 
   --data-dir   каталог сохранений (снимок + журнал); создаётся при отсутствии
   --world-id   идентификатор нового мира (по умолчанию world)
@@ -17,6 +18,8 @@ astrocore-server — headless-сервер Astrocore
   --ticks      выполнить N тиков и выйти (по умолчанию — работать до остановки)
   --script     JSON-массив WorldCommand для постановки в очередь при старте
   --listen     принимать игроков по TCP на этом адресе (например 127.0.0.1:7777)
+  --listen-udp принимать игроков по шифрованному UDP; печатает открытый ключ сервера
+  --key-file   файл долговременного ключа сервера (создаётся при отсутствии, права 600)
   --allow-edit разрешить игрокам править структуру мира (разработка, пробная игра)
   --spawn      точка появления игроков, метры: x,y,z
 ";
@@ -50,6 +53,8 @@ fn parse_args() -> Result<ServerConfig, String> {
             }
             "--script" => cfg.script = Some(PathBuf::from(value("--script")?)),
             "--listen" => cfg.listen = Some(value("--listen")?),
+            "--listen-udp" => cfg.listen_udp = Some(value("--listen-udp")?),
+            "--key-file" => cfg.key_file = Some(PathBuf::from(value("--key-file")?)),
             "--allow-edit" => cfg.allow_edit = true,
             "--spawn" => {
                 let v = value("--spawn")?;
