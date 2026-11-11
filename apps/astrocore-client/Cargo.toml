@@ -18,5 +18,13 @@ astrocore-vertical-slice = { path = "../../examples/vertical-slice" }
 astrocore-world.workspace = true
 bevy = { workspace = true, features = ["3d_bevy_render", "default_app", "bevy_winit", "bevy_window", "x11", "png", "std", "multi_threaded"] }
 
+[lib]
+name = "astrocore_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "astrocore-client"
+path = "src/main.rs"
+
 [lints]
 workspace = true
