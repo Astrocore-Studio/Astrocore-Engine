@@ -1387,9 +1387,27 @@ mod game_commands {
         }
     }
 
+    /// Отвечает позицией игрока: проверка `position_of`.
+    struct Where;
+
+    impl GameModule for Where {
+        fn id(&self) -> &str {
+            "test.where"
+        }
+        fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+            if let HookEvent::Command { actor, kind, .. } = event
+                && kind == "where"
+                && let Some(p) = ctx.position_of(*actor)
+            {
+                ctx.set_component(*actor, "test.count", (p.x as u32).to_le_bytes().to_vec());
+            }
+        }
+    }
+
     fn harness() -> Harness {
         let mut host = ModuleHost::new();
         host.register(Box::new(Counter(0))).unwrap();
+        host.register(Box::new(Where)).unwrap();
         host.finalize().unwrap();
         let mut reg = ReplicationRegistry::new();
         reg.register(ReplicatedKind {
@@ -1422,6 +1440,20 @@ mod game_commands {
         assert_eq!(
             h.client(a).component(me, "test.count"),
             Some(&7u32.to_le_bytes()[..])
+        );
+    }
+
+    #[test]
+    fn modules_see_player_positions() {
+        let mut h = harness();
+        let a = h.join("a");
+        let me = h.client(a).net_id().unwrap();
+        let packet = h.client(a).command_packet("where", vec![]).unwrap();
+        h.send(a, packet);
+        // Точка появления в тестовом стенде: x = 2.5.
+        assert_eq!(
+            h.client(a).component(me, "test.count"),
+            Some(&2u32.to_le_bytes()[..])
         );
     }
 

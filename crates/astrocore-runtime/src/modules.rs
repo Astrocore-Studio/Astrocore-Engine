@@ -41,6 +41,7 @@ pub enum HookEvent {
 /// Контекст вызова: чтение мира и накопление команд.
 pub struct HookContext<'a> {
     pub world: &'a World,
+    positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
     commands: Vec<WorldCommand>,
     components: Vec<ComponentUpdate>,
     log: Vec<String>,
@@ -56,8 +57,18 @@ pub struct ComponentUpdate {
 
 impl<'a> HookContext<'a> {
     pub fn new(world: &'a World) -> Self {
+        static NONE: std::sync::OnceLock<BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>> =
+            std::sync::OnceLock::new();
+        Self::with_positions(world, NONE.get_or_init(BTreeMap::new))
+    }
+
+    pub fn with_positions(
+        world: &'a World,
+        positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
+    ) -> Self {
         Self {
             world,
+            positions,
             commands: Vec::new(),
             components: Vec::new(),
             log: Vec::new(),
@@ -71,6 +82,11 @@ impl<'a> HookContext<'a> {
             kind: kind.into(),
             data,
         });
+    }
+
+    /// Позиция (ступни) подключённого игрока на момент вызова.
+    pub fn position_of(&self, net: NetworkEntityId) -> Option<astrocore_math::glam::Vec3> {
+        self.positions.get(&net).copied()
     }
 
     /// Запросить изменение мира; применит движок с валидацией.
@@ -179,9 +195,19 @@ impl ModuleHost {
 
     /// Разослать событие всем модулям в порядке зависимостей.
     pub fn dispatch(&mut self, world: &World, event: &HookEvent) -> HookOutput {
+        self.dispatch_with(world, &BTreeMap::new(), event)
+    }
+
+    /// То же, но модули видят позиции игроков (`HookContext::position_of`).
+    pub fn dispatch_with(
+        &mut self,
+        world: &World,
+        positions: &BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
+        event: &HookEvent,
+    ) -> HookOutput {
         let mut out = HookOutput::default();
         for &i in &self.order {
-            let mut ctx = HookContext::new(world);
+            let mut ctx = HookContext::with_positions(world, positions);
             self.modules[i].handle(&mut ctx, event);
             out.commands.append(&mut ctx.commands);
             out.components.append(&mut ctx.components);

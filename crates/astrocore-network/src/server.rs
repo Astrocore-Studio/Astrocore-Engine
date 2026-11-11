@@ -955,7 +955,12 @@ impl GameServer {
         let Some(host) = self.modules.as_mut() else {
             return;
         };
-        let result = host.dispatch(&self.world, &event);
+        let positions: BTreeMap<NetworkEntityId, Vec3> = self
+            .players
+            .values()
+            .map(|p| (p.net, p.state.pos))
+            .collect();
+        let result = host.dispatch_with(&self.world, &positions, &event);
         for u in result.components {
             // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
             if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {
