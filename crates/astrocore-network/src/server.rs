@@ -177,6 +177,8 @@ pub struct GameServer {
     hook_depth: u8,
     /// Игроки, которым модуль запретил двигаться.
     frozen: BTreeSet<NetworkEntityId>,
+    /// Призраки: летят сквозь преграды и не касаются предметов.
+    ghosts: BTreeSet<NetworkEntityId>,
     content: BTreeMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
     content_queue: BTreeMap<ConnId, VecDeque<([u8; 32], u32)>>,
     /// Последние значения реплицируемых данных: (сущность, вид) → (номер, байты).
@@ -207,6 +209,7 @@ impl GameServer {
             replication: astrocore_api::ReplicationRegistry::new(),
             hook_depth: 0,
             frozen: BTreeSet::new(),
+            ghosts: BTreeSet::new(),
             content: BTreeMap::new(),
             content_queue: BTreeMap::new(),
             components: BTreeMap::new(),
@@ -629,6 +632,7 @@ impl GameServer {
                     } => self.on_input(
                         conn,
                         InputCmd {
+                            noclip: false,
                             seq,
                             move_x,
                             move_z,
@@ -1069,6 +1073,29 @@ impl GameServer {
                 self.frozen.remove(&net);
             }
         }
+        for (net, ghost) in result.ghosts {
+            if ghost {
+                self.ghosts.insert(net);
+            } else {
+                self.ghosts.remove(&net);
+            }
+        }
+        for (net, pos) in result.teleports {
+            let tick = self.tick;
+            if let Some((&conn, p)) = self.players.iter_mut().find(|(_, p)| p.net == net) {
+                p.state = CharacterState::at(pos);
+                p.queue.clear();
+                p.moved_tick = tick;
+                // Нулевой номер — «начальная синхронизация»: клиент берёт позицию и сбрасывает ввод.
+                out.push(Out::Send {
+                    to: conn,
+                    msg: ServerMessage::InputAck {
+                        seq: 0,
+                        pos: pos.to_array(),
+                    },
+                });
+            }
+        }
         for u in result.components {
             // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
             if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {
@@ -1134,6 +1161,7 @@ impl GameServer {
                 cmd.move_x = 0;
                 cmd.move_z = 0;
             }
+            cmd.noclip = self.ghosts.contains(&p.net);
             let before = p.state.pos;
             apply_input(
                 &self.physics,

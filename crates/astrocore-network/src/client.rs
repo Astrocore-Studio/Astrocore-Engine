@@ -91,6 +91,7 @@ pub struct ClientCore {
     shape: CharacterShape,
     tick_hz: u8,
     you: Option<NetworkEntityId>,
+    noclip: bool,
     replica: Option<World>,
     physics: BoxWorld,
     reassembler: Reassembler,
@@ -122,6 +123,7 @@ impl ClientCore {
             shape: CharacterShape::default(),
             tick_hz: 20,
             you: None,
+            noclip: false,
             replica: None,
             physics: BoxWorld::default(),
             reassembler: Reassembler::new(),
@@ -232,6 +234,7 @@ impl ClientCore {
         }
         self.seq += 1;
         let cmd = InputCmd {
+            noclip: self.noclip,
             seq: self.seq,
             move_x,
             move_z,
@@ -274,6 +277,11 @@ impl ClientCore {
     }
 
     /// Предсказанная позиция (ступни).
+    /// Лететь сквозь преграды (призрак): предсказание движения должно совпадать с серверным.
+    pub fn set_noclip(&mut self, on: bool) {
+        self.noclip = on;
+    }
+
     pub fn position(&self) -> Vec3 {
         self.state.pos
     }

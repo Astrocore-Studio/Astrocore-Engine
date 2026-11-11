@@ -1528,6 +1528,61 @@ mod game_commands {
     }
 
     #[test]
+    fn a_ghost_flies_without_gravity_and_a_teleport_reaches_the_client_at_once() {
+        struct Spooky;
+        impl GameModule for Spooky {
+            fn id(&self) -> &str {
+                "test.spooky"
+            }
+            fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+                if let HookEvent::Command { actor, kind, .. } = event {
+                    match kind.as_str() {
+                        "ghost" => ctx.set_ghost(*actor, true),
+                        "human" => ctx.set_ghost(*actor, false),
+                        "tp" => {
+                            ctx.teleport(*actor, astrocore_math::glam::Vec3::new(2.0, 2.5, 2.0))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Spooky)).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        h.ticks(5);
+        let send = |h: &mut Harness, kind: &str| {
+            let p = h.client(a).command_packet(kind, vec![]).unwrap();
+            h.send(a, p);
+        };
+        send(&mut h, "tp");
+        h.ticks(3);
+        let p = h.client(a).position();
+        assert!((p.y - 2.5).abs() < 1e-4, "телепорт дошёл до клиента: {p:?}");
+        send(&mut h, "human");
+        for _ in 0..10 {
+            h.input(a, 0, 0, 0.0);
+        }
+        assert!(h.client(a).position().y < 2.5, "обычный игрок падает");
+        // Призрак: поднимаем на 2,5 м — и он висит.
+        send(&mut h, "tp");
+        h.ticks(3);
+        send(&mut h, "ghost");
+        h.ticks(2);
+        h.client_noclip(a, true);
+        for _ in 0..10 {
+            h.input(a, 0, 1, 0.0);
+        }
+        let g = h.client(a).position();
+        assert!((g.y - 2.5).abs() < 1e-4, "призрак не падает: {g:?}");
+        assert!(g.z < 2.0 - 1.0, "и летит вперёд: {g:?}");
+    }
+
+    #[test]
     fn modules_receive_a_tick_with_the_tick_duration_every_server_tick() {
         use std::sync::{Arc, Mutex};
         struct Clock(Arc<Mutex<Vec<(u32, f32)>>>);

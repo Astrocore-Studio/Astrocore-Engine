@@ -227,6 +227,13 @@ impl Harness {
         self.tick();
     }
 
+    /// Включить у клиента предсказание полёта призрака.
+    pub fn client_noclip(&mut self, id: ConnId, on: bool) {
+        if let Some(c) = self.clients.get_mut(&id) {
+            c.set_noclip(on);
+        }
+    }
+
     pub fn client(&self, id: ConnId) -> &ClientCore {
         &self.clients[&id]
     }

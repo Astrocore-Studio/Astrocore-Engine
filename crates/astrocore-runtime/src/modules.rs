@@ -61,6 +61,8 @@ pub struct HookContext<'a> {
     commands: Vec<WorldCommand>,
     components: Vec<ComponentUpdate>,
     freezes: Vec<(NetworkEntityId, bool)>,
+    ghosts: Vec<(NetworkEntityId, bool)>,
+    teleports: Vec<(NetworkEntityId, astrocore_math::glam::Vec3)>,
     log: Vec<String>,
 }
 
@@ -109,6 +111,8 @@ impl<'a> HookContext<'a> {
             commands: Vec::new(),
             components: Vec::new(),
             freezes: Vec::new(),
+            ghosts: Vec::new(),
+            teleports: Vec::new(),
             log: Vec::new(),
         }
     }
@@ -117,6 +121,16 @@ impl<'a> HookContext<'a> {
     /// Заморозить игрока или снять заморозку; действует, пока модуль не снимет её.
     pub fn freeze(&mut self, net: NetworkEntityId, frozen: bool) {
         self.freezes.push((net, frozen));
+    }
+
+    /// Режим призрака: игрок летает сквозь стены (по плоскости, на своей высоте).
+    pub fn set_ghost(&mut self, net: NetworkEntityId, ghost: bool) {
+        self.ghosts.push((net, ghost));
+    }
+
+    /// Поставить игрока в точку (ступни).
+    pub fn teleport(&mut self, net: NetworkEntityId, pos: astrocore_math::glam::Vec3) {
+        self.teleports.push((net, pos));
     }
 
     pub fn set_component(&mut self, net: NetworkEntityId, kind: impl Into<String>, data: Vec<u8>) {
@@ -206,6 +220,8 @@ impl<'a> HookContext<'a> {
             commands: self.commands,
             components: self.components,
             freezes: self.freezes,
+            ghosts: self.ghosts,
+            teleports: self.teleports,
             doors: self.door_requests,
             log: self.log,
         }
@@ -229,6 +245,10 @@ pub struct HookOutput {
     /// Просьбы заморозить (`true`) или освободить игрока: у замороженного команды движения
     /// не двигают персонажа (оглушение, критическое состояние).
     pub freezes: Vec<(NetworkEntityId, bool)>,
+    /// Включить (`true`) или выключить режим призрака: полёт сквозь преграды без тяжести.
+    pub ghosts: Vec<(NetworkEntityId, bool)>,
+    /// Переставить игрока в точку (ступни); клиент получает новую позицию сразу.
+    pub teleports: Vec<(NetworkEntityId, astrocore_math::glam::Vec3)>,
     pub doors: Vec<DoorRequest>,
     pub log: Vec<String>,
 }
@@ -346,6 +366,8 @@ impl ModuleHost {
             out.commands.append(&mut ctx.commands);
             out.components.append(&mut ctx.components);
             out.freezes.append(&mut ctx.freezes);
+            out.ghosts.append(&mut ctx.ghosts);
+            out.teleports.append(&mut ctx.teleports);
             out.doors.append(&mut ctx.door_requests);
             out.log.append(&mut ctx.log);
         }

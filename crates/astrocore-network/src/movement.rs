@@ -14,6 +14,9 @@ pub struct InputCmd {
     pub move_x: i8,
     pub move_z: i8,
     pub yaw: f32,
+    /// Полёт сквозь преграды без тяжести (призрак). Сервер решает сам; клиент включает у себя, когда
+    /// знает, что он призрак, чтобы предсказание совпадало.
+    pub noclip: bool,
 }
 
 /// Желаемое направление в мировых осях. `yaw` — поворот вокруг +Y (радианы);
@@ -37,6 +40,12 @@ pub fn apply_input(
     dt: f32,
 ) {
     let wish = wish_direction(input.move_x, input.move_z, input.yaw) * MOVE_SPEED * dt;
+    if input.noclip {
+        state.pos += wish;
+        state.vel_y = 0.0;
+        state.grounded = false;
+        return;
+    }
     match ground {
         Some(g) => move_character_on_ground(bw, g, state, shape, wish, dt),
         None => move_character(bw, state, shape, wish, dt),
