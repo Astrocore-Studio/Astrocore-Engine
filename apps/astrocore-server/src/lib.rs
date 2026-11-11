@@ -42,6 +42,8 @@ pub struct ServerConfig {
     pub listen_udp: Option<String>,
     /// Файл долговременного ключа сервера (создаётся, если нет).
     pub key_file: Option<PathBuf>,
+    /// Сколько автоматических резервных копий хранить (0 — выключено).
+    pub backup_keep: usize,
 }
 
 impl ServerConfig {
@@ -57,6 +59,7 @@ impl ServerConfig {
             spawn: None,
             listen_udp: None,
             key_file: None,
+            backup_keep: 0,
         }
     }
 }
@@ -141,7 +144,7 @@ pub struct ListenServer {
 impl ListenServer {
     pub fn start(config: &ServerConfig) -> Result<Self, ServerError> {
         use astrocore_network::server::{AllowAll, GameServer, ServerNetConfig};
-        let store = Store::open(&config.data_dir)?;
+        let store = Store::open(&config.data_dir)?.with_auto_backup(config.backup_keep);
         let (mut world, _) = load_or_create(&store, &config.world_id)?;
         if let Some(path) = &config.script {
             let text =
@@ -269,7 +272,7 @@ impl UdpListenServer {
             .ok_or_else(|| ServerError::Script("для UDP нужен --key-file".into()))?;
         let keys = astrocore_network::secure::load_or_create_keypair(key_path)
             .map_err(|e| ServerError::Script(e.to_string()))?;
-        let store = Store::open(&config.data_dir)?;
+        let store = Store::open(&config.data_dir)?.with_auto_backup(config.backup_keep);
         let (mut world, _) = load_or_create(&store, &config.world_id)?;
         if let Some(path) = &config.script {
             let text =
@@ -386,7 +389,7 @@ pub fn run(config: &ServerConfig) -> Result<RunReport, ServerError> {
     if config.listen.is_some() {
         return ListenServer::start(config)?.run(config.tick_hz, config.max_ticks);
     }
-    let store = Store::open(&config.data_dir)?;
+    let store = Store::open(&config.data_dir)?.with_auto_backup(config.backup_keep);
     let (world, recovered) = load_or_create(&store, &config.world_id)?;
 
     let mut app = App::new();

@@ -524,3 +524,37 @@ mod workspace_panels {
         );
     }
 }
+
+#[test]
+fn overlays_expose_collision_rooms_and_wireframe_of_the_current_floor() {
+    let mut s = studio();
+    s.tool = Tool::Room;
+    drag(&mut s, p(0.5, 0.5), p(3.5, 3.5));
+    assert!(
+        s.overlay_geometry().collision.is_empty(),
+        "оверлеи выключены"
+    );
+    s.overlays = Overlays {
+        collision: true,
+        topology: true,
+        wireframe: true,
+    };
+    let g = s.overlay_geometry().clone();
+    assert!(!g.collision.is_empty());
+    assert_eq!(g.rooms.len(), 16, "комната 4×4 ячейки: {}", g.rooms.len());
+    assert!(
+        g.rooms
+            .iter()
+            .all(|(id, _, step)| *id == g.rooms[0].0 && *step == 1.0)
+    );
+    assert!(g.wire.len().is_multiple_of(3) && !g.wire.is_empty());
+    // Кэш: без изменений мира геометрия та же; после правки — обновляется.
+    assert_eq!(s.overlay_geometry().clone(), g);
+    s.tool = Tool::Delete;
+    s.selection.clear();
+    click(&mut s, p(0.0, 1.5));
+    assert_ne!(s.overlay_geometry().clone(), g);
+    // Другой этаж: на нём пока ничего нет.
+    s.floor = FloorId(1);
+    assert!(s.overlay_geometry().collision.is_empty());
+}

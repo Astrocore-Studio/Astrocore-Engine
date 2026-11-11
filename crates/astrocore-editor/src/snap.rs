@@ -44,6 +44,56 @@ pub fn snap_to_surface(
         .map(|h| (h.point, h.normal))
 }
 
+/// Режимы привязки редактора (раздел 7): сетка, вершина, поверхность, ребро, опорная точка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapMode {
+    Grid,
+    Vertex,
+    Surface,
+    Edge,
+    Pivot,
+}
+
+/// Опорные точки элементов этажа: концы и середины рёбер, центры ячеек, начала маршей,
+/// «ноги» свободных моделей. К ним привязывается режим `Pivot`.
+pub fn world_pivots(world: &astrocore_world::World, floor: astrocore_world::FloorId) -> Vec<Vec3> {
+    use astrocore_world::Placement;
+    let step = world.config().grid_step_m;
+    let Some(f) = world.floor(floor) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in world.elements().filter(|e| e.floor == floor) {
+        match e.placement {
+            Placement::Edge(edge) => {
+                let (a, b) = edge.endpoints(step, f.base_y);
+                out.extend([a, b, (a + b) * 0.5]);
+            }
+            Placement::Cell(c) => {
+                out.push(c.min_corner(step, f.base_y) + Vec3::new(step * 0.5, 0.0, step * 0.5));
+            }
+            Placement::Run { start, .. } => {
+                out.push(start.min_corner(step, f.base_y) + Vec3::new(step * 0.5, 0.0, step * 0.5));
+            }
+            Placement::Free(fp) => {
+                let p = fp.position(step);
+                out.push(Vec3::new(p[0], p[1], p[2]));
+            }
+        }
+    }
+    out
+}
+
+/// Ближайшая опорная точка в радиусе `radius` (по трём осям); `None`, если рядом нет.
+pub fn snap_pivot(p: Vec3, pivots: &[Vec3], radius: f32) -> Option<Vec3> {
+    pivots
+        .iter()
+        .map(|&q| (q.distance(p), q))
+        .filter(|(d, _)| *d <= radius)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, q)| q)
+}
+
 /// Объект под лучом курсора (для выделения щелчком).
 pub fn pick_element(bw: &BoxWorld, origin: Vec3, dir: Vec3, max_distance: f32) -> Option<ObjectId> {
     bw.raycast(origin, dir, max_distance).map(|h| h.id)
@@ -76,6 +126,62 @@ mod tests {
         assert_eq!(e(2.05, 3.5), GridEdge::along_z(2, 3), "запад");
         assert_eq!(e(2.95, 3.5), GridEdge::along_z(3, 3), "восток");
         assert_eq!(e(-0.95, -0.5), GridEdge::along_z(-1, -1));
+    }
+
+    #[test]
+    fn pivots_come_from_elements_and_snap_within_radius() {
+        use astrocore_core::PrototypeId;
+        use astrocore_world::{
+            FloorDef, FloorId, FreePlacement, Placement, StructureElement, StructureKind, World,
+            WorldCommand, WorldConfig,
+        };
+        let mut w = World::new("p", WorldConfig::default()).unwrap();
+        w.apply(WorldCommand::DefineFloor(FloorDef {
+            id: FloorId(0),
+            name: "g".into(),
+            base_y: 1.0,
+            height: 3.0,
+        }))
+        .unwrap();
+        let m = PrototypeId::new("t:m").unwrap();
+        let mut put = |id: u128, kind, placement| {
+            w.apply(WorldCommand::PlaceElement(StructureElement {
+                id: ObjectId::from_u128(id),
+                kind,
+                placement,
+                floor: FloorId(0),
+                material: m.clone(),
+                thickness: 0.2,
+            }))
+            .unwrap();
+        };
+        put(
+            1,
+            StructureKind::Wall,
+            Placement::Edge(GridEdge::along_x(0, 0)),
+        );
+        put(
+            2,
+            StructureKind::Freeform,
+            Placement::Free(FreePlacement::from_position(
+                [7.5, 1.0, 4.25],
+                1.0,
+                0.0,
+                [0.5, 1.0, 0.5],
+            )),
+        );
+        let pivots = world_pivots(&w, FloorId(0));
+        assert_eq!(
+            pivots.len(),
+            4,
+            "концы и середина стены + модель: {pivots:?}"
+        );
+        assert!(pivots.contains(&Vec3::new(0.5, 1.0, 0.0)), "середина ребра");
+        let near = snap_pivot(Vec3::new(1.1, 1.0, 0.1), &pivots, 0.3).unwrap();
+        assert_eq!(near, Vec3::new(1.0, 1.0, 0.0));
+        assert!(snap_pivot(Vec3::new(3.0, 1.0, 3.0), &pivots, 0.3).is_none());
+        assert!(world_pivots(&w, FloorId(9)).is_empty());
+        assert_eq!(SnapMode::Pivot, SnapMode::Pivot);
     }
 
     #[test]

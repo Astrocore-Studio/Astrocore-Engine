@@ -435,3 +435,91 @@ mod upgrade {
         );
     }
 }
+
+mod backups {
+    use super::*;
+
+    fn store_with(world: &World) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.save_snapshot(world).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn backup_survives_later_damage_and_restores_the_old_state() {
+        let mut w = new_world();
+        w.apply(wall_cmd(1, 0)).unwrap();
+        let (_dir, store) = store_with(&w);
+        let op = w.apply(wall_cmd(2, 1)).unwrap();
+        store.append(&op).unwrap();
+        store.backup("2026-11-11-a").unwrap();
+        // Сохранения испорчены уже после копии.
+        std::fs::write(store.dir().join("snapshot.json"), b"{ broken").unwrap();
+        assert!(store.recover().is_err());
+        store.restore_backup("2026-11-11-a").unwrap();
+        let r = store.recover().unwrap().unwrap();
+        assert_eq!(
+            r.world.content_hash(),
+            w.content_hash(),
+            "снимок + журнал из копии"
+        );
+        assert_eq!(r.world.element_count(), 2);
+    }
+
+    #[test]
+    fn labels_are_validated_listed_and_pruned() {
+        let w = new_world();
+        let (_dir, store) = store_with(&w);
+        for bad in ["", "../x", "a/b", "пробел ", &"x".repeat(65)] {
+            assert!(store.backup(bad).is_err(), "{bad:?}");
+            assert!(store.restore_backup(bad).is_err());
+        }
+        for l in ["b3", "b1", "b2"] {
+            store.backup(l).unwrap();
+        }
+        assert!(store.backup("b1").is_err(), "метка уникальна");
+        assert_eq!(store.list_backups().unwrap(), vec!["b1", "b2", "b3"]);
+        assert_eq!(store.prune_backups(2).unwrap(), 1);
+        assert_eq!(store.list_backups().unwrap(), vec!["b2", "b3"]);
+        assert!(store.restore_backup("b1").is_err(), "удалённой копии нет");
+    }
+
+    #[test]
+    fn auto_backup_follows_snapshots_and_keeps_only_the_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap().with_auto_backup(2);
+        let mut w = new_world();
+        for i in 0..4u128 {
+            w.apply(wall_cmd(i + 1, i as i32)).unwrap();
+            store.save_snapshot(&w).unwrap();
+        }
+        store.save_snapshot(&w).unwrap(); // повтор без изменений не ломает и не плодит копии
+        let kept = store.list_backups().unwrap();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept[1] > kept[0] && kept[1].ends_with(&format!("{:016}", w.revision().0)));
+        // Выключено по умолчанию.
+        let plain = tempfile::tempdir().unwrap();
+        let s2 = Store::open(plain.path()).unwrap();
+        s2.save_snapshot(&w).unwrap();
+        assert!(s2.list_backups().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_damaged_backup_is_refused_before_touching_live_files() {
+        let w = new_world();
+        let (_dir, store) = store_with(&w);
+        let path = store.backup("good").unwrap();
+        std::fs::write(path.join("snapshot.json"), b"not json").unwrap();
+        let before = std::fs::read(store.dir().join("snapshot.json")).unwrap();
+        assert!(store.restore_backup("good").is_err());
+        assert_eq!(
+            std::fs::read(store.dir().join("snapshot.json")).unwrap(),
+            before
+        );
+        assert!(
+            store.recover().unwrap().is_some(),
+            "рабочие файлы не тронуты"
+        );
+    }
+}

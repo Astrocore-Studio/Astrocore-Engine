@@ -20,6 +20,7 @@ struct Args {
     frames: u32,
     demo_room: bool,
     panels: bool,
+    overlays: bool,
 }
 
 #[derive(Resource)]
@@ -48,6 +49,7 @@ fn main() {
         frames: 30,
         demo_room: false,
         panels: false,
+        overlays: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -56,6 +58,7 @@ fn main() {
             "--frames" => args.frames = it.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--demo-room" => args.demo_room = true,
             "--panels" => args.panels = true,
+            "--overlays" => args.overlays = true,
             "-h" | "--help" => {
                 eprintln!(
                     "astrocore-studio [--screenshot файл.png [--frames N]] [--demo-room] [--panels]"
@@ -72,6 +75,13 @@ fn main() {
     let mut state = StudioState::new();
     if args.demo_room {
         build_demo(&mut state);
+    }
+    if args.overlays {
+        state.overlays = astrocore_studio::Overlays {
+            collision: true,
+            topology: true,
+            wireframe: false,
+        };
     }
     let world = state.world().clone();
     let panels = args.panels;
@@ -371,8 +381,8 @@ fn sync_render(
 }
 
 /// Сетка текущего этажа, подсказка действия и рамки выделения.
-fn draw_helpers(mut gizmos: Gizmos, studio: Res<Studio>, rigs: Query<&CameraRig>) {
-    let s = &studio.0;
+fn draw_helpers(mut gizmos: Gizmos, mut studio: ResMut<Studio>, rigs: Query<&CameraRig>) {
+    let s = &mut studio.0;
     let y = s.floor_base_y() + 0.02;
     let center = rigs.single().map_or(Vec3::ZERO, |r| r.target);
     let (cx, cz) = (center.x.round() as i32, center.z.round() as i32);
@@ -399,6 +409,30 @@ fn draw_helpers(mut gizmos: Gizmos, studio: Res<Studio>, rigs: Query<&CameraRig>
         Vec3::new(0.0, y, 100.0),
         Color::srgb(0.3, 0.4, 0.95),
     );
+    if s.overlays.collision || s.overlays.topology || s.overlays.wireframe {
+        let g = s.overlay_geometry().clone();
+        for (lo, hi) in &g.collision {
+            let center = (*lo + *hi) * 0.5;
+            let size = (*hi - *lo).max(Vec3::splat(0.02));
+            gizmos.cube(
+                Transform::from_translation(center).with_scale(size),
+                Color::srgba(1.0, 0.4, 0.2, 0.8),
+            );
+        }
+        for (room, min, size) in &g.rooms {
+            let hue = (*room as f32 * 47.0) % 360.0;
+            let (a, b) = (*min + Vec3::Y * 0.06, *min + Vec3::new(*size, 0.06, *size));
+            let c = Color::hsl(hue, 0.8, 0.55);
+            let (p, q) = (Vec3::new(a.x, a.y, b.z), Vec3::new(b.x, a.y, a.z));
+            for (u, v) in [(a, p), (p, b), (b, q), (q, a)] {
+                gizmos.line(u, v, c);
+            }
+        }
+        for (a, b) in &g.wire {
+            gizmos.line(*a, *b, Color::srgba(0.8, 0.9, 1.0, 0.5));
+        }
+    }
+    let s = &studio.0;
     let ghost = Color::srgb(1.0, 0.85, 0.2);
     match s.preview {
         Preview::Line(a, b) => gizmos.line(a + Vec3::Y * 0.05, b + Vec3::Y * 0.05, ghost),
@@ -548,6 +582,10 @@ fn ui(
                 ui.checkbox(&mut sync.show_console, "Консоль");
                 ui.checkbox(&mut sync.show_diff, "Различия");
                 ui.checkbox(&mut sync.show_profiler, "Профилировщик");
+                ui.separator();
+                ui.checkbox(&mut s.overlays.collision, "Оверлей: коллизия");
+                ui.checkbox(&mut s.overlays.topology, "Оверлей: комнаты");
+                ui.checkbox(&mut s.overlays.wireframe, "Оверлей: каркас");
             });
             ui.separator();
             ui.label("Вид:");

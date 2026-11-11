@@ -171,6 +171,16 @@ impl BoxWorld {
         }
     }
 
+    /// Все статические коробки (для оверлея коллизии в редакторе), порядок детерминирован.
+    pub fn static_boxes(&self) -> impl Iterator<Item = &(ObjectId, Aabb)> + '_ {
+        self.statics.values().flatten()
+    }
+
+    /// Все динамические коробки (закрытые двери, платформы).
+    pub fn dynamic_boxes(&self) -> impl Iterator<Item = (ObjectId, Aabb)> + '_ {
+        self.dynamics.iter().map(|(id, b)| (*id, *b))
+    }
+
     pub fn static_box_count(&self) -> usize {
         self.statics.values().map(Vec::len).sum()
     }

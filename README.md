@@ -65,7 +65,7 @@ cargo run -p astrocore-vertical-slice
 ```
 
 ```bash
-cargo run -p astrocore-server -- --data-dir ./data --listen 127.0.0.1:7777 --allow-edit
+cargo run -p astrocore-server -- --data-dir ./data --listen 127.0.0.1:7777 --allow-edit --backup-keep 5
 ```
 
 ```bash

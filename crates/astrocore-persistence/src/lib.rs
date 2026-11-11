@@ -13,6 +13,22 @@ use serde::{Deserialize, Serialize};
 const SNAPSHOT_FILE: &str = "snapshot.json";
 const SNAPSHOT_TMP: &str = "snapshot.json.tmp";
 const JOURNAL_FILE: &str = "journal.jsonl";
+const BACKUP_DIR: &str = "backups";
+
+fn check_backup_label(label: &str) -> Result<(), PersistError> {
+    let ok = !label.is_empty()
+        && label.len() <= 64
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok {
+        Ok(())
+    } else {
+        Err(PersistError::Migration(format!(
+            "неверная метка копии {label:?}"
+        )))
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PersistError {
@@ -60,13 +76,25 @@ pub struct Recovered {
 #[derive(Debug, Clone)]
 pub struct Store {
     dir: PathBuf,
+    /// Сколько автоматических копий хранить (0 — копии не делаются).
+    auto_backup_keep: usize,
 }
 
 impl Store {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Store, PersistError> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        Ok(Store { dir })
+        Ok(Store {
+            dir,
+            auto_backup_keep: 0,
+        })
+    }
+
+    /// После каждого снимка делать копию `snap-<ревизия>` и хранить `keep` последних.
+    #[must_use]
+    pub fn with_auto_backup(mut self, keep: usize) -> Self {
+        self.auto_backup_keep = keep;
+        self
     }
 
     pub fn dir(&self) -> &Path {
@@ -101,6 +129,91 @@ impl Store {
         sync_dir(&self.dir);
         let journal = File::create(self.dir.join(JOURNAL_FILE))?;
         journal.sync_all()?;
+        if self.auto_backup_keep > 0 {
+            let label = format!("snap-{:016}", world.revision().0);
+            // Копия той же ревизии уже есть (повторное сохранение без изменений) — это не ошибка.
+            if !self.dir.join(BACKUP_DIR).join(&label).exists() {
+                self.backup(&label)?;
+            }
+            self.prune_backups(self.auto_backup_keep)?;
+        }
+        Ok(())
+    }
+
+    /// Резервная копия снимка и журнала в `backups/<метка>`. Метка — буквы, цифры, `-`, `_`.
+    /// Копия делается через временный каталог и переименование, поэтому неполной не бывает.
+    pub fn backup(&self, label: &str) -> Result<PathBuf, PersistError> {
+        check_backup_label(label)?;
+        let root = self.dir.join(BACKUP_DIR);
+        let target = root.join(label);
+        if target.exists() {
+            return Err(PersistError::Migration(format!("копия {label} уже есть")));
+        }
+        let tmp = root.join(format!(".{label}.tmp"));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp)?;
+        for name in [SNAPSHOT_FILE, JOURNAL_FILE] {
+            let from = self.dir.join(name);
+            if from.is_file() {
+                fs::copy(&from, tmp.join(name))?;
+            }
+        }
+        fs::rename(&tmp, &target)?;
+        sync_dir(&root);
+        Ok(target)
+    }
+
+    /// Метки копий по возрастанию.
+    pub fn list_backups(&self) -> Result<Vec<String>, PersistError> {
+        let root = self.dir.join(BACKUP_DIR);
+        if !root.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<String> = fs::read_dir(&root)?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        out.sort();
+        Ok(out)
+    }
+
+    /// Оставить `keep` последних копий (по порядку меток), остальные удалить.
+    pub fn prune_backups(&self, keep: usize) -> Result<usize, PersistError> {
+        let all = self.list_backups()?;
+        let excess = all.len().saturating_sub(keep);
+        for label in &all[..excess] {
+            fs::remove_dir_all(self.dir.join(BACKUP_DIR).join(label))?;
+        }
+        Ok(excess)
+    }
+
+    /// Вернуть снимок и журнал из копии. Копия проверяется восстановлением до замены файлов.
+    pub fn restore_backup(&self, label: &str) -> Result<(), PersistError> {
+        check_backup_label(label)?;
+        let source = self.dir.join(BACKUP_DIR).join(label);
+        if !source.is_dir() {
+            return Err(PersistError::Migration(format!("копии {label} нет")));
+        }
+        // Проверка: копия должна восстанавливаться сама по себе.
+        let probe = Store {
+            dir: source.clone(),
+            auto_backup_keep: 0,
+        };
+        probe.recover()?;
+        for name in [SNAPSHOT_FILE, JOURNAL_FILE] {
+            let from = source.join(name);
+            let to = self.dir.join(name);
+            if from.is_file() {
+                let tmp = self.dir.join(format!("{name}.restore"));
+                fs::copy(&from, &tmp)?;
+                fs::rename(&tmp, &to)?;
+            } else if to.is_file() {
+                fs::remove_file(&to)?;
+            }
+        }
+        sync_dir(&self.dir);
         Ok(())
     }
 

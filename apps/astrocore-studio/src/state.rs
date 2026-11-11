@@ -108,12 +108,44 @@ pub struct StudioState {
     /// Шаг привязки перетаскивания гизмо, м (0 — без привязки).
     pub gizmo_snap: f32,
     gizmo_target: Option<StructureElement>,
+    pub overlays: Overlays,
+    overlay_cache: Option<OverlayCache>,
     /// Растёт при каждом изменении мира или режима просмотра — оболочка по нему обновляет рендер.
     pub stamp: u64,
 }
 
 /// Сколько строк консоли хранится.
 pub const CONSOLE_LIMIT: usize = 500;
+
+/// Какие оверлеи показывать в окне (раздел 19: коллизия, топология, каркас).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Overlays {
+    pub collision: bool,
+    pub topology: bool,
+    pub wireframe: bool,
+}
+
+/// Геометрия оверлеев текущего этажа; пересчитывается при смене ревизии, этажа или набора.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OverlayGeometry {
+    /// Коробки коллизии: (min, max).
+    pub collision: Vec<(Vec3, Vec3)>,
+    /// Ячейки комнат с номером комнаты: (комната, угол min, размер).
+    pub rooms: Vec<(u32, Vec3, f32)>,
+    /// Отрезки каркаса геометрии этажа.
+    pub wire: Vec<(Vec3, Vec3)>,
+}
+
+#[derive(Debug, Clone)]
+struct OverlayCache {
+    revision: u64,
+    floor: FloorId,
+    overlays: Overlays,
+    geometry: OverlayGeometry,
+}
+
+/// Лимит отрезков каркаса: большой мир не должен подвесить редактор.
+pub const MAX_WIRE_SEGMENTS: usize = 200_000;
 
 /// Длина осей гизмо, м.
 pub const GIZMO_LENGTH: f32 = 2.0;
@@ -185,6 +217,8 @@ impl StudioState {
             gizmo: None,
             gizmo_snap: 0.25,
             gizmo_target: None,
+            overlays: Overlays::default(),
+            overlay_cache: None,
             stamp: 1,
         }
     }
@@ -774,6 +808,88 @@ impl StudioState {
         if new != old {
             self.replace_element("Поворот", old, new);
         }
+    }
+
+    // ---- оверлеи --------------------------------------------------------------
+
+    /// Геометрия включённых оверлеев для текущего этажа (с кэшем по ревизии мира).
+    pub fn overlay_geometry(&mut self) -> &OverlayGeometry {
+        let revision = self.world().revision().0;
+        let fresh = self.overlay_cache.as_ref().is_some_and(|c| {
+            c.revision == revision && c.floor == self.floor && c.overlays == self.overlays
+        });
+        if !fresh {
+            let geometry = self.build_overlays();
+            self.overlay_cache = Some(OverlayCache {
+                revision,
+                floor: self.floor,
+                overlays: self.overlays,
+                geometry,
+            });
+        }
+        &self
+            .overlay_cache
+            .as_ref()
+            .expect("только что заполнен")
+            .geometry
+    }
+
+    fn build_overlays(&self) -> OverlayGeometry {
+        let mut g = OverlayGeometry::default();
+        let world = self.world();
+        let floor = self.floor;
+        if self.overlays.collision {
+            let bw = astrocore_physics::BoxWorld::from_world(world);
+            let (y0, y1) = world.floor(floor).map_or((f32::MIN, f32::MAX), |f| {
+                (f.base_y - 0.01, f.top_y() + 0.01)
+            });
+            g.collision = bw
+                .static_boxes()
+                .map(|(_, b)| *b)
+                .chain(bw.dynamic_boxes().map(|(_, b)| b))
+                .filter(|b| {
+                    let c = b.center().y;
+                    c >= y0 && c < y1
+                })
+                .map(|b| (b.min, b.max))
+                .collect();
+        }
+        if self.overlays.topology
+            && let (Ok(topo), Some(def)) = (
+                astrocore_spatial::Topology::build(world, floor),
+                world.floor(floor),
+            )
+        {
+            let step = world.config().grid_step_m;
+            for room in topo.interior_rooms() {
+                for c in &room.cells {
+                    g.rooms
+                        .push((room.id.0, c.min_corner(step, def.base_y), step));
+                }
+            }
+        }
+        if self.overlays.wireframe {
+            let mut segments = 0usize;
+            'chunks: for chunk in world.populated_chunks(floor) {
+                for (_, mesh) in
+                    astrocore_geometry::build_chunk_meshes_filtered(world, chunk, floor, &|_| true)
+                {
+                    for tri in mesh.indices.as_chunks::<3>().0 {
+                        let p = |i: u32| {
+                            let v = mesh.positions[i as usize];
+                            Vec3::new(v[0], v[1], v[2])
+                        };
+                        let (a, b, c) = (p(tri[0]), p(tri[1]), p(tri[2]));
+                        g.wire.extend([(a, b), (b, c), (c, a)]);
+                        segments += 3;
+                        if segments >= MAX_WIRE_SEGMENTS {
+                            break 'chunks;
+                        }
+                    }
+                }
+            }
+        }
+        g
     }
 
     // ---- префабы --------------------------------------------------------------
