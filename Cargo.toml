@@ -13,6 +13,7 @@ members = [
     "crates/astrocore-runtime",
     "crates/astrocore-physics",
     "crates/astrocore-physics-avian",
+    "crates/astrocore-lightyear",
     "crates/astrocore-network",
     "crates/astrocore-editor",
     "crates/astrocore-render",
@@ -53,6 +54,7 @@ astrocore-prefabs = { path = "crates/astrocore-prefabs" }
 astrocore-runtime = { path = "crates/astrocore-runtime" }
 astrocore-physics = { path = "crates/astrocore-physics" }
 astrocore-physics-avian = { path = "crates/astrocore-physics-avian" }
+astrocore-lightyear = { path = "crates/astrocore-lightyear" }
 astrocore-network = { path = "crates/astrocore-network" }
 astrocore-editor = { path = "crates/astrocore-editor" }
 astrocore-render = { path = "crates/astrocore-render" }
