@@ -1485,6 +1485,49 @@ mod game_commands {
     }
 
     #[test]
+    fn a_frozen_player_does_not_move_until_released() {
+        struct Freezer;
+        impl GameModule for Freezer {
+            fn id(&self) -> &str {
+                "test.freezer"
+            }
+            fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+                if let HookEvent::Command { actor, kind, .. } = event {
+                    match kind.as_str() {
+                        "freeze" => ctx.freeze(*actor, true),
+                        "thaw" => ctx.freeze(*actor, false),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Freezer)).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        let flat = |h: &Harness| {
+            let p = h.client(a).position();
+            (p.x, p.z)
+        };
+        let start = flat(&h);
+        let packet = h.client(a).command_packet("freeze", vec![]).unwrap();
+        h.send(a, packet);
+        for _ in 0..10 {
+            h.input(a, 0, 1, 0.0);
+        }
+        assert_eq!(flat(&h), start, "заморожен — на месте");
+        let packet = h.client(a).command_packet("thaw", vec![]).unwrap();
+        h.send(a, packet);
+        for _ in 0..10 {
+            h.input(a, 0, 1, 0.0);
+        }
+        assert_ne!(flat(&h), start, "разморожен — пошёл");
+    }
+
+    #[test]
     fn modules_receive_a_tick_with_the_tick_duration_every_server_tick() {
         use std::sync::{Arc, Mutex};
         struct Clock(Arc<Mutex<Vec<(u32, f32)>>>);

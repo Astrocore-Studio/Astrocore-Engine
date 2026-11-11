@@ -60,6 +60,7 @@ pub struct HookContext<'a> {
     door_requests: Vec<DoorRequest>,
     commands: Vec<WorldCommand>,
     components: Vec<ComponentUpdate>,
+    freezes: Vec<(NetworkEntityId, bool)>,
     log: Vec<String>,
 }
 
@@ -107,11 +108,17 @@ impl<'a> HookContext<'a> {
             door_requests: Vec::new(),
             commands: Vec::new(),
             components: Vec::new(),
+            freezes: Vec::new(),
             log: Vec::new(),
         }
     }
 
     /// Установить реплицируемые данные сущности; вид должен быть зарегистрирован на сервере.
+    /// Заморозить игрока или снять заморозку; действует, пока модуль не снимет её.
+    pub fn freeze(&mut self, net: NetworkEntityId, frozen: bool) {
+        self.freezes.push((net, frozen));
+    }
+
     pub fn set_component(&mut self, net: NetworkEntityId, kind: impl Into<String>, data: Vec<u8>) {
         self.components.push(ComponentUpdate {
             net,
@@ -193,6 +200,7 @@ impl<'a> HookContext<'a> {
         HookOutput {
             commands: self.commands,
             components: self.components,
+            freezes: self.freezes,
             doors: self.door_requests,
             log: self.log,
         }
@@ -213,6 +221,9 @@ impl<'a> HookContext<'a> {
 pub struct HookOutput {
     pub commands: Vec<WorldCommand>,
     pub components: Vec<ComponentUpdate>,
+    /// Просьбы заморозить (`true`) или освободить игрока: у замороженного команды движения
+    /// не двигают персонажа (оглушение, критическое состояние).
+    pub freezes: Vec<(NetworkEntityId, bool)>,
     pub doors: Vec<DoorRequest>,
     pub log: Vec<String>,
 }
@@ -329,6 +340,7 @@ impl ModuleHost {
             self.modules[i].handle(&mut ctx, event);
             out.commands.append(&mut ctx.commands);
             out.components.append(&mut ctx.components);
+            out.freezes.append(&mut ctx.freezes);
             out.doors.append(&mut ctx.door_requests);
             out.log.append(&mut ctx.log);
         }

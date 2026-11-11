@@ -175,6 +175,8 @@ pub struct GameServer {
     replication: astrocore_api::ReplicationRegistry,
     /// Глубина вложенных вызовов хуков: ответные действия модулей не должны зацикливаться.
     hook_depth: u8,
+    /// Игроки, которым модуль запретил двигаться.
+    frozen: BTreeSet<NetworkEntityId>,
     content: BTreeMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
     content_queue: BTreeMap<ConnId, VecDeque<([u8; 32], u32)>>,
     /// Последние значения реплицируемых данных: (сущность, вид) → (номер, байты).
@@ -204,6 +206,7 @@ impl GameServer {
             modules: None,
             replication: astrocore_api::ReplicationRegistry::new(),
             hook_depth: 0,
+            frozen: BTreeSet::new(),
             content: BTreeMap::new(),
             content_queue: BTreeMap::new(),
             components: BTreeMap::new(),
@@ -1059,6 +1062,13 @@ impl GameServer {
         for r in result.doors {
             self.apply_door_request(r, out);
         }
+        for (net, frozen) in result.freezes {
+            if frozen {
+                self.frozen.insert(net);
+            } else {
+                self.frozen.remove(&net);
+            }
+        }
         for u in result.components {
             // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
             if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {
@@ -1117,9 +1127,13 @@ impl GameServer {
             // Симуляция игрока идёт только по его командам: одна команда — один шаг, точно как
             // у клиента при предсказании. Игрок без ввода не симулируется (не «падает» и не
             // дрейфует между командами), поэтому клиент и сервер не расходятся из-за задержек сети.
-            let Some(cmd) = p.queue.pop_front() else {
+            let Some(mut cmd) = p.queue.pop_front() else {
                 continue;
             };
+            if self.frozen.contains(&p.net) {
+                cmd.move_x = 0;
+                cmd.move_z = 0;
+            }
             let before = p.state.pos;
             apply_input(
                 &self.physics,
