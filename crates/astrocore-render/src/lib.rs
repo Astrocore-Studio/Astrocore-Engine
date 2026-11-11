@@ -23,7 +23,7 @@ pub use lighting::{EmissiveMaterials, LightKind, LightSource, LightingPlugin, Sh
 pub use lod::{DrawDistance, DrawDistancePlugin};
 pub use manifest::{
     ManifestError, MaterialTextures, PlacementSprite, PlacementSprites, PlacementSpritesPlugin,
-    RenderManifest,
+    RenderManifest, SpriteLayout,
 };
 pub use meshes::{material_color, to_bevy_mesh};
 pub use models::ModelLibrary;

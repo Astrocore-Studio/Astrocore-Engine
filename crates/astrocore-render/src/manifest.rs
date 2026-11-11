@@ -32,6 +32,27 @@ pub struct SpriteEntry {
     /// Размер в метрах: ширина и высота.
     #[serde(default = "default_sprite_size")]
     pub size: [f32; 2],
+    /// Как рисовать: стоячий билборд (по умолчанию) или лежащий на полу плашмя с толщиной.
+    #[serde(default)]
+    pub layout: SpriteLayout,
+    /// Толщина лежащего спрайта, м (слои спрайта, уложенные стопкой); по умолчанию 3 см.
+    #[serde(default = "default_thickness")]
+    pub thickness: f32,
+}
+
+/// Вид размещения в мире.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpriteLayout {
+    /// Вертикальный спрайт, повёрнутый к камере.
+    #[default]
+    Billboard,
+    /// Спрайт лежит на полу плашмя и имеет толщину.
+    Flat,
+}
+
+fn default_thickness() -> f32 {
+    0.03
 }
 
 fn default_sprite_size() -> [f32; 2] {
@@ -93,6 +114,8 @@ pub struct MaterialTextures(pub HashMap<PrototypeId, Handle<Image>>);
 pub struct PlacementSprite {
     pub image: Handle<Image>,
     pub size: Vec2,
+    pub layout: SpriteLayout,
+    pub thickness: f32,
 }
 
 /// Спрайты размещений по идентификатору прототипа.
@@ -198,6 +221,8 @@ impl RenderManifest {
                 PlacementSprite {
                     image: images.add(img),
                     size: Vec2::new(e.size[0], e.size[1]),
+                    layout: e.layout,
+                    thickness: e.thickness.clamp(0.001, 0.5),
                 },
             );
         }
@@ -274,6 +299,11 @@ fn sync_placements(
                 .insert(Transform::from_translation(feet));
             continue;
         }
+        if sprite.layout == SpriteLayout::Flat {
+            let e = spawn_flat(&mut commands, &mut meshes, &mut materials, id, feet, sprite);
+            commands.entity(e).insert(PlacementBillboard(id));
+            continue;
+        }
         let sheet = SpriteSheet {
             image: sprite.image.clone(),
             columns: 1,
@@ -292,9 +322,67 @@ fn sync_placements(
     }
 }
 
+/// Сколько слоёв в стопке лежащего спрайта.
+const FLAT_LAYERS: usize = 6;
+
+/// Лежащий спрайт: стопка одинаковых слоёв с вырезом по прозрачности. Сверху виден рисунок, сбоку —
+/// толщина; нижние слои темнее. Поворот вокруг вертикали берётся из идентификатора объекта, чтобы
+/// лежащие вещи не стояли строем.
+fn spawn_flat(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    id: ObjectId,
+    feet: Vec3,
+    sprite: &PlacementSprite,
+) -> Entity {
+    let quad = meshes.add(Rectangle::new(sprite.size.x, sprite.size.y));
+    let yaw = (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0;
+    let step = sprite.thickness / FLAT_LAYERS as f32;
+    commands
+        .spawn((
+            Transform::from_translation(feet + Vec3::Y * 0.004)
+                .with_rotation(Quat::from_rotation_y(yaw)),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            for i in 0..FLAT_LAYERS {
+                let shade = 0.55 + 0.45 * i as f32 / (FLAT_LAYERS - 1) as f32;
+                let material = materials.add(StandardMaterial {
+                    base_color: Color::srgb(shade, shade, shade),
+                    base_color_texture: Some(sprite.image.clone()),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                });
+                p.spawn((
+                    Mesh3d(quad.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_xyz(0.0, step * i as f32, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                ));
+            }
+        })
+        .id()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_layout_and_thickness_parse() {
+        let m: RenderManifest = serde_json::from_str(
+            r#"{"sprites":{"ss14:pen":{"image":"w.png","layout":"flat","thickness":0.02},"ss14:can":{"image":"c.png"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(m.sprites["ss14:pen"].layout, SpriteLayout::Flat);
+        assert!((m.sprites["ss14:pen"].thickness - 0.02).abs() < 1e-6);
+        assert_eq!(m.sprites["ss14:can"].layout, SpriteLayout::Billboard);
+        assert!((m.sprites["ss14:can"].thickness - 0.03).abs() < 1e-6);
+    }
 
     #[test]
     fn manifest_parses_with_defaults_and_rejects_unsafe_paths() {
