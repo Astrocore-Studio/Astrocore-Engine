@@ -26,7 +26,7 @@ astrocore-client — клиент Astrocore
 
   astrocore-client ... [--interact-command вид]  клавиша E: игровая команда с ближайшим объектом
   astrocore-client ... [--render-manifest файл.json]  текстуры и спрайты предметов
-  astrocore-client --demo [--ortho] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
+  astrocore-client --demo [--ortho] [--first-person] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
   astrocore-client --connect-lightyear 127.0.0.1:7779 --ly-key <hex32> [--assets папка]
   astrocore-client --connect-udp 127.0.0.1:7778 --server-key <hex32> [--assets папка]
@@ -51,6 +51,8 @@ pub struct Args {
     pub screenshot: Option<PathBuf>,
     pub frames: u32,
     pub ortho: bool,
+    /// Начать с вида от первого лица (V переключает).
+    pub first_person: bool,
     pub shadows: bool,
     pub stats: bool,
 }
@@ -74,6 +76,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         screenshot: None,
         frames: 20,
         ortho: false,
+        first_person: false,
         shadows: true,
         stats: false,
     };
@@ -83,6 +86,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         match arg.as_str() {
             "--demo" => a.demo = true,
             "--ortho" => a.ortho = true,
+            "--first-person" => a.first_person = true,
             "--no-shadows" => a.shadows = false,
             "--stats" => a.stats = true,
             "--connect" => a.connect = Some(value("--connect")?),
@@ -154,10 +158,10 @@ pub struct PlayerSprite {
 
 /// Состояние взгляда игрока.
 #[derive(Resource)]
-struct Look {
-    yaw: f32,
-    pitch: f32,
-    first_person: bool,
+pub struct Look {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub first_person: bool,
 }
 
 enum Transport {
@@ -396,11 +400,15 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
     } else {
         CameraMode::Perspective
     };
-    let (cam_yaw, cam_pitch, cam_distance) = args.camera.unwrap_or((0.7, 0.5, 34.0));
+    let (cam_yaw, cam_pitch, cam_distance) = args.camera.unwrap_or(if args.first_person {
+        (0.0, 0.0, 0.0)
+    } else {
+        (0.7, 0.5, 34.0)
+    });
     commands.insert_resource(Look {
         yaw: cam_yaw,
         pitch: cam_pitch,
-        first_person: false,
+        first_person: args.first_person,
     });
     commands.spawn((
         Camera3d::default(),
@@ -461,6 +469,8 @@ fn setup_demo_world(
 }
 
 fn look_input(
+    mouse: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     args: Res<Args>,
     mut look: ResMut<Look>,
@@ -469,6 +479,11 @@ fn look_input(
 ) {
     let dt = time.delta_secs();
     let turn = 1.6 * dt;
+    // Обзор мышью: правая кнопка зажата — поворот головы (курсор остаётся для интерфейса).
+    if buttons.pressed(MouseButton::Right) {
+        look.yaw -= mouse.delta.x * 0.004;
+        look.pitch = (look.pitch - mouse.delta.y * 0.004).clamp(-1.2, 1.4);
+    }
     if keys.pressed(KeyCode::KeyQ) || keys.pressed(KeyCode::ArrowLeft) {
         look.yaw += turn;
     }
