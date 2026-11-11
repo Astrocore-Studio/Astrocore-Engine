@@ -23,6 +23,7 @@ use bevy::window::WindowResolution;
 const USAGE: &str = "\
 astrocore-client — клиент Astrocore
 
+  astrocore-client ... [--render-manifest файл.json]  текстуры и спрайты предметов
   astrocore-client --demo [--ortho] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
   astrocore-client --connect-lightyear 127.0.0.1:7779 --ly-key <hex32> [--assets папка]
@@ -38,6 +39,7 @@ struct Args {
     ly_key: Option<[u8; 32]>,
     server_key: Option<[u8; 32]>,
     assets: Option<PathBuf>,
+    render_manifest: Option<PathBuf>,
     build: String,
     world_id: String,
     screenshot: Option<PathBuf>,
@@ -56,6 +58,7 @@ fn parse_args() -> Result<Args, String> {
         ly_key: None,
         server_key: None,
         assets: None,
+        render_manifest: None,
         build: "client".into(),
         world_id: "world".into(),
         screenshot: None,
@@ -86,6 +89,9 @@ fn parse_args() -> Result<Args, String> {
                     parse_hex32(&value("--ly-key")?)
                         .ok_or("--ly-key: нужно 64 шестнадцатеричных символа")?,
                 )
+            }
+            "--render-manifest" => {
+                a.render_manifest = Some(PathBuf::from(value("--render-manifest")?))
             }
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
@@ -202,6 +208,7 @@ fn main() {
         LightingPlugin,
         RenderDiagnosticsPlugin,
         DrawDistancePlugin,
+        astrocore_render::PlacementSpritesPlugin,
     ))
     .insert_resource(Time::<Fixed>::from_hz(20.0))
     .insert_resource(ClearColor(Color::srgb(0.53, 0.66, 0.80)))
@@ -222,7 +229,7 @@ fn main() {
     })
     .init_resource::<RemoteSprites>()
     .insert_resource(args.clone())
-    .add_systems(Startup, setup)
+    .add_systems(Startup, (setup, load_render_manifest))
     .add_systems(Update, (look_input, drive_camera).chain());
 
     if args.connect.is_some() || args.connect_udp.is_some() || args.connect_lightyear.is_some() {
@@ -302,6 +309,35 @@ fn main() {
         app.add_systems(Update, screenshot_and_exit);
     }
     app.run();
+}
+
+/// Текстуры материалов и спрайты предметов из манифеста рендера (`--render-manifest`).
+fn load_render_manifest(
+    args: Res<Args>,
+    mut images: ResMut<Assets<Image>>,
+    mut commands: Commands,
+) {
+    let Some(path) = &args.render_manifest else {
+        return;
+    };
+    let base = path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let result =
+        astrocore_render::RenderManifest::load(path).and_then(|m| m.install(&base, &mut images));
+    match result {
+        Ok((textures, sprites)) => {
+            println!(
+                "манифест рендера: текстур {}, спрайтов {}",
+                textures.0.len(),
+                sprites.0.len()
+            );
+            commands.insert_resource(textures);
+            commands.insert_resource(sprites);
+        }
+        Err(e) => eprintln!("манифест рендера не загружен: {e}"),
+    }
 }
 
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Args>) {

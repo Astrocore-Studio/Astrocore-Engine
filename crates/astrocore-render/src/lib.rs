@@ -3,6 +3,7 @@ pub mod camera;
 pub mod diagnostics;
 pub mod lighting;
 pub mod lod;
+pub mod manifest;
 pub mod meshes;
 pub mod models;
 pub mod terrain;
@@ -18,6 +19,10 @@ pub use camera::{CameraMode, CameraRig, CameraRigPlugin};
 pub use diagnostics::{RenderDiagnosticsPlugin, RenderStats, RenderStatsConfig};
 pub use lighting::{EmissiveMaterials, LightKind, LightSource, LightingPlugin, ShadowSettings};
 pub use lod::{DrawDistance, DrawDistancePlugin};
+pub use manifest::{
+    ManifestError, MaterialTextures, PlacementSprite, PlacementSprites, PlacementSpritesPlugin,
+    RenderManifest,
+};
 pub use meshes::{material_color, to_bevy_mesh};
 pub use models::ModelLibrary;
 pub use terrain::{RenderedTerrain, TerrainPlugin};
@@ -55,9 +60,16 @@ pub struct MaterialCache {
     handles: HashMap<PrototypeId, Handle<StandardMaterial>>,
     /// Излучающие материалы; задаются до первого использования прототипа.
     pub emissive: EmissiveMaterials,
+    /// Текстуры материалов (из манифеста рендера).
+    pub textures: HashMap<PrototypeId, Handle<Image>>,
 }
 
 impl MaterialCache {
+    /// Забыть созданные материалы (после смены текстур они создаются заново).
+    pub fn clear(&mut self) {
+        self.handles.clear();
+    }
+
     pub fn get_or_create(
         &mut self,
         id: &PrototypeId,
@@ -66,8 +78,14 @@ impl MaterialCache {
         self.handles
             .entry(id.clone())
             .or_insert_with(|| {
+                let texture = self.textures.get(id).cloned();
                 materials.add(StandardMaterial {
-                    base_color: material_color(id),
+                    base_color: if texture.is_some() {
+                        Color::WHITE
+                    } else {
+                        material_color(id)
+                    },
+                    base_color_texture: texture,
                     perceptual_roughness: 0.9,
                     emissive: self.emissive.linear(id).unwrap_or(LinearRgba::BLACK),
                     ..default()

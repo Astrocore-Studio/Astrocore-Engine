@@ -34,20 +34,26 @@ impl MeshData {
     /// с нормалью, порядок разворачивается — треугольники всегда смотрят наружу.
     fn push_quad(&mut self, corners: [Vec3; 4], normal: Vec3) {
         let mut corners = corners;
+        // UV в метрах: текстура повторяется на каждый метр грани (стена 1×4 м — четыре плитки
+        // по высоте), а не растягивается на весь квадрат.
+        let (w, h) = (
+            (corners[1] - corners[0]).length(),
+            (corners[3] - corners[0]).length(),
+        );
+        let uvs = [[0.0, h], [w, h], [w, 0.0], [0.0, 0.0]];
         let face = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
         let face = if face.length_squared() < 1e-12 {
             (corners[2] - corners[0]).cross(corners[3] - corners[0])
         } else {
             face
         };
+        let mut uvs = uvs;
         if face.dot(normal) < 0.0 {
             corners.reverse();
+            uvs.reverse();
         }
         let base = self.positions.len() as u32;
-        for (c, uv) in corners
-            .iter()
-            .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        {
+        for (c, uv) in corners.iter().zip(uvs) {
             self.positions.push(c.to_array());
             self.normals.push(normal.to_array());
             self.uvs.push(uv);
