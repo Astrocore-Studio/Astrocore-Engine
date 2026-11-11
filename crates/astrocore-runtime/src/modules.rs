@@ -132,6 +132,16 @@ impl<'a> HookContext<'a> {
         self.positions.get(&net).copied()
     }
 
+    /// Забрать накопленное: команды мира, значения данных и журнал (для проверки модулей без
+    /// сервера и сети).
+    pub fn into_output(self) -> HookOutput {
+        HookOutput {
+            commands: self.commands,
+            components: self.components,
+            log: self.log,
+        }
+    }
+
     /// Запросить изменение мира; применит движок с валидацией.
     pub fn request(&mut self, command: WorldCommand) {
         self.commands.push(command);
