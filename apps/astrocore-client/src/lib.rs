@@ -658,7 +658,12 @@ fn sync_door_states(
 /// E: игровая команда взаимодействия с ближайшей целью. Вид команды задаёт игра
 /// (`--interact-command`), данные — идентификатор объекта мира (16 байт, big-endian): предмет
 /// на земле (авторский объект) или дверь (структурный элемент).
-fn interact_key(keys: Res<ButtonInput<KeyCode>>, args: Res<Args>, mut net: NonSendMut<Net>) {
+fn interact_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    args: Res<Args>,
+    sprites: Res<astrocore_render::PlacementSprites>,
+    mut net: NonSendMut<Net>,
+) {
     let Some(kind) = args.interact_command.as_deref() else {
         return;
     };
@@ -679,7 +684,10 @@ fn interact_key(keys: Res<ButtonInput<KeyCode>>, args: Res<Args>, mut net: NonSe
         }
     };
     for o in world.authored() {
-        if matches!(o.kind, astrocore_world::AuthoredKind::Placement { .. }) {
+        // Невидимые объекты (светильники под потолком, служебные метки) целью E не бывают.
+        if let astrocore_world::AuthoredKind::Placement { prototype } = &o.kind
+            && sprites.0.contains_key(prototype)
+        {
             consider(o.id, (o.min() + o.max()) * 0.5);
         }
     }
