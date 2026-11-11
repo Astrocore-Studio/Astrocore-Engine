@@ -4,7 +4,7 @@ description = "Пример: комнаты, порталы и каналы пр
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-license-file.workspace = true
+license.workspace = true
 
 [dependencies]
 astrocore-api.workspace = true

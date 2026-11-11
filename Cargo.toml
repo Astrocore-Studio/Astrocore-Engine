@@ -35,7 +35,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 publish = false
-license-file = "LICENSE"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 tracing = "0.1"

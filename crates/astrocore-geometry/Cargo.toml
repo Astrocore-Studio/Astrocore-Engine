@@ -4,7 +4,7 @@ description = "Генерация мешей структурной геомет
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-license-file.workspace = true
+license.workspace = true
 
 [dependencies]
 tracing.workspace = true

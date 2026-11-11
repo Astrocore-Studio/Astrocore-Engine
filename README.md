@@ -125,4 +125,6 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 
 ## Лицензия
 
-Проприетарная, все права защищены — см. [`LICENSE`](LICENSE).
+GNU Affero General Public License v3.0 или новее (`AGPL-3.0-or-later`) — см. [`LICENSE`](LICENSE).
+Если вы запускаете изменённый движок как сетевой сервис, AGPL обязывает предоставить пользователям
+сервиса исходный код ваших изменений.

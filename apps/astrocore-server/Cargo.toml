@@ -4,7 +4,7 @@ description = "Headless-сервер Astrocore: загрузка мира, фи�
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-license-file.workspace = true
+license.workspace = true
 
 [lib]
 name = "astrocore_server"
