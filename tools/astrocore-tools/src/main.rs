@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use astrocore_tools::{bench, compile_project, make_demo_project, validate_project, verify_bundle};
+use astrocore_tools::{
+    bench, compile_project, make_demo_project, upgrade_server_map, validate_project, verify_bundle,
+};
 
 const USAGE: &str = "\
 astrocore-tools — инструменты Astrocore
@@ -10,6 +12,7 @@ astrocore-tools — инструменты Astrocore
   astrocore-tools validate <файл.acproj>
   astrocore-tools compile <файл.acproj> --out <каталог> --game <id>
   astrocore-tools verify <каталог> --game <id>
+  astrocore-tools upgrade-map --base <N.acproj> --new <N+1.acproj> --data-dir <каталог> [--prefer-author]
   astrocore-tools bench [--blocks N]
 ";
 
@@ -66,6 +69,36 @@ fn main() -> ExitCode {
                 .map(|m| println!("пакеты совместимы: игра {}, мир {}", m.game_id, m.world_id))
                 .map_err(|e| e.to_string()),
             _ => Err("нужны каталог и --game".into()),
+        },
+        Some("upgrade-map") => match (
+            arg_value(&args, "--base"),
+            arg_value(&args, "--new"),
+            arg_value(&args, "--data-dir"),
+        ) {
+            (Some(base), Some(new), Some(dir)) => {
+                let policy = if args.iter().any(|a| a == "--prefer-author") {
+                    astrocore_persistence::upgrade::ConflictPolicy::PreferAuthor
+                } else {
+                    astrocore_persistence::upgrade::ConflictPolicy::KeepRuntime
+                };
+                upgrade_server_map(
+                    &PathBuf::from(base),
+                    &PathBuf::from(new),
+                    &PathBuf::from(dir),
+                    policy,
+                )
+                .map(|r| {
+                    println!("карта обновлена: {}", r.summary());
+                    for c in &r.conflicts {
+                        println!(
+                            "  конфликт {:?} объект {:?} этаж {:?}: {} ({:?})",
+                            c.kind, c.id, c.floor, c.detail, c.resolution
+                        );
+                    }
+                })
+                .map_err(|e| e.to_string())
+            }
+            _ => Err("нужны --base, --new и --data-dir".into()),
         },
         Some("bench") => {
             let blocks = arg_value(&args, "--blocks")

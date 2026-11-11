@@ -1225,3 +1225,107 @@ fn copying_freeform_objects_transforms_position_and_yaw() {
     };
     assert!((mf.position(1.0)[0] + 3.25).abs() < 2e-3, "x → −x");
 }
+
+mod gizmo_and_diff {
+    use astrocore_math::glam::Vec3;
+
+    use crate::diff::diff_worlds;
+    use crate::gizmo::{Axis, AxisDrag, Ray, pick_axis, snap, yaw_toward};
+
+    use super::*;
+
+    fn ray(from: Vec3, to: Vec3) -> Ray {
+        Ray {
+            origin: from,
+            dir: (to - from).normalize(),
+        }
+    }
+
+    #[test]
+    fn picks_the_axis_under_the_cursor() {
+        let o = Vec3::new(10.0, 0.0, 10.0);
+        let cam = Vec3::new(14.0, 8.0, 14.0);
+        // Курсор у середины оси X (1 м от начала).
+        assert_eq!(
+            pick_axis(o, ray(cam, o + Vec3::X), 2.0, 0.15),
+            Some(Axis::X)
+        );
+        assert_eq!(
+            pick_axis(o, ray(cam, o + Vec3::Y), 2.0, 0.15),
+            Some(Axis::Y)
+        );
+        assert_eq!(
+            pick_axis(o, ray(cam, o + Vec3::Z), 2.0, 0.15),
+            Some(Axis::Z)
+        );
+        // Мимо и за пределами отрезка.
+        assert_eq!(
+            pick_axis(o, ray(cam, o + Vec3::new(5.0, 0.0, 5.0)), 2.0, 0.15),
+            None
+        );
+        assert_eq!(pick_axis(o, ray(cam, o + Vec3::X * 3.0), 2.0, 0.15), None);
+    }
+
+    #[test]
+    fn axis_drag_moves_only_along_the_axis_without_jumping() {
+        let o = Vec3::new(0.0, 0.0, 0.0);
+        let cam = Vec3::new(5.0, 6.0, 5.0);
+        let grab = ray(cam, o + Vec3::X * 1.0);
+        let drag = AxisDrag::begin(Axis::X, o, grab).unwrap();
+        assert!(
+            drag.delta(grab).length() < 1e-4,
+            "в точке захвата сдвига нет"
+        );
+        let d = drag.delta(ray(cam, o + Vec3::X * 3.5));
+        assert!((d - Vec3::new(2.5, 0.0, 0.0)).length() < 1e-3, "{d}");
+        // Луч вдоль оси (параллелен) не ломает перетаскивание.
+        let parallel = Ray {
+            origin: Vec3::new(-5.0, 0.3, 0.0),
+            dir: Vec3::X,
+        };
+        assert_eq!(drag.delta(parallel), Vec3::ZERO);
+    }
+
+    #[test]
+    fn yaw_follows_the_cursor_on_the_floor_plane() {
+        let o = Vec3::new(0.0, 0.0, 0.0);
+        let down = |p: Vec3| Ray {
+            origin: Vec3::new(p.x, 10.0, p.z),
+            dir: Vec3::NEG_Y,
+        };
+        // Вперёд (−Z) — ноль; −X — +90° (согласовано с wish_direction); +X — −90°.
+        assert!(
+            yaw_toward(o, down(Vec3::new(0.0, 0.0, -3.0)))
+                .unwrap()
+                .abs()
+                < 1e-3
+        );
+        assert!((yaw_toward(o, down(Vec3::new(-3.0, 0.0, 0.0))).unwrap() - 90.0).abs() < 1e-3);
+        assert!((yaw_toward(o, down(Vec3::new(3.0, 0.0, 0.0))).unwrap() + 90.0).abs() < 1e-3);
+        let horizontal = Ray {
+            origin: Vec3::new(0.0, 5.0, 0.0),
+            dir: Vec3::X,
+        };
+        assert!(yaw_toward(o, horizontal).is_none());
+        assert_eq!(snap(1.26, 0.25), 1.25);
+        assert_eq!(snap(1.26, 0.0), 1.26);
+    }
+
+    #[test]
+    fn world_diff_lists_added_removed_and_modified() {
+        let a = session(1);
+        let mut b = session(1);
+        let before = b.world().clone();
+        let (id, cmd) = tools::add_floor_above(b.world(), "верх", 3.0);
+        b.execute("этаж", vec![cmd]).unwrap();
+        let d = diff_worlds(&before, b.world());
+        assert_eq!(d.floors_added, vec![id]);
+        assert!(d.added.is_empty() && d.removed.is_empty());
+        assert!(diff_worlds(a.world(), a.world()).is_empty());
+        assert_eq!(diff_worlds(a.world(), a.world()).summary(), "Без изменений");
+        assert!(d.summary().contains("этажей: +1"));
+        // Обратное направление меняет роли.
+        let back = diff_worlds(b.world(), &before);
+        assert_eq!(back.floors_removed, vec![id]);
+    }
+}

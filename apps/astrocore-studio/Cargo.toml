@@ -12,6 +12,7 @@ astrocore-editor.workspace = true
 astrocore-geometry.workspace = true
 astrocore-math.workspace = true
 astrocore-network.workspace = true
+astrocore-prefabs.workspace = true
 astrocore-render.workspace = true
 astrocore-sprites.workspace = true
 astrocore-world.workspace = true

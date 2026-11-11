@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use astrocore_core::{ObjectId, PrototypeId};
 use astrocore_editor::EditSession;
-use astrocore_editor::project::Project;
+use astrocore_editor::diff::{WorldDiff, diff_worlds};
+use astrocore_editor::gizmo::{Axis, AxisDrag, Ray, pick_axis, snap, yaw_toward};
+use astrocore_editor::project::{InstanceRecord, Project};
 use astrocore_editor::snap::{nearest_edge, snap_cell, snap_vertex};
 use astrocore_editor::tools::{self, IdGen, RandomIds, ToolError};
 use astrocore_editor::validate::{Finding, Severity, has_errors, validate_map};
@@ -13,7 +15,8 @@ use astrocore_math::glam::Vec3;
 
 /// Фильтр видимости элементов для рендера.
 pub type ElementFilter = Arc<dyn Fn(&StructureElement) -> bool + Send + Sync>;
-use astrocore_math::{Facing, GridCell};
+use astrocore_math::{Facing, GridCell, GridTransform};
+use astrocore_prefabs::{PrefabInstance, PrefabRegistry};
 use astrocore_world::{
     FloorDef, FloorId, OpeningKind, Placement, SlotKey, StructureElement, StructureKind, World,
     WorldCommand, WorldConfig,
@@ -26,16 +29,18 @@ pub enum Tool {
     Room,
     Door,
     Stair,
+    Model,
     Delete,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 7] = [
         Tool::Select,
         Tool::WallLine,
         Tool::Room,
         Tool::Door,
         Tool::Stair,
+        Tool::Model,
         Tool::Delete,
     ];
 
@@ -46,6 +51,7 @@ impl Tool {
             Tool::Room => "Комната",
             Tool::Door => "Дверь",
             Tool::Stair => "Лестница",
+            Tool::Model => "Модель",
             Tool::Delete => "Удалить",
         }
     }
@@ -89,8 +95,45 @@ pub struct StudioState {
     pub project_path: Option<PathBuf>,
     anchor: Option<Vec3>,
     pub preview: Preview,
+    /// Идентификатор модели для инструмента «Модель» (`ns:имя`; файл `ns_имя.glb`).
+    pub model: String,
+    pub model_half: [f32; 3],
+    pub prefabs: PrefabRegistry,
+    pub instances: Vec<InstanceRecord>,
+    /// Консоль: журнал действий и сообщений (последние `CONSOLE_LIMIT` строк).
+    pub console: Vec<String>,
+    /// Мир на момент открытия/сохранения — основа панели различий.
+    baseline: Option<World>,
+    gizmo: Option<AxisDrag>,
+    /// Шаг привязки перетаскивания гизмо, м (0 — без привязки).
+    pub gizmo_snap: f32,
+    gizmo_target: Option<StructureElement>,
     /// Растёт при каждом изменении мира или режима просмотра — оболочка по нему обновляет рендер.
     pub stamp: u64,
+}
+
+/// Сколько строк консоли хранится.
+pub const CONSOLE_LIMIT: usize = 500;
+
+/// Длина осей гизмо, м.
+pub const GIZMO_LENGTH: f32 = 2.0;
+
+/// Поля свободной модели для панели свойств.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreeFields {
+    pub position: [f32; 3],
+    pub yaw_deg: f32,
+    pub half_m: [f32; 3],
+}
+
+/// Редактируемые поля выбранного элемента.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inspector {
+    pub id: ObjectId,
+    pub kind: String,
+    pub material: String,
+    pub thickness: f32,
+    pub free: Option<FreeFields>,
 }
 
 fn new_world() -> World {
@@ -133,6 +176,15 @@ impl StudioState {
             project_path: None,
             anchor: None,
             preview: Preview::None,
+            model: "studio:model".into(),
+            model_half: [0.5, 1.0, 0.5],
+            prefabs: PrefabRegistry::new(),
+            instances: Vec::new(),
+            console: vec!["Studio запущена".into()],
+            baseline: None,
+            gizmo: None,
+            gizmo_snap: 0.25,
+            gizmo_target: None,
             stamp: 1,
         }
     }
@@ -149,6 +201,16 @@ impl StudioState {
         self.world().config().grid_step_m
     }
 
+    /// Показать сообщение в строке состояния и записать в консоль.
+    pub fn say(&mut self, msg: String) {
+        self.console.push(msg.clone());
+        if self.console.len() > CONSOLE_LIMIT {
+            let extra = self.console.len() - CONSOLE_LIMIT;
+            self.console.drain(..extra);
+        }
+        self.status = msg;
+    }
+
     fn material_id(&self) -> Result<PrototypeId, String> {
         PrototypeId::new(self.material.trim()).map_err(|e| format!("материал: {e}"))
     }
@@ -156,11 +218,11 @@ impl StudioState {
     fn report(&mut self, label: &str, result: Result<(), String>) {
         match result {
             Ok(()) => {
-                self.status = format!("Выполнено: {label}");
+                self.say(format!("Выполнено: {label}"));
                 self.stamp += 1;
                 self.selection.retain(|id| self.session.exists(*id));
             }
-            Err(e) => self.status = format!("Не получилось: {e}"),
+            Err(e) => self.say(format!("Не получилось: {e}")),
         }
     }
 
@@ -243,7 +305,7 @@ impl StudioState {
             Tool::WallLine => {
                 let (va, vb) = self.line_end(a, b);
                 if va == vb {
-                    self.status = "Линия нулевой длины".into();
+                    self.say("Линия нулевой длины".into());
                     return;
                 }
                 let plan = self.material_id().map_err(ToolError::Prefab).and_then(|m| {
@@ -276,6 +338,7 @@ impl StudioState {
                 self.run("Комната", plan);
             }
             Tool::Door => self.place_door(b),
+            Tool::Model => self.place_model(b),
             Tool::Stair => {
                 let to = FloorId(floor.0 + 1);
                 let start = snap_cell(b, step);
@@ -337,7 +400,7 @@ impl StudioState {
         } else {
             self.selection = found;
         }
-        self.status = format!("Выбрано: {}", self.selection.len());
+        self.say(format!("Выбрано: {}", self.selection.len()));
     }
 
     /// Элемент под точкой: ближайшее ребро (стена/проём), иначе перекрытие или марш в ячейке.
@@ -365,6 +428,29 @@ impl StudioState {
         .or_else(|| w.edge_element(self.floor, edge).map(|e| e.id))
     }
 
+    fn place_model(&mut self, p: Vec3) {
+        let Ok(model) = PrototypeId::new(self.model.trim()) else {
+            self.say("Неверный идентификатор модели".into());
+            return;
+        };
+        let pos = [p.x, self.floor_base_y(), p.z];
+        let placement =
+            astrocore_world::FreePlacement::from_position(pos, self.step(), 0.0, self.model_half);
+        let element = StructureElement {
+            id: self.ids.next_id(),
+            kind: StructureKind::Freeform,
+            placement: Placement::Free(placement),
+            floor: self.floor,
+            material: model,
+            thickness: 0.1,
+        };
+        let id = element.id;
+        self.run("Модель", Ok(vec![WorldCommand::PlaceElement(element)]));
+        if self.session.exists(id) {
+            self.selection = BTreeSet::from([id]);
+        }
+    }
+
     fn place_door(&mut self, p: Vec3) {
         let edge = nearest_edge(p, self.step());
         let floor = self.floor;
@@ -374,13 +460,13 @@ impl StudioState {
                 cmds.push(WorldCommand::RemoveElement { id: e.id })
             }
             Some(_) => {
-                self.status = "На этом ребре уже есть проём".into();
+                self.say("На этом ребре уже есть проём".into());
                 return;
             }
             None => {}
         }
         let Ok(m) = self.material_id() else {
-            self.status = "Неверный идентификатор материала".into();
+            self.say("Неверный идентификатор материала".into());
             return;
         };
         cmds.push(WorldCommand::PlaceElement(StructureElement {
@@ -455,7 +541,7 @@ impl StudioState {
 
     pub fn validate(&mut self) {
         self.findings = validate_map(self.world());
-        self.status = if has_errors(&self.findings) {
+        self.say(if has_errors(&self.findings) {
             "Валидатор: есть ошибки".into()
         } else {
             format!(
@@ -465,7 +551,7 @@ impl StudioState {
                     .filter(|f| f.severity == Severity::Warning)
                     .count()
             )
-        };
+        });
     }
 
     pub fn set_view(&mut self, view: FloorView) {
@@ -489,13 +575,16 @@ impl StudioState {
     // ---- проект ---------------------------------------------------------------
 
     pub fn save(&mut self, path: &Path) {
-        let project = Project::new("studio", self.world().clone());
+        let mut project = Project::new("studio", self.world().clone());
+        project.prefabs = self.prefabs.clone();
+        project.instances = self.instances.clone();
         match project.save(path) {
             Ok(()) => {
+                self.baseline = Some(self.world().clone());
                 self.project_path = Some(path.to_path_buf());
-                self.status = format!("Сохранено: {}", path.display());
+                self.say(format!("Сохранено: {}", path.display()));
             }
-            Err(e) => self.status = format!("Не сохранилось: {e}"),
+            Err(e) => self.say(format!("Не сохранилось: {e}")),
         }
     }
 
@@ -503,12 +592,236 @@ impl StudioState {
         match Project::load(path) {
             Ok(p) => {
                 let ids = Box::new(RandomIds);
+                let console = std::mem::take(&mut self.console);
                 *self = Self::with_world(p.world, ids);
+                self.console = console;
+                self.baseline = Some(self.world().clone());
+                self.prefabs = p.prefabs;
+                self.instances = p.instances;
                 self.project_path = Some(path.to_path_buf());
-                self.status = format!("Открыто: {}", path.display());
+                self.say(format!("Открыто: {}", path.display()));
             }
-            Err(e) => self.status = format!("Не открылось: {e}"),
+            Err(e) => self.say(format!("Не открылось: {e}")),
         }
+    }
+
+    // ---- инспектор ------------------------------------------------------------
+
+    /// Единственный выбранный элемент.
+    pub fn selected_element(&self) -> Option<&StructureElement> {
+        let mut it = self.selection.iter();
+        let id = it.next()?;
+        if it.next().is_some() {
+            return None;
+        }
+        self.world().element(*id)
+    }
+
+    /// Поля выбранного элемента для панели свойств.
+    pub fn inspect(&self) -> Option<Inspector> {
+        let e = self.selected_element()?;
+        let step = self.step();
+        let free = match e.placement {
+            Placement::Free(f) => Some(FreeFields {
+                position: f.position(step),
+                yaw_deg: f.yaw_cdeg as f32 / 100.0,
+                half_m: f.half_mm.map(|h| h as f32 / 1000.0),
+            }),
+            _ => None,
+        };
+        Some(Inspector {
+            id: e.id,
+            kind: format!("{:?}", e.kind),
+            material: e.material.to_string(),
+            thickness: e.thickness,
+            free,
+        })
+    }
+
+    /// Применить правки панели свойств одной операцией (один шаг отмены).
+    pub fn apply_inspector(&mut self, draft: &Inspector) {
+        let Some(old) = self.world().element(draft.id).cloned() else {
+            self.say("Объект не найден".into());
+            return;
+        };
+        let Ok(material) = PrototypeId::new(draft.material.trim()) else {
+            self.say("Неверный идентификатор материала".into());
+            return;
+        };
+        if !(draft.thickness.is_finite() && draft.thickness > 0.0) {
+            self.say("Толщина должна быть положительной".into());
+            return;
+        }
+        let mut new = old.clone();
+        new.material = material;
+        new.thickness = draft.thickness;
+        if let (Placement::Free(_), Some(f)) = (old.placement, &draft.free) {
+            new.placement = Placement::Free(astrocore_world::FreePlacement::from_position(
+                f.position,
+                self.step(),
+                f.yaw_deg,
+                f.half_m,
+            ));
+        }
+        if new == old {
+            return;
+        }
+        self.replace_element("Свойства", old, new);
+    }
+
+    fn replace_element(&mut self, label: &str, old: StructureElement, new: StructureElement) {
+        let cmds = vec![
+            WorldCommand::RemoveElement { id: old.id },
+            WorldCommand::PlaceElement(new),
+        ];
+        self.run(label, Ok(cmds));
+    }
+
+    // ---- гизмо ----------------------------------------------------------------
+
+    /// Положение гизмо: ноги выбранной свободной модели.
+    pub fn gizmo_origin(&self) -> Option<Vec3> {
+        match self.selected_element()?.placement {
+            Placement::Free(f) => {
+                let p = f.position(self.step());
+                Some(Vec3::new(p[0], p[1], p[2]))
+            }
+            _ => None,
+        }
+    }
+
+    /// Нажатие на гизмо: возвращает true, если захвачена ось (тогда курсор не рисует и не выбирает).
+    pub fn gizmo_press(&mut self, ray: Ray) -> bool {
+        let Some(origin) = self.gizmo_origin() else {
+            return false;
+        };
+        let Some(axis) = pick_axis(origin, ray, GIZMO_LENGTH, 0.18) else {
+            return false;
+        };
+        self.gizmo = AxisDrag::begin(axis, origin, ray);
+        self.gizmo.is_some()
+    }
+
+    pub fn gizmo_axis(&self) -> Option<Axis> {
+        self.gizmo.map(|d| d.axis)
+    }
+
+    /// Перетаскивание: модель идёт за курсором вдоль оси с привязкой к `snap_step` (0 — без неё).
+    pub fn gizmo_drag(&mut self, ray: Ray, snap_step: f32) {
+        let (Some(drag), Some(old)) = (self.gizmo, self.selected_element().cloned()) else {
+            return;
+        };
+        let Placement::Free(f) = old.placement else {
+            return;
+        };
+        let moved = drag.origin + drag.delta(ray);
+        let target = Vec3::new(
+            snap(moved.x, snap_step),
+            snap(moved.y, snap_step),
+            snap(moved.z, snap_step),
+        );
+        let half = f.half_mm.map(|h| h as f32 / 1000.0);
+        let mut new = old.clone();
+        new.placement = Placement::Free(astrocore_world::FreePlacement::from_position(
+            [target.x, target.y, target.z],
+            self.step(),
+            f.yaw_cdeg as f32 / 100.0,
+            half,
+        ));
+        // Положение хранится как «цель»: в мир и историю оно попадает одной операцией при отпускании.
+        self.gizmo_target = Some(new);
+    }
+
+    /// Где окажется модель, если отпустить сейчас (для «призрака» при перетаскивании).
+    pub fn gizmo_ghost(&self) -> Option<Vec3> {
+        let t = self.gizmo_target.as_ref()?;
+        match t.placement {
+            Placement::Free(f) => {
+                let p = f.position(self.step());
+                Some(Vec3::new(p[0], p[1], p[2]))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn gizmo_release(&mut self) {
+        if self.gizmo.take().is_none() {
+            return;
+        }
+        let target = self.gizmo_target.take();
+        let old = self.selected_element().cloned();
+        if let (Some(new), Some(old)) = (target, old)
+            && new != old
+        {
+            self.replace_element("Перемещение", old, new);
+        }
+    }
+
+    /// Повернуть выбранную модель так, чтобы «вперёд» смотрело на курсор.
+    pub fn rotate_selected_toward(&mut self, ray: Ray, snap_deg: f32) {
+        let (Some(origin), Some(old)) = (self.gizmo_origin(), self.selected_element().cloned())
+        else {
+            return;
+        };
+        let (Placement::Free(f), Some(yaw)) = (old.placement, yaw_toward(origin, ray)) else {
+            return;
+        };
+        let mut new = old.clone();
+        new.placement = Placement::Free(astrocore_world::FreePlacement {
+            yaw_cdeg: (snap(yaw, snap_deg) * 100.0).round() as i32,
+            ..f
+        });
+        if new != old {
+            self.replace_element("Поворот", old, new);
+        }
+    }
+
+    // ---- префабы --------------------------------------------------------------
+
+    pub fn prefab_ids(&self) -> Vec<String> {
+        self.prefabs.ids().map(|i| i.to_string()).collect()
+    }
+
+    /// Разместить экземпляр префаба: смещение в ячейках, число четвертей оборота, текущий этаж.
+    pub fn place_prefab(&mut self, id: &str, dx: i32, dz: i32, quarter_turns: u8) {
+        let Ok(pid) = PrototypeId::new(id) else {
+            self.say("Неверный идентификатор префаба".into());
+            return;
+        };
+        let mut instance = PrefabInstance::new(astrocore_core::PrefabInstanceId::new_random(), pid);
+        instance.base_floor = self.floor.0;
+        instance.transform = GridTransform {
+            quarter_turns: quarter_turns % 4,
+            ..GridTransform::translate(dx, dz)
+        };
+        match tools::place_prefab(
+            &self.prefabs,
+            &instance,
+            &std::collections::BTreeSet::new(),
+            self.session.world(),
+        ) {
+            Ok(plan) => {
+                let spawned = plan.spawned.clone();
+                let conflicts = plan.conflicts.len();
+                self.run("Префаб", Ok(plan.commands));
+                if !spawned.is_empty() && spawned.iter().all(|i| self.session.exists(*i)) {
+                    self.instances.push(InstanceRecord { instance, spawned });
+                }
+                if conflicts > 0 {
+                    self.say(format!("Префаб: конфликтов {conflicts}"));
+                }
+            }
+            Err(e) => self.say(format!("Префаб: {e}")),
+        }
+    }
+
+    // ---- различия -------------------------------------------------------------
+
+    /// Что изменилось с момента открытия или сохранения проекта.
+    pub fn diff_since_save(&self) -> Option<WorldDiff> {
+        self.baseline
+            .as_ref()
+            .map(|base| diff_worlds(base, self.world()))
     }
 
     pub fn new_project(&mut self) {

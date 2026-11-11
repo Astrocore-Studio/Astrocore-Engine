@@ -1,4 +1,5 @@
 mod migrate;
+pub mod upgrade;
 
 pub use migrate::{Migrator, SNAPSHOT_FORMAT_VERSION};
 

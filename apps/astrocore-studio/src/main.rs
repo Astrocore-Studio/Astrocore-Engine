@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+use astrocore_editor::gizmo::{Axis, Ray};
 use astrocore_editor::view::FloorView;
 use astrocore_render::{
-    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, RenderedWorld, WorldMeshPlugin,
+    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, RenderDiagnosticsPlugin, RenderStats,
+    RenderedWorld, WorldMeshPlugin,
 };
-use astrocore_studio::{Pointer, Preview, StudioState, Tool};
+use astrocore_studio::{GIZMO_LENGTH, Inspector, Pointer, Preview, StudioState, Tool};
 use bevy::app::AppExit;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
@@ -17,6 +19,7 @@ struct Args {
     screenshot: Option<PathBuf>,
     frames: u32,
     demo_room: bool,
+    panels: bool,
 }
 
 #[derive(Resource)]
@@ -30,6 +33,13 @@ struct SyncState {
     view: Option<FloorView>,
     path_text: String,
     playtest: Option<String>,
+    show_console: bool,
+    show_diff: bool,
+    show_profiler: bool,
+    /// Редактируемая копия свойств выбранного элемента (применяется по кнопке).
+    draft: Option<Inspector>,
+    prefab_offset: [i32; 2],
+    prefab_turns: u8,
 }
 
 fn main() {
@@ -37,6 +47,7 @@ fn main() {
         screenshot: None,
         frames: 30,
         demo_room: false,
+        panels: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -44,8 +55,11 @@ fn main() {
             "--screenshot" => args.screenshot = it.next().map(PathBuf::from),
             "--frames" => args.frames = it.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--demo-room" => args.demo_room = true,
+            "--panels" => args.panels = true,
             "-h" | "--help" => {
-                eprintln!("astrocore-studio [--screenshot файл.png [--frames N]] [--demo-room]");
+                eprintln!(
+                    "astrocore-studio [--screenshot файл.png [--frames N]] [--demo-room] [--panels]"
+                );
                 return;
             }
             other => {
@@ -60,6 +74,7 @@ fn main() {
         build_demo(&mut state);
     }
     let world = state.world().clone();
+    let panels = args.panels;
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -71,7 +86,12 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
-        .add_plugins((WorldMeshPlugin, BillboardPlugin, CameraRigPlugin))
+        .add_plugins((
+            WorldMeshPlugin,
+            BillboardPlugin,
+            CameraRigPlugin,
+            RenderDiagnosticsPlugin,
+        ))
         .insert_resource(ClearColor(Color::srgb(0.18, 0.2, 0.24)))
         .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
@@ -81,7 +101,12 @@ fn main() {
         .insert_resource(RenderedWorld::new(world))
         .insert_resource(Studio(state))
         .insert_resource(args)
-        .init_resource::<SyncState>()
+        .insert_resource(SyncState {
+            show_console: panels,
+            show_diff: panels,
+            show_profiler: panels,
+            ..default()
+        })
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -123,6 +148,10 @@ fn build_demo(s: &mut StudioState) {
     s.stair_len = 4;
     drag(s, p(1.5, 3.5), p(1.5, 3.5));
     s.validate();
+    // Свободная модель с выбором: на скриншоте видны гизмо и панель свойств.
+    s.tool = Tool::Model;
+    s.model = "studio:statue".into();
+    drag(s, p(9.5, 3.0), p(9.5, 3.0));
     s.tool = Tool::Select;
 }
 
@@ -227,6 +256,7 @@ fn pointer_tools(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut studio: ResMut<Studio>,
+    mut rotating: Local<bool>,
 ) {
     let over_ui = egui_wants_pointer(&mut contexts);
     let (Ok(window), Ok((camera, transform))) = (windows.single(), cameras.single()) else {
@@ -234,6 +264,48 @@ fn pointer_tools(
     };
     studio.0.additive_select =
         keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+
+    // Луч из камеры через курсор: гизмо работает в пространстве, а не на плоскости этажа.
+    let ray = window
+        .cursor_position()
+        .and_then(|c| camera.viewport_to_world(transform, c).ok())
+        .map(|r| Ray {
+            origin: r.origin,
+            dir: r.direction.into(),
+        });
+    if let Some(ray) = ray {
+        let snap = if keys.pressed(KeyCode::AltLeft) {
+            0.0
+        } else {
+            studio.0.gizmo_snap
+        };
+        if mouse.just_pressed(MouseButton::Left) && !over_ui {
+            if keys.pressed(KeyCode::KeyR) && studio.0.gizmo_origin().is_some() {
+                *rotating = true;
+                return;
+            }
+            if studio.0.tool == Tool::Select && studio.0.gizmo_press(ray) {
+                return;
+            }
+        }
+        if studio.0.gizmo_axis().is_some() {
+            if mouse.pressed(MouseButton::Left) {
+                studio.0.gizmo_drag(ray, snap);
+            }
+            if mouse.just_released(MouseButton::Left) {
+                studio.0.gizmo_release();
+            }
+            return;
+        }
+        if *rotating {
+            if mouse.just_released(MouseButton::Left) {
+                studio.0.rotate_selected_toward(ray, 15.0);
+                *rotating = false;
+            }
+            return;
+        }
+    }
+
     let plane_y = studio.0.floor_base_y();
     let Some(point) = cursor_on_plane(window, camera, transform, plane_y) else {
         return;
@@ -339,6 +411,32 @@ fn draw_helpers(mut gizmos: Gizmos, studio: Res<Studio>, rigs: Query<&CameraRig>
         }
         Preview::None => {}
     }
+    if let Some(origin) = s.gizmo_origin() {
+        let active = s.gizmo_axis();
+        for (axis, color) in [
+            (Axis::X, Color::srgb(0.95, 0.25, 0.25)),
+            (Axis::Y, Color::srgb(0.3, 0.9, 0.3)),
+            (Axis::Z, Color::srgb(0.3, 0.45, 1.0)),
+        ] {
+            let d = axis.dir();
+            let dir = Vec3::new(d.x, d.y, d.z);
+            let color = if active == Some(axis) {
+                Color::srgb(1.0, 0.95, 0.3)
+            } else {
+                color
+            };
+            let (o, tip) = (Vec3::new(origin.x, origin.y, origin.z), dir * GIZMO_LENGTH);
+            gizmos.line(o, o + tip, color);
+            gizmos.sphere(Isometry3d::from_translation(o + tip), 0.08, color);
+        }
+        if let Some(g) = s.gizmo_ghost() {
+            gizmos.sphere(
+                Isometry3d::from_translation(Vec3::new(g.x, g.y + 0.05, g.z)),
+                0.25,
+                ghost,
+            );
+        }
+    }
     let sel = Color::srgb(0.2, 1.0, 0.4);
     for id in &s.selection {
         let Some(e) = s.world().element(*id) else {
@@ -395,6 +493,7 @@ fn ui(
     mut studio: ResMut<Studio>,
     mut sync: ResMut<SyncState>,
     mut rigs: Query<&mut CameraRig>,
+    stats: Res<RenderStats>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
     let mut root = egui::Ui::new(
@@ -444,6 +543,11 @@ fn ui(
                     s.redo();
                     ui.close();
                 }
+            });
+            ui.menu_button("Окна", |ui| {
+                ui.checkbox(&mut sync.show_console, "Консоль");
+                ui.checkbox(&mut sync.show_diff, "Различия");
+                ui.checkbox(&mut sync.show_profiler, "Профилировщик");
             });
             ui.separator();
             ui.label("Вид:");
@@ -516,7 +620,36 @@ fn ui(
                             }
                         });
                 }
+                Tool::Model => {
+                    ui.label("Модель (ID, файл ns_имя.glb)");
+                    ui.text_edit_singleline(&mut s.model);
+                    for (i, name) in ["полуширина X", "полувысота", "полуширина Z"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        ui.add(egui::Slider::new(&mut s.model_half[i], 0.05..=10.0).text(name));
+                    }
+                }
                 _ => {}
+            }
+            ui.add(egui::Slider::new(&mut s.gizmo_snap, 0.0..=2.0).text("привязка гизмо, м"));
+            ui.small("Гизмо: тянуть ось у выбранной модели (Alt — без привязки); R + клик — повернуть к курсору");
+            ui.separator();
+            ui.heading("Префабы");
+            let ids = s.prefab_ids();
+            if ids.is_empty() {
+                ui.small("В проекте нет префабов");
+            }
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut sync.prefab_offset[0]).prefix("dx "));
+                ui.add(egui::DragValue::new(&mut sync.prefab_offset[1]).prefix("dz "));
+                ui.add(egui::DragValue::new(&mut sync.prefab_turns).range(0..=3).prefix("поворот "));
+            });
+            for id in ids {
+                if ui.button(format!("＋ {id}")).clicked() {
+                    let (dx, dz) = (sync.prefab_offset[0], sync.prefab_offset[1]);
+                    s.place_prefab(&id, dx, dz, sync.prefab_turns);
+                }
             }
             ui.separator();
             ui.heading("Этажи");
@@ -551,25 +684,71 @@ fn ui(
             if s.selection.is_empty() {
                 ui.label("Ничего не выбрано");
             }
-            let items: Vec<_> = s
-                .selection
-                .iter()
-                .filter_map(|id| {
-                    s.world()
-                        .element(*id)
-                        .map(|e| (e.id, e.kind, e.placement, e.material.clone(), e.floor))
-                })
-                .collect();
-            for (id, kind, placement, material, floor) in items.iter().take(12) {
-                ui.group(|ui| {
-                    ui.label(format!("{kind:?}"));
-                    ui.label(format!("этаж {}, {material}", floor.0));
-                    ui.small(format!("{placement:?}"));
-                    ui.small(format!("{id}"));
-                });
-            }
-            if items.len() > 12 {
-                ui.label(format!("… и ещё {}", items.len() - 12));
+            match s.inspect() {
+                Some(current) => {
+                    if sync.draft.as_ref().map(|d| d.id) != Some(current.id) {
+                        sync.draft = Some(current.clone());
+                    }
+                    if let Some(d) = sync.draft.as_mut() {
+                        ui.label(format!("{} · {}", d.kind, d.id));
+                        ui.label("Материал / модель");
+                        ui.text_edit_singleline(&mut d.material);
+                        ui.add(egui::Slider::new(&mut d.thickness, 0.02..=2.0).text("толщина"));
+                        if let Some(f) = d.free.as_mut() {
+                            for (i, name) in ["x", "y", "z"].into_iter().enumerate() {
+                                ui.add(
+                                    egui::DragValue::new(&mut f.position[i])
+                                        .speed(0.05)
+                                        .prefix(format!("{name} ")),
+                                );
+                            }
+                            ui.add(
+                                egui::Slider::new(&mut f.yaw_deg, -180.0..=180.0).text("поворот °"),
+                            );
+                            for (i, name) in ["½ X", "½ высота", "½ Z"].into_iter().enumerate()
+                            {
+                                ui.add(
+                                    egui::DragValue::new(&mut f.half_m[i])
+                                        .speed(0.05)
+                                        .range(0.01..=100.0)
+                                        .prefix(format!("{name} ")),
+                                );
+                            }
+                        }
+                        let (apply, reset) = ui
+                            .horizontal(|ui| {
+                                (
+                                    ui.button("Применить").clicked(),
+                                    ui.button("Сбросить").clicked(),
+                                )
+                            })
+                            .inner;
+                        if apply {
+                            let draft = d.clone();
+                            s.apply_inspector(&draft);
+                        } else if reset {
+                            *d = current.clone();
+                        }
+                    }
+                }
+                None => {
+                    sync.draft = None;
+                    let items: Vec<_> = s
+                        .selection
+                        .iter()
+                        .filter_map(|id| {
+                            s.world()
+                                .element(*id)
+                                .map(|e| (e.id, e.kind, e.material.clone()))
+                        })
+                        .collect();
+                    for (id, kind, material) in items.iter().take(12) {
+                        ui.small(format!("{kind:?} · {material} · {id}"));
+                    }
+                    if items.len() > 12 {
+                        ui.label(format!("… и ещё {}", items.len() - 12));
+                    }
+                }
             }
             if !s.selection.is_empty() && ui.button("Заменить материал на указанный").clicked()
             {
@@ -600,6 +779,58 @@ fn ui(
             }
         });
     });
+
+    if sync.show_console {
+        egui::Window::new("Консоль")
+            .default_size([520.0, 220.0])
+            .show(&ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &s.console {
+                            ui.label(line);
+                        }
+                    });
+            });
+    }
+    if sync.show_diff {
+        egui::Window::new("Различия с сохранённым")
+            .default_size([360.0, 160.0])
+            .show(&ctx, |ui| match s.diff_since_save() {
+                None => {
+                    ui.label("Сохраните или откройте проект — тогда появится основа для сравнения");
+                }
+                Some(d) => {
+                    ui.label(d.summary());
+                    for (title, ids) in [
+                        ("добавлено", &d.added),
+                        ("удалено", &d.removed),
+                        ("изменено", &d.modified),
+                    ] {
+                        if !ids.is_empty() {
+                            ui.collapsing(format!("{title}: {}", ids.len()), |ui| {
+                                for id in ids.iter().take(50) {
+                                    ui.small(format!("{id}"));
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+    }
+    if sync.show_profiler {
+        egui::Window::new("Профилировщик")
+            .default_size([420.0, 140.0])
+            .show(&ctx, |ui| {
+                ui.label(stats.summary());
+                ui.small("Оценка по сцене Bevy; GPU-таймеров здесь нет (нужен реальный GPU).");
+                ui.label(format!(
+                    "правок в истории: отмена {} / повтор {}",
+                    s.session.can_undo() as u8,
+                    s.session.can_redo() as u8
+                ));
+            });
+    }
     Ok(())
 }
 

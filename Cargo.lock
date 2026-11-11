@@ -502,6 +502,7 @@ dependencies = [
  "astrocore-geometry",
  "astrocore-math",
  "astrocore-network",
+ "astrocore-prefabs",
  "astrocore-render",
  "astrocore-sprites",
  "astrocore-world",

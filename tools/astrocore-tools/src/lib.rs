@@ -24,6 +24,8 @@ pub enum ToolError {
     Compat(String),
     #[error("карта содержит ошибки ({0})")]
     Invalid(usize),
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Создать демонстрационный проект (здание вертикального среза).
@@ -87,6 +89,31 @@ pub fn verify_bundle(dir: &Path, game_id: &str) -> Result<BundleManifest, ToolEr
     Ok(manifest)
 }
 
+/// Обновить сохранённый мир сервера новой версией авторской карты (трёхстороннее слияние).
+/// `base` — карта версии N, `new` — версия N+1, `data_dir` — каталог сохранений сервера.
+/// Обновлённое состояние записывается новым снимком; отчёт возвращается вызывающему.
+pub fn upgrade_server_map(
+    base: &Path,
+    new: &Path,
+    data_dir: &Path,
+    policy: astrocore_persistence::upgrade::ConflictPolicy,
+) -> Result<astrocore_persistence::upgrade::UpgradeReport, ToolError> {
+    use astrocore_persistence::{Store, upgrade::upgrade_map};
+    let base = Project::load(base).map_err(|e| ToolError::Other(e.to_string()))?;
+    let new = Project::load(new).map_err(|e| ToolError::Other(e.to_string()))?;
+    let store = Store::open(data_dir).map_err(|e| ToolError::Other(e.to_string()))?;
+    let recovered = store
+        .recover()
+        .map_err(|e| ToolError::Other(e.to_string()))?
+        .ok_or_else(|| ToolError::Other("в каталоге нет сохранённого мира".into()))?;
+    let mut runtime = recovered.world;
+    let report = upgrade_map(&base.world, &new.world, &mut runtime, policy);
+    store
+        .save_snapshot(&runtime)
+        .map_err(|e| ToolError::Other(e.to_string()))?;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +141,35 @@ mod tests {
             verify_bundle(&out, "demo"),
             Err(ToolError::Compat(_))
         ));
+    }
+
+    #[test]
+    fn server_map_upgrade_merges_author_changes_into_saved_world() {
+        use astrocore_persistence::{Store, upgrade::ConflictPolicy};
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = dir.path().join("v1.acproj");
+        let v2 = dir.path().join("v2.acproj");
+        make_demo_project(&v1).unwrap();
+        // Версия 2: автор добавил этаж над зданием.
+        let mut p2 = Project::load(&v1).unwrap();
+        let (_, cmd) = astrocore_editor::tools::add_floor_above(&p2.world, "крыша", 3.0);
+        p2.world.apply(cmd).unwrap();
+        p2.save(&v2).unwrap();
+        // Сервер играет на версии 1 и сохранён.
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        store
+            .save_snapshot(&Project::load(&v1).unwrap().world)
+            .unwrap();
+        let floors_before = Project::load(&v1).unwrap().world.floors().count();
+
+        let report = upgrade_server_map(&v1, &v2, &data, ConflictPolicy::KeepRuntime).unwrap();
+        assert!(report.is_clean(), "{:?}", report.conflicts);
+        let saved = store.recover().unwrap().unwrap().world;
+        assert_eq!(saved.floors().count(), floors_before + 1);
+        // Нет сохранённого мира — понятная ошибка, а не паника.
+        let empty = dir.path().join("empty");
+        assert!(upgrade_server_map(&v1, &v2, &empty, ConflictPolicy::KeepRuntime).is_err());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+pub mod diff;
+pub mod gizmo;
 pub mod playtest;
 pub mod project;
 pub mod session;

@@ -321,3 +321,206 @@ fn cancel_drops_the_drag() {
     assert_eq!(s.world().element_count(), 0);
     let _ = Placement::Cell(GridCell::new(0, 0));
 }
+
+mod workspace_panels {
+    use crate::state::CONSOLE_LIMIT;
+    use astrocore_core::{ObjectId, PrototypeId};
+    use astrocore_editor::gizmo::{Axis, Ray};
+    use astrocore_prefabs::{
+        ElementTemplate, LocalKind, LocalPlacement, NodeContent, PrefabDef, PrefabNode,
+    };
+
+    use super::*;
+
+    fn model_at(s: &mut StudioState, x: f32, z: f32) -> ObjectId {
+        s.tool = Tool::Model;
+        s.model = "t:statue".into();
+        click(s, p(x, z));
+        *s.selection
+            .iter()
+            .next()
+            .expect("модель выбрана после размещения")
+    }
+
+    fn look_at(from: Vec3, to: Vec3) -> Ray {
+        Ray {
+            origin: from,
+            dir: (to - from).normalize(),
+        }
+    }
+
+    #[test]
+    fn model_tool_places_a_freeform_element_and_selects_it() {
+        let mut s = studio();
+        let id = model_at(&mut s, 5.4, 6.2);
+        let e = s.world().element(id).unwrap();
+        assert_eq!(e.kind, StructureKind::Freeform);
+        assert_eq!(e.material.as_str(), "t:statue");
+        let o = s.gizmo_origin().unwrap();
+        assert!(
+            (o.x - 5.4).abs() < 0.01 && (o.z - 6.2).abs() < 0.01 && o.y == 0.0,
+            "{o}"
+        );
+        s.undo();
+        assert!(s.world().element(id).is_none());
+        s.model = "плохо!".into();
+        click(&mut s, p(1.0, 1.0));
+        assert!(s.status.contains("Неверный идентификатор модели"));
+    }
+
+    #[test]
+    fn inspector_edits_are_validated_and_one_undo_step() {
+        let mut s = studio();
+        let id = model_at(&mut s, 3.0, 3.0);
+        let mut d = s.inspect().unwrap();
+        assert_eq!(d.id, id);
+        assert_eq!(d.kind, "Freeform");
+        let f = d.free.as_mut().unwrap();
+        f.position = [7.5, 0.0, 2.0];
+        f.yaw_deg = 90.0;
+        d.material = "t:marble".into();
+        s.apply_inspector(&d);
+        let after = s.inspect().unwrap();
+        assert_eq!(after.material, "t:marble");
+        let free = after.free.unwrap();
+        assert!((free.position[0] - 7.5).abs() < 0.01 && (free.yaw_deg - 90.0).abs() < 0.01);
+        s.undo();
+        let undone = s.inspect().unwrap();
+        assert_eq!(
+            undone.material, "t:statue",
+            "все правки панели откатываются одним шагом"
+        );
+        // Ошибочный ввод не меняет мир.
+        let mut bad = undone.clone();
+        bad.thickness = -1.0;
+        s.apply_inspector(&bad);
+        assert!(s.status.contains("Толщина"));
+        bad.thickness = 0.1;
+        bad.material = "!".into();
+        s.apply_inspector(&bad);
+        assert!(s.status.contains("материала"));
+        assert_eq!(s.inspect().unwrap(), undone);
+    }
+
+    #[test]
+    fn gizmo_drags_along_an_axis_and_commits_once() {
+        let mut s = studio();
+        let id = model_at(&mut s, 4.0, 4.0);
+        let cam = Vec3::new(9.0, 7.0, 9.0);
+        let o = s.gizmo_origin().unwrap();
+        assert!(
+            !s.gizmo_press(look_at(cam, Vec3::new(30.0, 0.0, 30.0))),
+            "мимо оси"
+        );
+        assert!(s.gizmo_press(look_at(cam, o + Vec3::X)), "ось X");
+        assert_eq!(s.gizmo_axis(), Some(Axis::X));
+        let revision = s.world().revision();
+        s.gizmo_drag(look_at(cam, o + Vec3::X * 3.0), 0.0);
+        s.gizmo_drag(look_at(cam, o + Vec3::X * 4.0), 0.0);
+        assert_eq!(
+            s.world().revision(),
+            revision,
+            "мир не меняется до отпускания"
+        );
+        let ghost = s.gizmo_ghost().unwrap();
+        assert!(
+            (ghost.x - (o.x + 3.0)).abs() < 0.05 && (ghost.z - o.z).abs() < 0.01,
+            "{ghost}"
+        );
+        s.gizmo_release();
+        let moved = s.gizmo_origin().unwrap();
+        assert!((moved.x - (o.x + 3.0)).abs() < 0.05 && (moved.z - o.z).abs() < 0.01);
+        s.undo();
+        assert!(
+            (s.gizmo_origin().unwrap() - o).length() < 0.01,
+            "одно перемещение — один шаг отмены"
+        );
+        assert!(s.world().element(id).is_some());
+        // Шаг привязки.
+        assert!(s.gizmo_press(look_at(cam, o + Vec3::X)));
+        s.gizmo_drag(look_at(cam, o + Vec3::X * 2.2), 1.0);
+        s.gizmo_release();
+        let snapped = s.gizmo_origin().unwrap();
+        assert!((snapped.x - snapped.x.round()).abs() < 0.01, "{snapped}");
+    }
+
+    #[test]
+    fn rotation_handle_points_the_model_at_the_cursor() {
+        let mut s = studio();
+        model_at(&mut s, 5.0, 5.0);
+        let o = s.gizmo_origin().unwrap();
+        let down = |p: Vec3| Ray {
+            origin: Vec3::new(p.x, 10.0, p.z),
+            dir: Vec3::NEG_Y,
+        };
+        s.rotate_selected_toward(down(o + Vec3::new(-4.0, 0.0, 0.1)), 15.0);
+        let yaw = s.inspect().unwrap().free.unwrap().yaw_deg;
+        assert!((yaw - 90.0).abs() < 0.01, "{yaw}");
+    }
+
+    #[test]
+    fn prefab_browser_places_instances_and_projects_keep_them() {
+        let mut s = studio();
+        let mut def = PrefabDef::new(PrototypeId::new("t:booth").unwrap());
+        for (i, e) in [GridEdge::along_x(0, 0), GridEdge::along_x(0, 2)]
+            .into_iter()
+            .enumerate()
+        {
+            def.nodes.push(PrefabNode {
+                id: astrocore_core::PrefabNodeId::from_u128(i as u128 + 1),
+                name: format!("w{i}"),
+                content: NodeContent::Element(ElementTemplate {
+                    kind: LocalKind::Wall,
+                    placement: LocalPlacement::Edge(e),
+                    floor_offset: 0,
+                    material: PrototypeId::new("t:stone").unwrap(),
+                    thickness: 0.2,
+                }),
+            });
+        }
+        s.prefabs.insert(def).unwrap();
+        assert_eq!(s.prefab_ids(), vec!["t:booth".to_string()]);
+        s.place_prefab("t:booth", 10, 10, 0);
+        assert_eq!(s.world().element_count(), 2);
+        assert_eq!(s.instances.len(), 1);
+        s.place_prefab("t:nope", 0, 0, 0);
+        assert!(s.status.contains("Префаб"));
+        // Тот же префаб на занятом месте: конфликт, второго экземпляра нет.
+        let before = s.instances.len();
+        s.place_prefab("t:booth", 10, 10, 0);
+        assert_eq!(s.instances.len(), before);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.acproj");
+        s.save(&path);
+        let mut reopened = StudioState::new();
+        reopened.load(&path);
+        assert_eq!(reopened.prefab_ids(), vec!["t:booth".to_string()]);
+        assert_eq!(reopened.instances.len(), 1);
+        assert_eq!(reopened.world().element_count(), 2);
+    }
+
+    #[test]
+    fn diff_since_save_and_console_track_work() {
+        let mut s = studio();
+        assert!(s.diff_since_save().is_none(), "до сохранения основы нет");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.acproj");
+        s.save(&path);
+        assert!(s.diff_since_save().unwrap().is_empty());
+        let id = model_at(&mut s, 2.0, 2.0);
+        let d = s.diff_since_save().unwrap();
+        assert_eq!(d.added, vec![id]);
+        assert!(d.summary().starts_with("+1"));
+        assert!(s.console.iter().any(|l| l.starts_with("Сохранено")));
+        assert!(s.console.iter().any(|l| l.contains("Модель")));
+        for i in 0..CONSOLE_LIMIT + 20 {
+            s.say(format!("строка {i}"));
+        }
+        assert_eq!(s.console.len(), CONSOLE_LIMIT);
+        assert_eq!(
+            s.console.last().unwrap(),
+            &format!("строка {}", CONSOLE_LIMIT + 19)
+        );
+    }
+}

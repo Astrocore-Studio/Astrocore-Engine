@@ -268,3 +268,170 @@ fn generate_golden() {
     )
     .unwrap();
 }
+
+mod upgrade {
+    use astrocore_world::ReplicaOutcome;
+
+    use super::*;
+    use crate::upgrade::{ConflictKind, ConflictPolicy, Resolution, upgrade_map};
+
+    fn wall(id: u128, x: i32, thickness: f32) -> WorldCommand {
+        match wall_cmd(id, x) {
+            WorldCommand::PlaceElement(mut e) => {
+                e.thickness = thickness;
+                WorldCommand::PlaceElement(e)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn elements_of(w: &World) -> Vec<StructureElement> {
+        let mut v: Vec<_> = w.elements().cloned().collect();
+        v.sort_by_key(|e| e.id);
+        v
+    }
+
+    fn id(n: u128) -> ObjectId {
+        ObjectId::from_u128(n)
+    }
+
+    /// Версия 1: стены 1, 2, 3 на x = 0, 1, 2.
+    fn base() -> World {
+        let mut w = new_world();
+        for (n, x) in [(1, 0), (2, 1), (3, 2)] {
+            w.apply(wall(n, x, 0.2)).unwrap();
+        }
+        w
+    }
+
+    /// Версия 2: стена 1 толще, стена 2 убрана, добавлены 4 (x = 5) и 5 (x = 7).
+    fn author_v2() -> World {
+        let mut w = new_world();
+        w.apply(wall(1, 0, 0.3)).unwrap();
+        w.apply(wall(3, 2, 0.2)).unwrap();
+        w.apply(wall(4, 5, 0.2)).unwrap();
+        w.apply(wall(5, 7, 0.2)).unwrap();
+        w
+    }
+
+    /// Сервер: версия 1, игроки утолстили стену 2 и построили свою стену 9 на месте будущей 5.
+    fn runtime() -> World {
+        let mut w = base();
+        w.apply(WorldCommand::RemoveElement { id: id(2) }).unwrap();
+        w.apply(wall(2, 1, 0.5)).unwrap();
+        w.apply(wall(9, 7, 0.2)).unwrap();
+        w
+    }
+
+    #[test]
+    fn author_changes_merge_and_player_work_survives() {
+        let before = runtime();
+        let mut w = before.clone();
+        let r = upgrade_map(&base(), &author_v2(), &mut w, ConflictPolicy::KeepRuntime);
+
+        assert_eq!(
+            w.element(id(1)).unwrap().thickness,
+            0.3,
+            "правка автора перенесена"
+        );
+        assert_eq!(
+            w.element(id(2)).unwrap().thickness,
+            0.5,
+            "работа игроков не потеряна"
+        );
+        assert!(w.element(id(3)).is_some());
+        assert!(w.element(id(4)).is_some(), "новый объект автора добавлен");
+        assert!(w.element(id(9)).is_some(), "постройка игроков на месте");
+        assert!(w.element(id(5)).is_none(), "не поместился");
+
+        assert_eq!((r.added, r.modified, r.removed), (1, 1, 0));
+        let kinds: Vec<_> = r
+            .conflicts
+            .iter()
+            .map(|c| (c.id, c.kind, c.resolution))
+            .collect();
+        assert!(kinds.contains(&(
+            Some(id(2)),
+            ConflictKind::AuthorRemovedRuntimeModified,
+            Resolution::KeptRuntime
+        )));
+        assert!(kinds.contains(&(
+            Some(id(5)),
+            ConflictKind::PlacementBlocked,
+            Resolution::Skipped
+        )));
+        assert_eq!(r.conflicts.len(), 2);
+        assert!(!r.is_clean());
+        assert!(r.summary().contains("конфликтов 2"));
+
+        // Журнал обновления воспроизводит то же состояние на копии до обновления.
+        let mut replay = before;
+        for op in &r.ops {
+            assert!(matches!(
+                replay.apply_replicated(op),
+                ReplicaOutcome::Applied
+            ));
+        }
+        assert_eq!(replay.content_hash(), w.content_hash());
+    }
+
+    #[test]
+    fn prefer_author_takes_the_author_version_and_still_reports() {
+        let mut w = runtime();
+        let r = upgrade_map(&base(), &author_v2(), &mut w, ConflictPolicy::PreferAuthor);
+        assert!(w.element(id(2)).is_none(), "автор убрал стену 2");
+        assert!(
+            w.element(id(9)).is_some(),
+            "игроки не теряют постройки, которых автор не касался"
+        );
+        assert!(
+            r.conflicts
+                .iter()
+                .any(|c| c.id == Some(id(2)) && c.resolution == Resolution::TookAuthor)
+        );
+    }
+
+    #[test]
+    fn upgrade_without_player_changes_equals_the_new_map_and_is_idempotent() {
+        let mut w = base();
+        let r = upgrade_map(&base(), &author_v2(), &mut w, ConflictPolicy::KeepRuntime);
+        assert!(r.is_clean(), "{:?}", r.conflicts);
+        assert_eq!(elements_of(&w), elements_of(&author_v2()));
+        let again = upgrade_map(&base(), &author_v2(), &mut w, ConflictPolicy::KeepRuntime);
+        assert!(again.ops.is_empty() && again.is_clean(), "{again:?}");
+    }
+
+    #[test]
+    fn floors_added_by_the_author_appear_and_non_empty_ones_stay() {
+        let mut new = author_v2();
+        new.apply(WorldCommand::DefineFloor(FloorDef {
+            id: FloorId(1),
+            name: "up".into(),
+            base_y: 3.0,
+            height: 3.0,
+        }))
+        .unwrap();
+        let mut w = base();
+        upgrade_map(&base(), &new, &mut w, ConflictPolicy::KeepRuntime);
+        assert!(w.floor(FloorId(1)).is_some());
+        // Автор убрал этаж 0, но на нём стены игроков.
+        let mut empty = World::new("persist", WorldConfig::default()).unwrap();
+        empty
+            .apply(WorldCommand::DefineFloor(FloorDef {
+                id: FloorId(5),
+                name: "x".into(),
+                base_y: 0.0,
+                height: 3.0,
+            }))
+            .unwrap();
+        let mut w = base();
+        w.apply(wall(9, 20, 0.2)).unwrap();
+        let r = upgrade_map(&base(), &empty, &mut w, ConflictPolicy::KeepRuntime);
+        assert!(w.floor(FloorId(0)).is_some());
+        assert!(
+            r.conflicts
+                .iter()
+                .any(|c| c.kind == ConflictKind::FloorNotEmpty)
+        );
+    }
+}
