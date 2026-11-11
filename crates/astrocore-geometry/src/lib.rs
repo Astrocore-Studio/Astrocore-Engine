@@ -141,7 +141,9 @@ pub fn element_bounds(world: &World, floor: &FloorDef, e: &StructureElement) -> 
     let step = world.config().grid_step_m;
     let t = e.thickness;
     match (e.kind, e.placement) {
-        (StructureKind::Wall, Placement::Edge(edge)) => Some(wall_box(edge, step, t, floor)),
+        (StructureKind::Wall, Placement::Edge(edge)) => {
+            Some(wall_box_joined(world, floor, edge, t))
+        }
         (StructureKind::Floor, Placement::Cell(c)) => {
             let min = c.min_corner(step, floor.base_y);
             Some(Aabb::new(min, min + Vec3::new(step, t, step)))
@@ -275,6 +277,45 @@ pub const STAIR_RISER_M: f32 = 0.2;
 /// Число ступеней марша: не больше `STAIR_RISER_M` на ступень.
 pub fn stair_step_count(rise_m: f32) -> usize {
     ((rise_m / STAIR_RISER_M).ceil() as usize).max(1)
+}
+
+/// Есть ли стена на ребре этажа.
+fn has_wall(world: &World, floor: FloorId, edge: GridEdge) -> bool {
+    world
+        .edge_element(floor, edge)
+        .is_some_and(|e| matches!(e.kind, StructureKind::Wall))
+}
+
+/// Стена с «сваркой» углов: на конце, где к вершине примыкает перпендикулярная стена,
+/// коробка удлиняется на половину толщины — угол и Т-образный стык заполнены без щелей.
+fn wall_box_joined(world: &World, floor: &FloorDef, edge: GridEdge, thickness: f32) -> Aabb {
+    let step = world.config().grid_step_m;
+    let mut b = wall_box(edge, step, thickness, floor);
+    let half = thickness * 0.5;
+    let (x, z) = (edge.x, edge.z);
+    // Перпендикулярные рёбра, примыкающие к начальной и к конечной вершине.
+    let (start_perp, end_perp) = match edge.dir {
+        EdgeDir::AlongX => (
+            [GridEdge::along_z(x, z), GridEdge::along_z(x, z - 1)],
+            [GridEdge::along_z(x + 1, z), GridEdge::along_z(x + 1, z - 1)],
+        ),
+        EdgeDir::AlongZ => (
+            [GridEdge::along_x(x, z), GridEdge::along_x(x - 1, z)],
+            [GridEdge::along_x(x, z + 1), GridEdge::along_x(x - 1, z + 1)],
+        ),
+    };
+    let joined = |edges: [GridEdge; 2]| edges.into_iter().any(|e| has_wall(world, floor.id, e));
+    let axis = match edge.dir {
+        EdgeDir::AlongX => 0,
+        EdgeDir::AlongZ => 2,
+    };
+    if joined(start_perp) {
+        b.min[axis] -= half;
+    }
+    if joined(end_perp) {
+        b.max[axis] += half;
+    }
+    b
 }
 
 fn wall_box(edge: GridEdge, step: f32, thickness: f32, floor: &FloorDef) -> Aabb {
@@ -849,6 +890,163 @@ mod tests {
             );
             let e = w.element(ObjectId::from_u128(1)).unwrap().clone();
             assert!(collision_boxes(&w, w.floor(FloorId(0)).unwrap(), &e).is_empty());
+        }
+    }
+
+    mod joins {
+        use super::*;
+        use astrocore_world::WorldCommand;
+
+        fn bounds_of(w: &World, id: u128) -> Aabb {
+            let e = w.element(ObjectId::from_u128(id)).unwrap().clone();
+            element_bounds(w, w.floor(FloorId(0)).unwrap(), &e).unwrap()
+        }
+
+        #[test]
+        fn corner_walls_extend_to_fill_the_notch() {
+            let mut w = world();
+            // Угол: стена вдоль X от (0,0) и стена вдоль Z от (0,0).
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:m",
+            );
+            put(
+                &mut w,
+                2,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_z(0, 0)),
+                "t:m",
+            );
+            let (a, b) = (bounds_of(&w, 1), bounds_of(&w, 2));
+            // Обе стены толщиной 0.2: каждая заходит за вершину на 0.1.
+            assert!(
+                (a.min.x + 0.1).abs() < 1e-5 && (a.max.x - 1.0).abs() < 1e-5,
+                "{a:?}"
+            );
+            assert!(
+                (b.min.z + 0.1).abs() < 1e-5 && (b.max.z - 1.0).abs() < 1e-5,
+                "{b:?}"
+            );
+        }
+
+        #[test]
+        fn isolated_and_collinear_walls_are_not_extended() {
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:m",
+            );
+            put(
+                &mut w,
+                2,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(1, 0)),
+                "t:m",
+            );
+            assert!(
+                (bounds_of(&w, 1).max.x - 1.0).abs() < 1e-5,
+                "продолжение по прямой стыкуется без захода"
+            );
+            assert!((bounds_of(&w, 2).min.x - 1.0).abs() < 1e-5);
+        }
+
+        #[test]
+        fn t_junction_extends_only_the_end_that_touches() {
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:m",
+            );
+            put(
+                &mut w,
+                2,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(1, 0)),
+                "t:m",
+            );
+            put(
+                &mut w,
+                3,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_z(1, 0)),
+                "t:m",
+            ); // отходит от стыка
+            let stem = bounds_of(&w, 3);
+            assert!(
+                (stem.min.z + 0.1).abs() < 1e-5,
+                "ножка заходит в основную стену: {stem:?}"
+            );
+            assert!((stem.max.z - 1.0).abs() < 1e-5);
+        }
+
+        #[test]
+        fn openings_do_not_join_and_removing_a_neighbour_restores_the_box() {
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:m",
+            );
+            put(
+                &mut w,
+                2,
+                StructureKind::Opening(astrocore_world::OpeningKind::Door),
+                Placement::Edge(GridEdge::along_z(0, 0)),
+                "t:d",
+            );
+            assert!(
+                (bounds_of(&w, 1).min.x).abs() < 1e-5,
+                "рядом только дверь — захода нет"
+            );
+            put(
+                &mut w,
+                3,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_z(0, -1)),
+                "t:m",
+            );
+            assert!((bounds_of(&w, 1).min.x + 0.1).abs() < 1e-5);
+            w.apply(WorldCommand::RemoveElement {
+                id: ObjectId::from_u128(3),
+            })
+            .unwrap();
+            assert!((bounds_of(&w, 1).min.x).abs() < 1e-5);
+        }
+
+        #[test]
+        fn joined_walls_share_dirty_neighbourhood() {
+            // Изменение соседа меняет габариты стены, поэтому оба элемента обязаны попадать в один dirty-чанк.
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(31, 0)),
+                "t:m",
+            );
+            w.take_dirty();
+            put(
+                &mut w,
+                2,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_z(32, 0)),
+                "t:m",
+            );
+            let chunks: Vec<_> = w.take_dirty().into_iter().map(|d| d.chunk).collect();
+            assert!(
+                chunks.contains(&ChunkCoord::new(0, 0)) && chunks.contains(&ChunkCoord::new(1, 0))
+            );
         }
     }
 }

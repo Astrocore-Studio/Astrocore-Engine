@@ -1,0 +1,21 @@
+[package]
+name = "astrocore-editor"
+description = "Ядро Astrocore Studio: сессия правок с undo/redo, инструменты построения, валидация, проекты, проба «играть отсюда»"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-network.workspace = true
+astrocore-physics.workspace = true
+astrocore-prefabs.workspace = true
+astrocore-spatial.workspace = true
+astrocore-world.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

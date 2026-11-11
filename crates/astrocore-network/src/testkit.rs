@@ -138,7 +138,11 @@ impl Harness {
     }
 
     pub fn with_world(world: World, cfg: ServerNetConfig) -> Self {
-        let server = GameServer::new(world, cfg, Box::new(ByBuild));
+        Self::with_server(GameServer::new(world, cfg, Box::new(ByBuild)))
+    }
+
+    /// Стенд вокруг готового сервера (например, запущенного редактором для пробной игры).
+    pub fn with_server(server: GameServer) -> Self {
         Self {
             server,
             clients: BTreeMap::new(),

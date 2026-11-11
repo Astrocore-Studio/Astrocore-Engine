@@ -12,6 +12,7 @@ members = [
     "crates/astrocore-runtime",
     "crates/astrocore-physics",
     "crates/astrocore-network",
+    "crates/astrocore-editor",
     "crates/astrocore-assets",
     "crates/astrocore-world-compiler",
     "crates/astrocore-persistence",
@@ -39,6 +40,7 @@ astrocore-prefabs = { path = "crates/astrocore-prefabs" }
 astrocore-runtime = { path = "crates/astrocore-runtime" }
 astrocore-physics = { path = "crates/astrocore-physics" }
 astrocore-network = { path = "crates/astrocore-network" }
+astrocore-editor = { path = "crates/astrocore-editor" }
 astrocore-assets = { path = "crates/astrocore-assets" }
 astrocore-world-compiler = { path = "crates/astrocore-world-compiler" }
 astrocore-persistence = { path = "crates/astrocore-persistence" }

@@ -241,12 +241,12 @@ fn axes_agree_between_geometry_navigation_and_sprites() {
     // в диапазоне x ∈ [x, x+1], по высоте — по оси Y в пределах этажа.
     let wall = s
         .world
-        .edge_element(FloorId(0), GridEdge::along_x(MIN_X, MIN_Z))
+        .edge_element(FloorId(0), GridEdge::along_x(MIN_X + 1, MIN_Z))
         .unwrap();
     assert_eq!(wall.kind, StructureKind::Wall);
     let b = element_bounds(&s.world, floor0, wall).unwrap();
     let c = b.center();
-    assert!((c.x - (MIN_X as f32 + 0.5)).abs() < 1e-5, "центр по X");
+    assert!((c.x - (MIN_X as f32 + 1.5)).abs() < 1e-5, "центр по X");
     assert!((c.z - MIN_Z as f32).abs() < 1e-5, "центр по Z");
     assert!(
         (c.y - FLOOR_HEIGHT_M / 2.0).abs() < 1e-5,
@@ -254,9 +254,9 @@ fn axes_agree_between_geometry_navigation_and_sprites() {
     );
 
     // Те же координаты, превращённые в ячейки навигации, лежат по обе стороны ребра.
-    let [north, south] = GridEdge::along_x(MIN_X, MIN_Z).adjacent_cells();
-    assert_eq!(north, GridCell::new(MIN_X, MIN_Z - 1));
-    assert_eq!(south, GridCell::new(MIN_X, MIN_Z));
+    let [north, south] = GridEdge::along_x(MIN_X + 1, MIN_Z).adjacent_cells();
+    assert_eq!(north, GridCell::new(MIN_X + 1, MIN_Z - 1));
+    assert_eq!(south, GridCell::new(MIN_X + 1, MIN_Z));
     assert_eq!(
         GridCell::from_world(Vec3::new(c.x, 0.0, c.z + 0.4), 1.0),
         south,

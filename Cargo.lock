@@ -77,6 +77,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-editor"
+version = "0.1.0"
+dependencies = [
+ "astrocore-core",
+ "astrocore-math",
+ "astrocore-network",
+ "astrocore-physics",
+ "astrocore-prefabs",
+ "astrocore-spatial",
+ "astrocore-world",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-geometry"
 version = "0.1.0"
 dependencies = [

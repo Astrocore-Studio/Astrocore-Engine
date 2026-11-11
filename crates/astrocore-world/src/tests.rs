@@ -541,3 +541,55 @@ mod stairs {
         assert_eq!(chunks, vec![ChunkCoord::new(0, 0), ChunkCoord::new(1, 0)]);
     }
 }
+
+#[test]
+fn empty_floors_can_be_removed_and_nonempty_cannot() {
+    let mut w = world();
+    w.apply(WorldCommand::DefineFloor(FloorDef {
+        id: FloorId(1),
+        name: "up".into(),
+        base_y: 4.0,
+        height: 3.0,
+    }))
+    .unwrap();
+    w.apply(WorldCommand::PlaceElement(wall(1, GridEdge::along_x(0, 0))))
+        .unwrap();
+    assert!(matches!(
+        w.apply(WorldCommand::RemoveFloor { id: FloorId(0) }),
+        Err(WorldError::FloorNotEmpty(_))
+    ));
+    assert!(matches!(
+        w.apply(WorldCommand::RemoveFloor { id: FloorId(7) }),
+        Err(WorldError::UnknownFloor(_))
+    ));
+    let before = w.revision();
+    w.apply(WorldCommand::RemoveFloor { id: FloorId(1) })
+        .unwrap();
+    assert_eq!(w.revision(), before.next());
+    assert!(w.floor(FloorId(1)).is_none());
+    // Этаж, на который ведёт лестница, удалить нельзя.
+    w.apply(WorldCommand::DefineFloor(FloorDef {
+        id: FloorId(1),
+        name: "up".into(),
+        base_y: 4.0,
+        height: 3.0,
+    }))
+    .unwrap();
+    w.apply(WorldCommand::PlaceElement(StructureElement {
+        id: ObjectId::from_u128(50),
+        kind: StructureKind::Stair { to: FloorId(1) },
+        placement: Placement::Run {
+            start: GridCell::new(5, 5),
+            dir: astrocore_math::Facing::East,
+            length: 3,
+        },
+        floor: FloorId(0),
+        material: mat(),
+        thickness: 0.2,
+    }))
+    .unwrap();
+    assert!(matches!(
+        w.apply(WorldCommand::RemoveFloor { id: FloorId(1) }),
+        Err(WorldError::FloorNotEmpty(_))
+    ));
+}

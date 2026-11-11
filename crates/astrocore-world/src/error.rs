@@ -10,6 +10,8 @@ pub enum WorldError {
     UnknownFloor(FloorId),
     #[error("этаж {0:?} уже определён")]
     DuplicateFloor(FloorId),
+    #[error("этаж {0:?} не пуст: на нём есть элементы или ведущие на него лестницы")]
+    FloorNotEmpty(FloorId),
     #[error("неверное определение этажа: {0}")]
     InvalidFloor(String),
     #[error("объект {0} уже существует")]

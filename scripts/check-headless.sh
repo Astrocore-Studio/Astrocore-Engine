@@ -26,7 +26,7 @@ done
 pure=(astrocore-math astrocore-core astrocore-world astrocore-geometry astrocore-spatial
       astrocore-navigation astrocore-sprites astrocore-persistence astrocore-protocol
       astrocore-prefabs astrocore-runtime astrocore-assets astrocore-world-compiler
-      astrocore-physics astrocore-network)
+      astrocore-physics astrocore-network astrocore-editor)
 for pkg in "${pure[@]}"; do
   if deps "$pkg" | grep -qE '^bevy(_[a-z0-9_]+)?$'; then
     echo "ОШИБКА: $pkg зависит от Bevy"; fail=1

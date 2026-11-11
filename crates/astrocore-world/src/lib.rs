@@ -114,8 +114,14 @@ pub struct DirtyRegion {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorldCommand {
     DefineFloor(FloorDef),
+    /// Удалить пустой этаж (без элементов и без лестниц, ведущих на него).
+    RemoveFloor {
+        id: FloorId,
+    },
     PlaceElement(StructureElement),
-    RemoveElement { id: ObjectId },
+    RemoveElement {
+        id: ObjectId,
+    },
 }
 
 /// Подтверждённая операция — запись журнала и единица репликации.
@@ -343,6 +349,20 @@ impl World {
                     return Err(WorldError::DuplicateFloor(def.id));
                 }
                 self.floors.insert(def.id, def.clone());
+                self.revision = self.revision.next();
+            }
+            WorldCommand::RemoveFloor { id } => {
+                if !self.floors.contains_key(id) {
+                    return Err(WorldError::UnknownFloor(*id));
+                }
+                if self
+                    .elements
+                    .values()
+                    .any(|e| e.floor == *id || e.kind.target_floor() == Some(*id))
+                {
+                    return Err(WorldError::FloorNotEmpty(*id));
+                }
+                self.floors.remove(id);
                 self.revision = self.revision.next();
             }
             WorldCommand::PlaceElement(element) => {
