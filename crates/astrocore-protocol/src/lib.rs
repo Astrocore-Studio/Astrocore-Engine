@@ -53,20 +53,47 @@ pub enum ClientMessage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// Принятие соединения: частота тика, ревизия мира в момент входа и сетевой ID игрока.
     Welcome {
         tick_rate_hz: u8,
         revision: u64,
+        you: NetworkEntityId,
+    },
+    /// Часть снимка мира (postcard-байты `WorldState`, разбитые на куски).
+    SnapshotPart {
+        index: u16,
+        total: u16,
+        data: Vec<u8>,
     },
     /// Подтверждённая операция над миром — применять строго по порядку `seq`.
     WorldOp(WorldOp),
-    InputAck {
-        seq: u32,
+    /// Подтверждение ввода и авторитетная позиция после его применения.
+    InputAck { seq: u32, pos: [f32; 3] },
+    /// Состояние видимой сущности (игрока). `tick` — серверный тик.
+    EntityState {
+        id: NetworkEntityId,
+        pos: [f32; 3],
+        yaw: f32,
+        tick: u32,
+    },
+    /// Сущность вышла из зоны интереса или отключилась.
+    EntityRemoved { id: NetworkEntityId },
+    /// Состояние двери. `net` — сетевой ID, который клиент использует в `Interact`.
+    DoorState {
+        net: NetworkEntityId,
+        element: astrocore_core::ObjectId,
+        open: bool,
     },
     Reject {
         reason: RejectReason,
         detail: String,
     },
 }
+
+/// Максимальный размер одного куска снимка, байты.
+pub const MAX_SNAPSHOT_PART_BYTES: usize = 48 * 1024;
+/// Максимальное число кусков снимка (≈ 192 МиБ).
+pub const MAX_SNAPSHOT_PARTS: u16 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
@@ -76,6 +103,7 @@ pub enum RejectReason {
     StaleRevision,
     InvalidCommand,
     RateLimited,
+    ServerFull,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -136,12 +164,28 @@ impl Validate for ClientMessage {
 
 impl Validate for ServerMessage {
     fn validate(&self) -> Result<(), ProtocolError> {
-        if let ServerMessage::Reject { detail, .. } = self
-            && detail.len() > MAX_REASON_LEN
-        {
-            return Err(ProtocolError::Invalid("reject detail"));
+        let finite = |p: &[f32; 3]| p.iter().all(|v| v.is_finite());
+        match self {
+            ServerMessage::Reject { detail, .. } if detail.len() > MAX_REASON_LEN => {
+                Err(ProtocolError::Invalid("reject detail"))
+            }
+            ServerMessage::SnapshotPart { index, total, data } => {
+                if *total == 0 || *total > MAX_SNAPSHOT_PARTS || index >= total {
+                    Err(ProtocolError::Invalid("snapshot index/total"))
+                } else if data.len() > MAX_SNAPSHOT_PART_BYTES {
+                    Err(ProtocolError::Invalid("snapshot part size"))
+                } else {
+                    Ok(())
+                }
+            }
+            ServerMessage::InputAck { pos, .. } if !finite(pos) => {
+                Err(ProtocolError::Invalid("pos"))
+            }
+            ServerMessage::EntityState { pos, yaw, .. } if !finite(pos) || !yaw.is_finite() => {
+                Err(ProtocolError::Invalid("entity state"))
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -237,9 +281,32 @@ mod tests {
             ServerMessage::Welcome {
                 tick_rate_hz: 30,
                 revision: 12,
+                you: NetworkEntityId(3),
+            },
+            ServerMessage::SnapshotPart {
+                index: 1,
+                total: 3,
+                data: vec![1, 2, 3],
             },
             ServerMessage::WorldOp(WorldOp { seq: 13, command }),
-            ServerMessage::InputAck { seq: 9 },
+            ServerMessage::InputAck {
+                seq: 9,
+                pos: [1.0, 2.0, 3.0],
+            },
+            ServerMessage::EntityState {
+                id: NetworkEntityId(4),
+                pos: [0.0; 3],
+                yaw: 1.0,
+                tick: 77,
+            },
+            ServerMessage::EntityRemoved {
+                id: NetworkEntityId(4),
+            },
+            ServerMessage::DoorState {
+                net: NetworkEntityId(9),
+                element: ObjectId::from_u128(5),
+                open: true,
+            },
             ServerMessage::Reject {
                 reason: RejectReason::StaleRevision,
                 detail: "revision".into(),
@@ -306,6 +373,36 @@ mod tests {
         assert_eq!(
             decode::<ClientMessage>(&raw),
             Err(ProtocolError::Invalid("yaw"))
+        );
+    }
+
+    #[test]
+    fn server_message_validation() {
+        let part = |index, total, len| ServerMessage::SnapshotPart {
+            index,
+            total,
+            data: vec![0; len],
+        };
+        assert!(encode(&part(0, 1, 10)).is_ok());
+        assert!(encode(&part(1, 1, 10)).is_err(), "индекс вне диапазона");
+        assert!(encode(&part(0, 0, 10)).is_err());
+        assert!(encode(&part(0, MAX_SNAPSHOT_PARTS + 1, 10)).is_err());
+        assert!(encode(&part(0, 1, MAX_SNAPSHOT_PART_BYTES + 1)).is_err());
+        assert!(
+            encode(&ServerMessage::InputAck {
+                seq: 1,
+                pos: [f32::NAN, 0.0, 0.0]
+            })
+            .is_err()
+        );
+        assert!(
+            encode(&ServerMessage::EntityState {
+                id: NetworkEntityId(1),
+                pos: [0.0; 3],
+                yaw: f32::INFINITY,
+                tick: 0
+            })
+            .is_err()
         );
     }
 

@@ -1,0 +1,20 @@
+[package]
+name = "astrocore-network"
+description = "Сетевой слой: авторитарный игровой сервер, клиент с предсказанием, интерес, TCP-транспорт"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-physics.workspace = true
+astrocore-protocol.workspace = true
+astrocore-runtime.workspace = true
+astrocore-spatial.workspace = true
+astrocore-world.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

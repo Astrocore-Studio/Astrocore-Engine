@@ -105,6 +105,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-network"
+version = "0.1.0"
+dependencies = [
+ "astrocore-core",
+ "astrocore-math",
+ "astrocore-physics",
+ "astrocore-protocol",
+ "astrocore-runtime",
+ "astrocore-spatial",
+ "astrocore-world",
+ "postcard",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-persistence"
 version = "0.1.0"
 dependencies = [
@@ -116,6 +131,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "astrocore-physics"
+version = "0.1.0"
+dependencies = [
+ "astrocore-core",
+ "astrocore-geometry",
+ "astrocore-math",
+ "astrocore-world",
 ]
 
 [[package]]

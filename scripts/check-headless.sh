@@ -24,7 +24,9 @@ done
 
 # 2. Чистые доменные крейты не знают про Bevy.
 pure=(astrocore-math astrocore-core astrocore-world astrocore-geometry astrocore-spatial
-      astrocore-navigation astrocore-sprites astrocore-persistence astrocore-protocol)
+      astrocore-navigation astrocore-sprites astrocore-persistence astrocore-protocol
+      astrocore-prefabs astrocore-runtime astrocore-assets astrocore-world-compiler
+      astrocore-physics astrocore-network)
 for pkg in "${pure[@]}"; do
   if deps "$pkg" | grep -qE '^bevy(_[a-z0-9_]+)?$'; then
     echo "ОШИБКА: $pkg зависит от Bevy"; fail=1
@@ -47,6 +49,10 @@ forbid astrocore-world   astrocore-geometry astrocore-spatial astrocore-navigati
 forbid astrocore-protocol astrocore-geometry astrocore-sprites astrocore-bevy
 forbid astrocore-persistence astrocore-bevy astrocore-protocol
 forbid astrocore-math    astrocore-core astrocore-world
+forbid astrocore-physics astrocore-network astrocore-protocol astrocore-persistence astrocore-bevy
+forbid astrocore-network astrocore-bevy astrocore-persistence astrocore-world-compiler
+forbid astrocore-assets  astrocore-world astrocore-geometry astrocore-network
+forbid astrocore-runtime astrocore-network astrocore-physics astrocore-protocol astrocore-bevy
 echo "ok: запрещённые связи между крейтами отсутствуют"
 
 exit $fail

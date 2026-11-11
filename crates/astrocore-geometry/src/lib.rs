@@ -200,7 +200,27 @@ pub fn collision_boxes(world: &World, floor: &FloorDef, e: &StructureElement) ->
                 run_slices(step, floor.base_y, top.base_y, start, dir, length, n)
             })
             .unwrap_or_default(),
+        // Окно непроходимо; дверь — динамический объект (см. `opening_bounds`).
+        (StructureKind::Opening(astrocore_world::OpeningKind::Window), Placement::Edge(edge)) => {
+            vec![wall_box(edge, step, e.thickness, floor)]
+        }
+        (StructureKind::Opening(astrocore_world::OpeningKind::Door), _) => Vec::new(),
         _ => element_bounds(world, floor, e).into_iter().collect(),
+    }
+}
+
+/// Габариты проёма (двери) как тонкой коробки по ребру — для динамической коллизии
+/// закрытой двери.
+pub fn opening_bounds(world: &World, e: &StructureElement) -> Option<Aabb> {
+    let floor = world.floor(e.floor)?;
+    match (e.kind, e.placement) {
+        (StructureKind::Opening(_), Placement::Edge(edge)) => Some(wall_box(
+            edge,
+            world.config().grid_step_m,
+            e.thickness,
+            floor,
+        )),
+        _ => None,
     }
 }
 
