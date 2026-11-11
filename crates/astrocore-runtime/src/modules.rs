@@ -26,6 +26,11 @@ pub enum HookEvent {
         id: ObjectId,
         component: String,
     },
+    /// Игрок отключился; `pos` — его последняя позиция (например, чтобы выбросить предметы).
+    PlayerLeft {
+        actor: NetworkEntityId,
+        pos: astrocore_math::glam::Vec3,
+    },
     ChunkLoaded {
         chunk: ChunkCoord,
     },

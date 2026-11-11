@@ -477,13 +477,22 @@ impl GameServer {
         };
         self.components.retain(|(n, _), _| *n != p.net);
         self.content_queue.remove(&conn);
-        self.players
+        let mut out: Vec<Out> = self
+            .players
             .keys()
             .map(|&to| Out::Send {
                 to,
                 msg: ServerMessage::EntityRemoved { id: p.net },
             })
-            .collect()
+            .collect();
+        self.dispatch_hook(
+            HookEvent::PlayerLeft {
+                actor: p.net,
+                pos: p.state.pos,
+            },
+            &mut out,
+        );
+        out
     }
 
     // ---- входящие пакеты ----------------------------------------------------

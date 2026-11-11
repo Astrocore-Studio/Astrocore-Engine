@@ -1444,6 +1444,34 @@ mod game_commands {
     }
 
     #[test]
+    fn modules_learn_when_a_player_leaves_and_where_they_were() {
+        use std::sync::{Arc, Mutex};
+        struct Leave(Arc<Mutex<Vec<(astrocore_core::NetworkEntityId, f32)>>>);
+        impl GameModule for Leave {
+            fn id(&self) -> &str {
+                "test.leave"
+            }
+            fn handle(&mut self, _: &mut HookContext<'_>, event: &HookEvent) {
+                if let HookEvent::PlayerLeft { actor, pos } = event {
+                    self.0.lock().unwrap().push((*actor, pos.x));
+                }
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Leave(seen.clone()))).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        let me = h.client(a).net_id().unwrap();
+        let outs = h.server.disconnect(a);
+        h.deliver(outs);
+        assert_eq!(*seen.lock().unwrap(), vec![(me, 2.5)]);
+    }
+
+    #[test]
     fn modules_see_player_positions() {
         let mut h = harness();
         let a = h.join("a");
