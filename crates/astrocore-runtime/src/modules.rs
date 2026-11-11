@@ -1,25 +1,57 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use astrocore_core::ObjectId;
+use astrocore_core::{NetworkEntityId, ObjectId};
 use astrocore_math::ChunkCoord;
 use astrocore_world::{World, WorldCommand};
 
 /// Универсальные события движка.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HookEvent {
-    Interact { actor: ObjectId, target: ObjectId },
-    Collision { a: ObjectId, b: ObjectId },
-    PortalChanged { element: ObjectId, open: bool },
-    EntitySpawned { id: ObjectId },
-    ComponentChanged { id: ObjectId, component: String },
-    ChunkLoaded { chunk: ChunkCoord },
+    Interact {
+        actor: ObjectId,
+        target: ObjectId,
+    },
+    Collision {
+        a: ObjectId,
+        b: ObjectId,
+    },
+    PortalChanged {
+        element: ObjectId,
+        open: bool,
+    },
+    EntitySpawned {
+        id: ObjectId,
+    },
+    ComponentChanged {
+        id: ObjectId,
+        component: String,
+    },
+    ChunkLoaded {
+        chunk: ChunkCoord,
+    },
+    /// Игровая команда клиента (`ClientMessage::GameCommand`): вид и непрозрачные байты — их смысл
+    /// знает только игровой модуль. Движок проверяет лишь размеры и частоту.
+    Command {
+        actor: NetworkEntityId,
+        kind: String,
+        data: Vec<u8>,
+    },
 }
 
 /// Контекст вызова: чтение мира и накопление команд.
 pub struct HookContext<'a> {
     pub world: &'a World,
     commands: Vec<WorldCommand>,
+    components: Vec<ComponentUpdate>,
     log: Vec<String>,
+}
+
+/// Значение реплицируемого вида данных, которое модуль просит установить сущности.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentUpdate {
+    pub net: NetworkEntityId,
+    pub kind: String,
+    pub data: Vec<u8>,
 }
 
 impl<'a> HookContext<'a> {
@@ -27,8 +59,18 @@ impl<'a> HookContext<'a> {
         Self {
             world,
             commands: Vec::new(),
+            components: Vec::new(),
             log: Vec::new(),
         }
+    }
+
+    /// Установить реплицируемые данные сущности; вид должен быть зарегистрирован на сервере.
+    pub fn set_component(&mut self, net: NetworkEntityId, kind: impl Into<String>, data: Vec<u8>) {
+        self.components.push(ComponentUpdate {
+            net,
+            kind: kind.into(),
+            data,
+        });
     }
 
     /// Запросить изменение мира; применит движок с валидацией.
@@ -45,6 +87,7 @@ impl<'a> HookContext<'a> {
 #[derive(Debug, Default, PartialEq)]
 pub struct HookOutput {
     pub commands: Vec<WorldCommand>,
+    pub components: Vec<ComponentUpdate>,
     pub log: Vec<String>,
 }
 
@@ -141,6 +184,7 @@ impl ModuleHost {
             let mut ctx = HookContext::new(world);
             self.modules[i].handle(&mut ctx, event);
             out.commands.append(&mut ctx.commands);
+            out.components.append(&mut ctx.components);
             out.log.append(&mut ctx.log);
         }
         out

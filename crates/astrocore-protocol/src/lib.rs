@@ -38,6 +38,8 @@ pub enum ClientMessage {
     EditTerrain { base_revision: u64, data: Vec<u8> },
     /// Запросить содержимое по SHA-256 (ассеты и пакеты доставляются отдельно от игрового потока).
     RequestContent { hash: [u8; 32] },
+    /// Игровая команда: вид и байты определяет игровой модуль (подбор предмета, действие и т. п.).
+    GameCommand { kind: String, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,12 +183,21 @@ impl Validate for ClientMessage {
                     return Err(ProtocolError::Invalid("yaw"));
                 }
             }
+            ClientMessage::GameCommand { kind, data }
+                if kind.is_empty()
+                    || kind.len() > MAX_COMPONENT_KIND_LEN
+                    || kind.chars().any(char::is_control)
+                    || data.len() > MAX_COMPONENT_BYTES =>
+            {
+                return Err(ProtocolError::Invalid("game command"));
+            }
             ClientMessage::EditTerrain { data, .. } if data.len() > MAX_TERRAIN_EDIT_BYTES => {
                 return Err(ProtocolError::Invalid("terrain edit size"));
             }
             ClientMessage::Interact { .. }
             | ClientMessage::RequestSnapshot
             | ClientMessage::RequestContent { .. }
+            | ClientMessage::GameCommand { .. }
             | ClientMessage::EditTerrain { .. } => {}
             ClientMessage::Edit { .. } => {}
         }

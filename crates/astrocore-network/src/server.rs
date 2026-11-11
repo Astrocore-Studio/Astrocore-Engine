@@ -578,6 +578,18 @@ impl GameServer {
                         command,
                     } => self.on_edit(conn, base_revision, command, &mut out),
                     ClientMessage::RequestSnapshot => self.send_snapshot(conn, &mut out),
+                    ClientMessage::GameCommand { kind, data } => {
+                        if let Some(net) = self.players.get(&conn).map(|p| p.net) {
+                            self.dispatch_hook(
+                                HookEvent::Command {
+                                    actor: net,
+                                    kind,
+                                    data,
+                                },
+                                &mut out,
+                            );
+                        }
+                    }
                     ClientMessage::RequestContent { hash } => {
                         self.on_request_content(conn, hash, &mut out)
                     }
@@ -944,6 +956,12 @@ impl GameServer {
             return;
         };
         let result = host.dispatch(&self.world, &event);
+        for u in result.components {
+            // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
+            if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {
+                out.extend(msgs);
+            }
+        }
         for cmd in result.commands {
             // Модуль не имеет прямого доступа к миру: его команды проходят обычную валидацию.
             if let Ok(op) = self.world.apply(cmd) {

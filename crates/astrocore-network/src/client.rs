@@ -186,6 +186,15 @@ impl ClientCore {
             .map(|(_, d)| d.as_slice())
     }
 
+    /// Игровая команда серверу (`kind` и байты определяет игровой модуль).
+    pub fn command_packet(&self, kind: &str, data: Vec<u8>) -> Option<Vec<u8>> {
+        encode(&ClientMessage::GameCommand {
+            kind: kind.to_string(),
+            data,
+        })
+        .ok()
+    }
+
     pub fn request_content_packet(&self, hash: [u8; 32]) -> Vec<u8> {
         encode(&ClientMessage::RequestContent { hash }).unwrap_or_default()
     }

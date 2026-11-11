@@ -1361,3 +1361,92 @@ mod content {
         assert!(queued <= 2 * 3 + 3, "очередь ограничена: {queued}");
     }
 }
+
+mod game_commands {
+    use astrocore_api::{Interest, ReplicatedKind, ReplicationChannel, ReplicationRegistry};
+    use astrocore_runtime::modules::{GameModule, HookContext, HookEvent, ModuleHost};
+
+    use super::*;
+    use crate::server::GameServer;
+    use crate::testkit::{ByBuild, test_world};
+
+    /// Модуль-счётчик: команда «count.add» увеличивает значение и реплицирует его.
+    struct Counter(u32);
+
+    impl GameModule for Counter {
+        fn id(&self) -> &str {
+            "test.counter"
+        }
+        fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+            if let HookEvent::Command { actor, kind, data } = event
+                && kind == "count.add"
+            {
+                self.0 += u32::from(data.first().copied().unwrap_or(0));
+                ctx.set_component(*actor, "test.count", self.0.to_le_bytes().to_vec());
+            }
+        }
+    }
+
+    fn harness() -> Harness {
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Counter(0))).unwrap();
+        host.finalize().unwrap();
+        let mut reg = ReplicationRegistry::new();
+        reg.register(ReplicatedKind {
+            name: "test.count".into(),
+            channel: ReplicationChannel::ReliableOrdered,
+            interest: Interest::Everyone,
+            max_bytes: 8,
+        })
+        .unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host)
+            .with_replication(reg);
+        Harness::with_server(server)
+    }
+
+    #[test]
+    fn commands_reach_the_module_and_replicated_answers_reach_everyone() {
+        let mut h = harness();
+        let a = h.join("a");
+        let b = h.join("b");
+        let me = h.client(a).net_id().unwrap();
+        let packet = h.client(a).command_packet("count.add", vec![5]).unwrap();
+        h.send(a, packet);
+        let packet = h.client(a).command_packet("count.add", vec![2]).unwrap();
+        h.send(a, packet);
+        assert_eq!(
+            h.client(b).component(me, "test.count"),
+            Some(&7u32.to_le_bytes()[..])
+        );
+        assert_eq!(
+            h.client(a).component(me, "test.count"),
+            Some(&7u32.to_le_bytes()[..])
+        );
+    }
+
+    #[test]
+    fn invalid_commands_are_rejected_by_the_protocol_and_unknown_ones_ignored() {
+        let mut h = harness();
+        let a = h.join("a");
+        assert!(h.client(a).command_packet("", vec![]).is_none());
+        assert!(
+            h.client(a)
+                .command_packet(&"k".repeat(65), vec![])
+                .is_none()
+        );
+        assert!(
+            h.client(a)
+                .command_packet("ok", vec![0; astrocore_protocol::MAX_COMPONENT_BYTES + 1])
+                .is_none()
+        );
+        let me = h.client(a).net_id().unwrap();
+        let packet = h
+            .client(a)
+            .command_packet("nobody.handles.this", vec![1])
+            .unwrap();
+        h.send(a, packet);
+        assert_eq!(h.client(a).component(me, "test.count"), None);
+        assert_eq!(h.server.player_count(), 1, "игрок не отключён");
+    }
+}
