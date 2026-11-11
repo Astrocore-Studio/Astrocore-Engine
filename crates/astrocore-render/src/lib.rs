@@ -1,6 +1,7 @@
 pub mod billboard;
 pub mod camera;
 pub mod diagnostics;
+pub mod doors;
 pub mod lighting;
 pub mod lod;
 pub mod manifest;
@@ -17,6 +18,7 @@ use bevy::prelude::*;
 pub use billboard::{BillboardPlugin, DirectionalSprite, SpriteSheet};
 pub use camera::{CameraMode, CameraRig, CameraRigPlugin};
 pub use diagnostics::{RenderDiagnosticsPlugin, RenderStats, RenderStatsConfig};
+pub use doors::{DoorAnim, DoorPanel, DoorSprites, DoorSpritesPlugin, DoorStates, Phase};
 pub use lighting::{EmissiveMaterials, LightKind, LightSource, LightingPlugin, ShadowSettings};
 pub use lod::{DrawDistance, DrawDistancePlugin};
 pub use manifest::{

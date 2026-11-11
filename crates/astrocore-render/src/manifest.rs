@@ -40,8 +40,31 @@ fn default_sprite_size() -> [f32; 2] {
 
 /// Соответствие идентификаторов движка картинкам: клиент не знает о форматах игры, игровой
 /// билд сам генерирует этот файл из своих прототипов и ассетов.
+/// Лист состояния анимации двери: сетка ячеек, кадры идут по строкам слева направо.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetEntry {
+    pub image: String,
+    pub cols: u32,
+    pub rows: u32,
+    /// Задержки кадров, секунды; для статичного состояния — один кадр (задержка не нужна).
+    #[serde(default)]
+    pub delays: Vec<f32>,
+}
+
+/// Спрайты двери по состояниям.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DoorEntry {
+    pub closed: SheetEntry,
+    pub open: SheetEntry,
+    pub opening: SheetEntry,
+    pub closing: SheetEntry,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RenderManifest {
+    /// Анимированные двери: идентификатор материала проёма → спрайты состояний.
+    #[serde(default)]
+    pub doors: BTreeMap<String, DoorEntry>,
     #[serde(default)]
     pub materials: BTreeMap<String, MaterialEntry>,
     #[serde(default)]
@@ -91,7 +114,7 @@ impl RenderManifest {
 }
 
 /// Относительный путь без выхода из каталога манифеста.
-fn safe_join(base: &Path, rel: &str) -> Result<PathBuf, ManifestError> {
+pub(crate) fn safe_join(base: &Path, rel: &str) -> Result<PathBuf, ManifestError> {
     let p = Path::new(rel);
     let ok = !rel.is_empty()
         && p.components()
@@ -103,7 +126,7 @@ fn safe_join(base: &Path, rel: &str) -> Result<PathBuf, ManifestError> {
     }
 }
 
-fn load_png(path: &Path, repeat: bool) -> Result<Image, ManifestError> {
+pub(crate) fn load_png(path: &Path, repeat: bool) -> Result<Image, ManifestError> {
     let len = std::fs::metadata(path)
         .map_err(|e| ManifestError::Io(path.to_path_buf(), e))?
         .len();
@@ -143,7 +166,14 @@ impl RenderManifest {
         &self,
         base: &Path,
         images: &mut Assets<Image>,
-    ) -> Result<(MaterialTextures, PlacementSprites), ManifestError> {
+    ) -> Result<
+        (
+            MaterialTextures,
+            PlacementSprites,
+            crate::doors::DoorSprites,
+        ),
+        ManifestError,
+    > {
         let mut textures = MaterialTextures::default();
         for (id, e) in &self.materials {
             let pid =
@@ -171,7 +201,8 @@ impl RenderManifest {
                 },
             );
         }
-        Ok((textures, sprites))
+        let doors = crate::doors::install_doors(&self.doors, base, images)?;
+        Ok((textures, sprites, doors))
     }
 }
 
@@ -305,7 +336,7 @@ mod tests {
             r#"{"materials":{"ss14:wall":{"image":"w.png"}},"sprites":{"ss14:pen":{"image":"w.png","size":[0.2,0.3]}}}"#,
         )
         .unwrap();
-        let (t, s) = ok.install(&dir, &mut images).unwrap();
+        let (t, s, _) = ok.install(&dir, &mut images).unwrap();
         assert_eq!(t.0.len(), 1);
         let pen = &s.0[&PrototypeId::new("ss14:pen").unwrap()];
         assert_eq!(pen.size, Vec2::new(0.2, 0.3));

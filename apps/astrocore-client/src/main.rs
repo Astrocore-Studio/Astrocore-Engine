@@ -222,6 +222,7 @@ fn main() {
         RenderDiagnosticsPlugin,
         DrawDistancePlugin,
         astrocore_render::PlacementSpritesPlugin,
+        astrocore_render::DoorSpritesPlugin,
     ))
     .insert_resource(Time::<Fixed>::from_hz(20.0))
     .insert_resource(ClearColor(Color::srgb(0.53, 0.66, 0.80)))
@@ -309,7 +310,10 @@ fn main() {
             core,
             started: std::time::Instant::now(),
         })
-        .add_systems(Update, (net_poll, sync_remote_players, door_key).chain())
+        .add_systems(
+            Update,
+            (net_poll, sync_door_states, sync_remote_players, door_key).chain(),
+        )
         .add_systems(FixedUpdate, send_input);
     } else {
         app.add_systems(Startup, setup_demo_world.after(setup));
@@ -340,14 +344,16 @@ fn load_render_manifest(
     let result =
         astrocore_render::RenderManifest::load(path).and_then(|m| m.install(&base, &mut images));
     match result {
-        Ok((textures, sprites)) => {
+        Ok((textures, sprites, doors)) => {
             println!(
-                "манифест рендера: текстур {}, спрайтов {}",
+                "манифест рендера: текстур {}, спрайтов {}, дверей {}",
                 textures.0.len(),
-                sprites.0.len()
+                sprites.0.len(),
+                doors.0.len()
             );
             commands.insert_resource(textures);
             commands.insert_resource(sprites);
+            commands.insert_resource(doors);
         }
         Err(e) => eprintln!("манифест рендера не загружен: {e}"),
     }
@@ -573,6 +579,17 @@ fn sync_terrain(
             }
             r.terrain = terrain;
             r.dirty.extend(dirty);
+        }
+    }
+}
+
+/// Передать рендеру серверное состояние дверей (открыта или закрыта).
+fn sync_door_states(net: NonSend<Net>, mut states: ResMut<astrocore_render::DoorStates>) {
+    for id in net.core.door_ids() {
+        if let (Some(element), Some(open)) = (net.core.door_element(id), net.core.door_open(id))
+            && states.0.get(&element) != Some(&open)
+        {
+            states.0.insert(element, open);
         }
     }
 }
