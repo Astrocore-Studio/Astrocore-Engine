@@ -1,0 +1,21 @@
+[package]
+name = "astrocore-physics-avian"
+description = "Адаптер Avian3D: запросы и динамические тела за интерфейсами astrocore-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+astrocore-api.workspace = true
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-physics.workspace = true
+avian3d = { version = "=0.8.0", default-features = false, features = ["3d", "parry-f32", "default-collider"] }
+bevy = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+astrocore-world.workspace = true
+
+[lints]
+workspace = true
