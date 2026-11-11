@@ -1,5 +1,3 @@
-//! Камеры: перспективная (основная) и ортографическая (редакторская, AC-004).
-
 use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::prelude::*;
 

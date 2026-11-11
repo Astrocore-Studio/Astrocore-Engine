@@ -1,5 +1,3 @@
-//! Валидатор карты: находит проблемы до публикации (раздел 8, 10 дизайн-документа).
-
 use astrocore_core::ObjectId;
 use astrocore_math::GridCell;
 use astrocore_spatial::{Diagnostic, Topology};

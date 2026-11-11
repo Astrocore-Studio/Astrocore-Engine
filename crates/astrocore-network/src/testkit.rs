@@ -1,5 +1,3 @@
-//! Помощники для тестов и примеров: тестовая карта и стенд «сервер + клиенты» без сокетов.
-
 use std::collections::BTreeMap;
 
 use astrocore_core::{ObjectId, PrototypeId};

@@ -1,17 +1,3 @@
-//! Серверно-авторитарное игровое ядро (не знает про сокеты).
-//!
-//! Вход — пакеты от соединений ([`GameServer::on_packet`]) и тики
-//! ([`GameServer::tick`]); выход — список [`Out`]: сообщения конкретным соединениям
-//! и запросы на отключение. Всё детерминировано, поэтому тестируется без сети.
-//!
-//! Принципы (раздел 15 и 21):
-//! * клиенту не доверяют: позиция берётся из серверной симуляции, ввод ограничен
-//!   одной командой за тик, скорость задаётся сервером, правки мира проходят
-//!   проверку прав и ревизии;
-//! * структурные операции мира идут всем подключённым по порядку, а состояние сущностей
-//!   — только в зоне интереса (расстояние чанков + видимость через комнаты/порталы);
-//! * на соединение действует лимит частоты сообщений и счётчик нарушений.
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use astrocore_core::{NetworkEntityId, ObjectId, Revision};
@@ -411,7 +397,10 @@ impl GameServer {
                         command,
                     } => self.on_edit(conn, base_revision, command, &mut out),
                     ClientMessage::RequestSnapshot => self.send_snapshot(conn, &mut out),
-                    ClientMessage::EditTerrain { base_revision, data } => self.on_edit_terrain(conn, base_revision, &data, &mut out),
+                    ClientMessage::EditTerrain {
+                        base_revision,
+                        data,
+                    } => self.on_edit_terrain(conn, base_revision, &data, &mut out),
                 }
             }
         }
@@ -526,7 +515,10 @@ impl GameServer {
         if let Some(t) = &self.terrain {
             match snapshot::split_terrain(&t.to_state()) {
                 Ok(parts) => out.extend(parts.into_iter().map(|msg| Out::Send { to: conn, msg })),
-                Err(e) => out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e.to_string()) }),
+                Err(e) => out.push(Out::Send {
+                    to: conn,
+                    msg: reject(RejectReason::InvalidCommand, &e.to_string()),
+                }),
             }
         }
         for (element, net) in &self.door_net {
@@ -620,31 +612,52 @@ impl GameServer {
         }
     }
 
-    fn on_edit_terrain(&mut self, conn: ConnId, base_revision: u64, data: &[u8], out: &mut Vec<Out>) {
+    fn on_edit_terrain(
+        &mut self,
+        conn: ConnId,
+        base_revision: u64,
+        data: &[u8],
+        out: &mut Vec<Out>,
+    ) {
         if !self.players[&conn].identity.can_edit {
-            out.push(Out::Send { to: conn, msg: reject(RejectReason::NotAuthorized, "правка рельефа запрещена") });
+            out.push(Out::Send {
+                to: conn,
+                msg: reject(RejectReason::NotAuthorized, "правка рельефа запрещена"),
+            });
             self.strike(conn, out);
             return;
         }
         let Some(terrain) = self.terrain.as_ref() else {
-            out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, "в мире нет рельефа") });
+            out.push(Out::Send {
+                to: conn,
+                msg: reject(RejectReason::InvalidCommand, "в мире нет рельефа"),
+            });
             return;
         };
         if terrain.revision() != base_revision {
-            out.push(Out::Send { to: conn, msg: reject(RejectReason::StaleRevision, "устаревшая ревизия рельефа") });
+            out.push(Out::Send {
+                to: conn,
+                msg: reject(RejectReason::StaleRevision, "устаревшая ревизия рельефа"),
+            });
             return;
         }
         let edit: TerrainEdit = match postcard::from_bytes(data) {
             Ok(e) => e,
             Err(e) => {
-                out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e.to_string()) });
+                out.push(Out::Send {
+                    to: conn,
+                    msg: reject(RejectReason::InvalidCommand, &e.to_string()),
+                });
                 self.strike(conn, out);
                 return;
             }
         };
         match self.apply_terrain_edit(&edit) {
             Ok(outs) => out.extend(outs),
-            Err(e) => out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e) }),
+            Err(e) => out.push(Out::Send {
+                to: conn,
+                msg: reject(RejectReason::InvalidCommand, &e),
+            }),
         }
     }
 
@@ -768,7 +781,9 @@ impl GameServer {
             let before = p.state.pos;
             apply_input(
                 &self.physics,
-                self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+                self.terrain
+                    .as_ref()
+                    .map(|t| t as &dyn astrocore_physics::GroundProvider),
                 &mut p.state,
                 &shape,
                 &cmd,

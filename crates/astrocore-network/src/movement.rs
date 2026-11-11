@@ -1,8 +1,8 @@
-//! Общий для сервера и клиента расчёт движения: одна и та же функция гарантирует,
-//! что предсказание клиента совпадает с серверным результатом.
-
 use astrocore_math::glam::Vec3;
-use astrocore_physics::{BoxWorld, CharacterShape, CharacterState, GroundProvider, move_character, move_character_on_ground};
+use astrocore_physics::{
+    BoxWorld, CharacterShape, CharacterState, GroundProvider, move_character,
+    move_character_on_ground,
+};
 
 /// Скорость ходьбы, м/с.
 pub const MOVE_SPEED: f32 = 4.0;

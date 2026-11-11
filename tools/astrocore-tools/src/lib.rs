@@ -1,6 +1,3 @@
-//! Командные инструменты (раздел 5 дизайн-документа: `tools/world-validator`,
-//! `tools/asset-compiler`, `tools/benchmark-runner`).
-
 pub mod bench;
 
 use std::fs;

@@ -1,11 +1,3 @@
-//! Клиентское ядро: реплика мира, предсказание движения, интерполяция.
-//!
-//! Не знает про сокеты: принимает пакеты ([`ClientCore::on_packet`]) и отдаёт
-//! готовые пакеты для отправки. Движение рассчитывается той же функцией, что и на
-//! сервере ([`crate::movement::apply_input`]), поэтому в одинаковом мире
-//! предсказание совпадает с серверным результатом; при расхождении клиент
-//! принимает серверную позицию и заново проигрывает неподтверждённый ввод.
-
 use std::collections::{BTreeMap, VecDeque};
 
 use astrocore_core::{NetworkEntityId, ObjectId};
@@ -151,7 +143,11 @@ impl ClientCore {
     pub fn edit_terrain_packet(&self, edit: &TerrainEdit) -> Option<Vec<u8>> {
         let base = self.terrain.as_ref()?.revision();
         let data = postcard::to_stdvec(edit).ok()?;
-        encode(&ClientMessage::EditTerrain { base_revision: base, data }).ok()
+        encode(&ClientMessage::EditTerrain {
+            base_revision: base,
+            data,
+        })
+        .ok()
     }
 
     pub fn terrain(&self) -> Option<&Terrain> {
@@ -190,7 +186,9 @@ impl ClientCore {
         let dt = self.dt();
         apply_input(
             &self.physics,
-            self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+            self.terrain
+                .as_ref()
+                .map(|t| t as &dyn astrocore_physics::GroundProvider),
             &mut self.state,
             &self.shape,
             &cmd,
@@ -334,7 +332,8 @@ impl ClientCore {
             }
             ServerMessage::TerrainSnapshotPart { index, total, data } => {
                 if let Some(state) = self.terrain_reasm.push_decoded(index, total, data)? {
-                    let mut t = Terrain::from_state(state).map_err(|_| ClientError::Unexpected("повреждённый снимок рельефа"))?;
+                    let mut t = Terrain::from_state(state)
+                        .map_err(|_| ClientError::Unexpected("повреждённый снимок рельефа"))?;
                     t.take_dirty();
                     self.terrain = Some(t);
                     self.terrain_serial += 1;
@@ -358,7 +357,9 @@ impl ClientCore {
                         }
                     },
                     (None, _) => events.push(ClientEvent::ResyncRequested),
-                    (_, Err(_)) => return Err(ClientError::Unexpected("повреждённая правка рельефа")),
+                    (_, Err(_)) => {
+                        return Err(ClientError::Unexpected("повреждённая правка рельефа"));
+                    }
                 }
             }
             ServerMessage::InputAck { seq, pos } => {
@@ -465,7 +466,9 @@ impl ClientCore {
         for cmd in self.pending.iter().copied().collect::<Vec<_>>() {
             apply_input(
                 &self.physics,
-                self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+                self.terrain
+                    .as_ref()
+                    .map(|t| t as &dyn astrocore_physics::GroundProvider),
                 &mut base,
                 &self.shape,
                 &cmd,

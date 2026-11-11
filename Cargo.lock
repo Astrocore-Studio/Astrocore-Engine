@@ -293,6 +293,7 @@ dependencies = [
  "astrocore-network",
  "astrocore-render",
  "astrocore-sprites",
+ "astrocore-terrain",
  "astrocore-vertical-slice",
  "astrocore-world",
  "bevy",
@@ -432,6 +433,7 @@ dependencies = [
  "astrocore-geometry",
  "astrocore-math",
  "astrocore-sprites",
+ "astrocore-terrain",
  "astrocore-world",
  "bevy",
 ]

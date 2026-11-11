@@ -1,14 +1,3 @@
-//! Профили Bevy-плагинов Astrocore (ADR-0001, раздел 4 дизайн-документа).
-//!
-//! Крейт связывает канонический мир ([`astrocore_world::World`]) с Bevy ECS и
-//! задаёт расписание симуляции. Он **не** тянет оконную систему, рендер и звук:
-//! это гарантируется набором фич Bevy (`default-features = false`) и проверяется
-//! в CI скриптом `scripts/check-headless.sh`.
-//!
-//! Стадии фиксированного шага (раздел 6): Input → Commands → Simulation →
-//! WorldChanges → Replication → Presentation. Порядок задаётся через
-//! [`SimSet`] и проверяется тестом.
-
 use std::collections::{HashMap, HashSet};
 
 use astrocore_core::ObjectId;

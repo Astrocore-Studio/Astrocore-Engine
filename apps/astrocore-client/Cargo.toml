@@ -11,6 +11,7 @@ astrocore-core.workspace = true
 astrocore-math.workspace = true
 astrocore-network.workspace = true
 astrocore-render.workspace = true
+astrocore-terrain.workspace = true
 astrocore-sprites.workspace = true
 astrocore-vertical-slice = { path = "../../examples/vertical-slice" }
 astrocore-world.workspace = true

@@ -1,5 +1,3 @@
-//! Интеграционная проверка по настоящим сокетам: два клиента, один сервер на 127.0.0.1.
-
 use std::time::{Duration, Instant};
 
 use astrocore_core::ObjectId;

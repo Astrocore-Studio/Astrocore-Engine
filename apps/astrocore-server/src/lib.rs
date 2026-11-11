@@ -1,10 +1,3 @@
-//! Headless-сервер Astrocore.
-//!
-//! Не создаёт окно, графический контекст и не загружает текстуры (принцип 3
-//! раздела 3). Состояние мира сохраняется как «снимок + журнал»
-//! (`astrocore-persistence`): каждая подтверждённая операция попадает в журнал
-//! на стадии `Replication`, контрольная точка пишется периодически и при выходе.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -108,13 +101,17 @@ pub fn load_or_create(store: &Store, world_id: &str) -> Result<(World, bool), Se
 const TERRAIN_FILE: &str = "terrain.json";
 
 /// Рельеф из каталога данных (`terrain.json`), если он есть.
-pub fn load_terrain(dir: &std::path::Path) -> Result<Option<astrocore_terrain::Terrain>, ServerError> {
+pub fn load_terrain(
+    dir: &std::path::Path,
+) -> Result<Option<astrocore_terrain::Terrain>, ServerError> {
     let path = dir.join(TERRAIN_FILE);
     match std::fs::read(&path) {
         Ok(bytes) => {
-            let state: astrocore_terrain::TerrainState =
-                serde_json::from_slice(&bytes).map_err(|e| ServerError::Script(format!("terrain.json: {e}")))?;
-            astrocore_terrain::Terrain::from_state(state).map(Some).map_err(|e| ServerError::Script(format!("terrain.json: {e}")))
+            let state: astrocore_terrain::TerrainState = serde_json::from_slice(&bytes)
+                .map_err(|e| ServerError::Script(format!("terrain.json: {e}")))?;
+            astrocore_terrain::Terrain::from_state(state)
+                .map(Some)
+                .map_err(|e| ServerError::Script(format!("terrain.json: {e}")))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ServerError::Script(e.to_string())),
@@ -122,8 +119,12 @@ pub fn load_terrain(dir: &std::path::Path) -> Result<Option<astrocore_terrain::T
 }
 
 /// Атомарно записать рельеф (временный файл + переименование).
-pub fn save_terrain(dir: &std::path::Path, terrain: &astrocore_terrain::Terrain) -> Result<(), ServerError> {
-    let bytes = serde_json::to_vec(&terrain.to_state()).map_err(|e| ServerError::Script(e.to_string()))?;
+pub fn save_terrain(
+    dir: &std::path::Path,
+    terrain: &astrocore_terrain::Terrain,
+) -> Result<(), ServerError> {
+    let bytes =
+        serde_json::to_vec(&terrain.to_state()).map_err(|e| ServerError::Script(e.to_string()))?;
     let tmp = dir.join("terrain.json.tmp");
     std::fs::write(&tmp, bytes).map_err(|e| ServerError::Script(e.to_string()))?;
     std::fs::rename(tmp, dir.join(TERRAIN_FILE)).map_err(|e| ServerError::Script(e.to_string()))
@@ -772,8 +773,14 @@ mod tests {
                 core.on_packet(&p).unwrap();
             }
             if core.terrain().is_some() && !sent {
-                assert!((core.terrain().unwrap().sample(8.0, 8.0) - 2.0).abs() < 1e-3, "рельеф загружен из файла");
-                let edit = core.terrain().unwrap().brush_raise(Vec2::new(20.0, 20.0), 4.0, 3.0);
+                assert!(
+                    (core.terrain().unwrap().sample(8.0, 8.0) - 2.0).abs() < 1e-3,
+                    "рельеф загружен из файла"
+                );
+                let edit = core
+                    .terrain()
+                    .unwrap()
+                    .brush_raise(Vec2::new(20.0, 20.0), 4.0, 3.0);
                 tcp.send(&core.edit_terrain_packet(&edit).unwrap()).unwrap();
                 sent = true;
             }
@@ -782,7 +789,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(core.terrain().is_some_and(|t| t.sample(20.0, 20.0) > 2.5), "правка рельефа вернулась клиенту");
+        assert!(
+            core.terrain().is_some_and(|t| t.sample(20.0, 20.0) > 2.5),
+            "правка рельефа вернулась клиенту"
+        );
         server.finish().unwrap();
         drop(server);
         let saved = load_terrain(&data).unwrap().unwrap();

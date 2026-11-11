@@ -1,5 +1,3 @@
-//! UDP-транспорт: шифрование, потери, повторы, подмена, обрыв, настоящие сокеты.
-
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 

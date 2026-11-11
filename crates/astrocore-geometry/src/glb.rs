@@ -1,10 +1,3 @@
-//! Импорт моделей GLB (бинарный glTF 2.0) в [`MeshData`].
-//!
-//! Файл считается **недоверенным**: проверяются размеры, число вершин и индексов,
-//! допускаются только встроенные буферы (внешние URI и data-URI отвергаются),
-//! индексы проверяются на выход за границы. glTF уже в системе Y-up, метры —
-//! преобразование осей не требуется (ADR-0003).
-
 use astrocore_math::Aabb;
 use astrocore_math::glam::{Mat4, Vec3};
 
@@ -186,87 +179,84 @@ fn walk(
     Ok(())
 }
 
+/// Собрать GLB вручную: заданные позиции и индексы u16, узел с трансляцией (для тестов).
+#[doc(hidden)]
+pub fn make_test_glb(positions: &[[f32; 3]], indices: &[u16], translation: [f32; 3]) -> Vec<u8> {
+    let mut bin = Vec::new();
+    for p in positions {
+        for c in p {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    let pos_len = bin.len();
+    for i in indices {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let (min, max) =
+        positions
+            .iter()
+            .fold(([f32::MAX; 3], [f32::MIN; 3]), |(mut lo, mut hi), p| {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+                (lo, hi)
+            });
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
+        "nodes":[{{"mesh":0,"translation":[{},{},{}]}}],
+        "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],
+        "accessors":[
+          {{"bufferView":0,"componentType":5126,"count":{},"type":"VEC3","min":[{},{},{}],"max":[{},{},{}]}},
+          {{"bufferView":1,"componentType":5123,"count":{},"type":"SCALAR"}}],
+        "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{}}},{{"buffer":0,"byteOffset":{},"byteLength":{}}}],
+        "buffers":[{{"byteLength":{}}}]}}"#,
+        translation[0],
+        translation[1],
+        translation[2],
+        positions.len(),
+        min[0],
+        min[1],
+        min[2],
+        max[0],
+        max[1],
+        max[2],
+        indices.len(),
+        pos_len,
+        pos_len,
+        indices.len() * 2,
+        bin.len()
+    );
+    let mut json = json.into_bytes();
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let total = 12 + 8 + json.len() + 8 + bin.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Собрать GLB вручную: заданные позиции и индексы u16, узел с трансляцией.
-    pub(crate) fn make_glb(
-        positions: &[[f32; 3]],
-        indices: &[u16],
-        translation: [f32; 3],
-    ) -> Vec<u8> {
-        let mut bin = Vec::new();
-        for p in positions {
-            for c in p {
-                bin.extend_from_slice(&c.to_le_bytes());
-            }
-        }
-        let pos_len = bin.len();
-        for i in indices {
-            bin.extend_from_slice(&i.to_le_bytes());
-        }
-        while !bin.len().is_multiple_of(4) {
-            bin.push(0);
-        }
-        let (min, max) =
-            positions
-                .iter()
-                .fold(([f32::MAX; 3], [f32::MIN; 3]), |(mut lo, mut hi), p| {
-                    for k in 0..3 {
-                        lo[k] = lo[k].min(p[k]);
-                        hi[k] = hi[k].max(p[k]);
-                    }
-                    (lo, hi)
-                });
-        let json = format!(
-            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
-            "nodes":[{{"mesh":0,"translation":[{},{},{}]}}],
-            "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],
-            "accessors":[
-              {{"bufferView":0,"componentType":5126,"count":{},"type":"VEC3","min":[{},{},{}],"max":[{},{},{}]}},
-              {{"bufferView":1,"componentType":5123,"count":{},"type":"SCALAR"}}],
-            "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{}}},{{"buffer":0,"byteOffset":{},"byteLength":{}}}],
-            "buffers":[{{"byteLength":{}}}]}}"#,
-            translation[0],
-            translation[1],
-            translation[2],
-            positions.len(),
-            min[0],
-            min[1],
-            min[2],
-            max[0],
-            max[1],
-            max[2],
-            indices.len(),
-            pos_len,
-            pos_len,
-            indices.len() * 2,
-            bin.len()
-        );
-        let mut json = json.into_bytes();
-        while !json.len().is_multiple_of(4) {
-            json.push(b' ');
-        }
-        let total = 12 + 8 + json.len() + 8 + bin.len();
-        let mut out = Vec::new();
-        out.extend_from_slice(b"glTF");
-        out.extend_from_slice(&2u32.to_le_bytes());
-        out.extend_from_slice(&(total as u32).to_le_bytes());
-        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"JSON");
-        out.extend_from_slice(&json);
-        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"BIN\0");
-        out.extend_from_slice(&bin);
-        out
-    }
 
     const TRI: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]];
 
     #[test]
     fn imports_a_triangle_and_applies_node_transform() {
-        let m = import_glb(&make_glb(&TRI, &[0, 1, 2], [5.0, 0.0, -3.0])).unwrap();
+        let m = import_glb(&make_test_glb(&TRI, &[0, 1, 2], [5.0, 0.0, -3.0])).unwrap();
         assert_eq!(m.triangle_count(), 1);
         assert_eq!(
             m.meshes[0].positions[1],
@@ -282,7 +272,7 @@ mod tests {
 
     #[test]
     fn hostile_files_are_rejected_without_panic() {
-        let good = make_glb(&TRI, &[0, 1, 2], [0.0; 3]);
+        let good = make_test_glb(&TRI, &[0, 1, 2], [0.0; 3]);
         assert!(matches!(import_glb(b"not a glb"), Err(GlbError::Parse(_))));
         assert!(matches!(import_glb(&[]), Err(GlbError::Parse(_))));
         assert!(matches!(
@@ -291,12 +281,12 @@ mod tests {
         ));
         // Индекс за пределами вершин.
         assert!(matches!(
-            import_glb(&make_glb(&TRI, &[0, 1, 7], [0.0; 3])),
+            import_glb(&make_test_glb(&TRI, &[0, 1, 7], [0.0; 3])),
             Err(GlbError::BadIndex { index: 7, .. })
         ));
         // Число индексов не кратно трём.
         assert!(matches!(
-            import_glb(&make_glb(&TRI, &[0, 1], [0.0; 3])),
+            import_glb(&make_test_glb(&TRI, &[0, 1], [0.0; 3])),
             Err(GlbError::Parse(_))
         ));
         // Усечённый файл.

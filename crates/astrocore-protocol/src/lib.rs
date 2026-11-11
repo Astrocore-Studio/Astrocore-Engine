@@ -1,18 +1,3 @@
-//! Сетевой протокол (раздел 15 дизайн-документа).
-//!
-//! Крейт описывает **сообщения и их кодирование**, но не транспорт: выбор
-//! транспорта (Lightyear/QUIC/UDP) — отдельный ADR. Благодаря этому протокол
-//! тестируется без сети, а код не зависит от рендера (запрещённая связь
-//! `protocol → asset-render code`).
-//!
-//! Правила безопасности:
-//! * размер пакета ограничен [`MAX_PACKET_BYTES`] до разбора;
-//! * версия протокола проверяется до разбора тела;
-//! * после разбора выполняется семантическая проверка (длины строк, диапазоны,
-//!   конечные числа);
-//! * лишние байты после сообщения — ошибка;
-//! * клиентские данные не доверенные: сервер обязан дополнительно проверять права.
-
 use astrocore_core::NetworkEntityId;
 use astrocore_world::{WorldCommand, WorldOp};
 use serde::{Deserialize, Serialize};
@@ -70,7 +55,11 @@ pub enum ServerMessage {
     /// Подтверждённая операция над миром — применять строго по порядку `seq`.
     WorldOp(WorldOp),
     /// Часть снимка рельефа (postcard-байты `TerrainState`, разбитые на куски).
-    TerrainSnapshotPart { index: u16, total: u16, data: Vec<u8> },
+    TerrainSnapshotPart {
+        index: u16,
+        total: u16,
+        data: Vec<u8>,
+    },
     /// Подтверждённая правка рельефа (postcard-байты `TerrainEdit`), `seq` — ревизия после неё.
     TerrainOp { seq: u64, data: Vec<u8> },
     /// Подтверждение ввода и авторитетная позиция после его применения.
@@ -166,7 +155,9 @@ impl Validate for ClientMessage {
             ClientMessage::EditTerrain { data, .. } if data.len() > MAX_TERRAIN_EDIT_BYTES => {
                 return Err(ProtocolError::Invalid("terrain edit size"));
             }
-            ClientMessage::Interact { .. } | ClientMessage::RequestSnapshot | ClientMessage::EditTerrain { .. } => {}
+            ClientMessage::Interact { .. }
+            | ClientMessage::RequestSnapshot
+            | ClientMessage::EditTerrain { .. } => {}
             ClientMessage::Edit { .. } => {}
         }
         Ok(())
@@ -394,17 +385,53 @@ mod tests {
     #[test]
     fn terrain_messages_roundtrip_and_respect_limits() {
         for m in [
-            ServerMessage::TerrainSnapshotPart { index: 0, total: 2, data: vec![1, 2, 3] },
-            ServerMessage::TerrainOp { seq: 5, data: vec![9; 100] },
+            ServerMessage::TerrainSnapshotPart {
+                index: 0,
+                total: 2,
+                data: vec![1, 2, 3],
+            },
+            ServerMessage::TerrainOp {
+                seq: 5,
+                data: vec![9; 100],
+            },
         ] {
             assert_eq!(decode::<ServerMessage>(&encode(&m).unwrap()).unwrap(), m);
         }
-        let c = ClientMessage::EditTerrain { base_revision: 3, data: vec![7; 50] };
+        let c = ClientMessage::EditTerrain {
+            base_revision: 3,
+            data: vec![7; 50],
+        };
         assert_eq!(decode::<ClientMessage>(&encode(&c).unwrap()).unwrap(), c);
-        assert!(encode(&ClientMessage::EditTerrain { base_revision: 0, data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1] }).is_err());
-        assert!(encode(&ServerMessage::TerrainOp { seq: 0, data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1] }).is_err());
-        assert!(encode(&ServerMessage::TerrainSnapshotPart { index: 3, total: 2, data: vec![] }).is_err());
-        assert!(encode(&ServerMessage::TerrainSnapshotPart { index: 0, total: 1, data: vec![0; MAX_SNAPSHOT_PART_BYTES + 1] }).is_err());
+        assert!(
+            encode(&ClientMessage::EditTerrain {
+                base_revision: 0,
+                data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1]
+            })
+            .is_err()
+        );
+        assert!(
+            encode(&ServerMessage::TerrainOp {
+                seq: 0,
+                data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1]
+            })
+            .is_err()
+        );
+        assert!(
+            encode(&ServerMessage::TerrainSnapshotPart {
+                index: 3,
+                total: 2,
+                data: vec![]
+            })
+            .is_err()
+        );
+        assert!(
+            encode(&ServerMessage::TerrainSnapshotPart {
+                index: 0,
+                total: 1,
+                data: vec![0; MAX_SNAPSHOT_PART_BYTES + 1]
+            })
+            .is_err()
+        );
     }
 
     #[test]

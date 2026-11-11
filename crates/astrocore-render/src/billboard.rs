@@ -1,9 +1,3 @@
-//! Направленные спрайты в 3D-сцене.
-//!
-//! Спрайт — вертикальный квадрат, повёрнутый к камере вокруг оси Y (ноги остаются
-//! на земле). Из листа выбирается кадр по направлению объекта относительно камеры.
-//! Порядок столбцов листа — как в RSI: S, N, E, W (для 8 направлений далее SE, NE, SW, NW).
-
 use astrocore_math::glam::Vec3 as MathVec3;
 use astrocore_sprites::{DirectionSet, select_direction};
 use bevy::asset::RenderAssetUsages;

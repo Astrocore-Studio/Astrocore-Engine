@@ -1,5 +1,3 @@
-//! Привязка курсора: к сетке, вершинам, рёбрам и поверхностям.
-
 use astrocore_core::ObjectId;
 use astrocore_math::glam::Vec3;
 use astrocore_math::{GridCell, GridEdge};

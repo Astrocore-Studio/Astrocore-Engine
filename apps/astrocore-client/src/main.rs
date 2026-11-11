@@ -1,27 +1,16 @@
-//! Клиент Astrocore.
-//!
-//! Режимы:
-//! * `--demo` — локальная демонстрация: здание из вертикального среза, камера-орбита,
-//!   несколько направленных спрайтов;
-//! * `--connect host:port` — подключение к серверу: реплика мира, предсказание движения,
-//!   другие игроки как спрайты, двери по клавише `F`;
-//! * `--screenshot файл.png [--frames N]` — сохранить кадр и выйти (проверка рендера без человека);
-//! * `--ortho` — начать с ортографической камеры.
-//!
-//! Управление: WASD — ходьба, Q/E или ←/→ — поворот, ↑/↓ — наклон, `+`/`-` — расстояние,
-//! `O` — ортографическая камера, `V` — вид от первого/третьего лица, `F` — дверь рядом.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use astrocore_core::NetworkEntityId;
 use astrocore_math::glam::Vec3 as MVec3;
 use astrocore_network::client::{ClientCore, ClientEvent};
+use astrocore_network::secure::parse_hex32;
 use astrocore_network::tcp::TcpClient;
+use astrocore_network::udp::{SystemSocket, UdpClient};
 use astrocore_render::billboard::{demo_sprite_sheet, spawn_billboard};
 use astrocore_render::{
-    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, DirectionalSprite, RenderedWorld,
-    SpriteSheet, WorldMeshPlugin,
+    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, DirectionalSprite, ModelLibrary,
+    RenderedTerrain, RenderedWorld, SpriteSheet, TerrainPlugin, WorldMeshPlugin,
 };
 use astrocore_sprites::DirectionSet;
 use astrocore_vertical_slice::Slice;
@@ -34,13 +23,17 @@ const USAGE: &str = "\
 astrocore-client — клиент Astrocore
 
   astrocore-client --demo [--ortho] [--screenshot файл.png [--frames N]]
-  astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id]
+  astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
+  astrocore-client --connect-udp 127.0.0.1:7778 --server-key <hex32> [--assets папка]
 ";
 
 #[derive(Resource, Clone)]
 struct Args {
     demo: bool,
     connect: Option<String>,
+    connect_udp: Option<String>,
+    server_key: Option<[u8; 32]>,
+    assets: Option<PathBuf>,
     build: String,
     world_id: String,
     screenshot: Option<PathBuf>,
@@ -52,6 +45,9 @@ fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         demo: false,
         connect: None,
+        connect_udp: None,
+        server_key: None,
+        assets: None,
         build: "client".into(),
         world_id: "world".into(),
         screenshot: None,
@@ -65,6 +61,14 @@ fn parse_args() -> Result<Args, String> {
             "--demo" => a.demo = true,
             "--ortho" => a.ortho = true,
             "--connect" => a.connect = Some(value("--connect")?),
+            "--connect-udp" => a.connect_udp = Some(value("--connect-udp")?),
+            "--server-key" => {
+                a.server_key = Some(
+                    parse_hex32(&value("--server-key")?)
+                        .ok_or("--server-key: нужно 64 шестнадцатеричных символа")?,
+                )
+            }
+            "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
             "--world-id" => a.world_id = value("--world-id")?,
             "--screenshot" => a.screenshot = Some(PathBuf::from(value("--screenshot")?)),
@@ -77,8 +81,11 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("неизвестный аргумент {other:?}")),
         }
     }
-    if !a.demo && a.connect.is_none() {
-        return Err("укажите --demo или --connect".into());
+    if !a.demo && a.connect.is_none() && a.connect_udp.is_none() {
+        return Err("укажите --demo, --connect или --connect-udp".into());
+    }
+    if a.connect_udp.is_some() && a.server_key.is_none() {
+        return Err("для --connect-udp нужен --server-key".into());
     }
     Ok(a)
 }
@@ -94,9 +101,43 @@ struct Look {
     first_person: bool,
 }
 
+enum Transport {
+    Tcp(TcpClient),
+    Udp(Box<UdpClient<SystemSocket>>),
+}
+
+impl Transport {
+    fn send(&mut self, reliable: bool, data: &[u8]) {
+        match self {
+            Transport::Tcp(t) => {
+                let _ = t.send(data);
+            }
+            Transport::Udp(u) => {
+                let _ = u.send(reliable, data);
+            }
+        }
+    }
+
+    fn poll(&mut self, now_ms: u64) -> Vec<Vec<u8>> {
+        match self {
+            Transport::Tcp(t) => t.poll(),
+            Transport::Udp(u) => {
+                if let Err(e) = u.step(now_ms) {
+                    eprintln!("ошибка сокета: {e}");
+                }
+                if let Some(e) = u.error() {
+                    eprintln!("соединение потеряно: {e}");
+                }
+                u.take_packets()
+            }
+        }
+    }
+}
+
 struct Net {
-    tcp: TcpClient,
+    transport: Transport,
     core: ClientCore,
+    started: std::time::Instant,
 }
 
 #[derive(Resource, Default)]
@@ -123,7 +164,12 @@ fn main() {
         }),
         ..default()
     }))
-    .add_plugins((WorldMeshPlugin, BillboardPlugin, CameraRigPlugin))
+    .add_plugins((
+        WorldMeshPlugin,
+        TerrainPlugin,
+        BillboardPlugin,
+        CameraRigPlugin,
+    ))
     .insert_resource(Time::<Fixed>::from_hz(20.0))
     .insert_resource(ClearColor(Color::srgb(0.53, 0.66, 0.80)))
     .insert_resource(GlobalAmbientLight {
@@ -141,24 +187,51 @@ fn main() {
     .add_systems(Startup, setup)
     .add_systems(Update, (look_input, drive_camera).chain());
 
-    if let Some(addr) = args.connect.clone() {
-        let tcp = match TcpClient::connect(&addr) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("не удалось подключиться к {addr}: {e}");
-                std::process::exit(1);
+    if args.connect.is_some() || args.connect_udp.is_some() {
+        let mut transport = if let Some(addr) = args.connect.clone() {
+            match TcpClient::connect(&addr) {
+                Ok(t) => Transport::Tcp(t),
+                Err(e) => {
+                    eprintln!("не удалось подключиться к {addr}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            let addr = args.connect_udp.clone().unwrap_or_default();
+            let server: std::net::SocketAddr = match addr.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("--connect-udp: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let socket = match SystemSocket::bind("0.0.0.0:0") {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("не удалось открыть сокет: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match UdpClient::connect(socket, server, args.server_key.unwrap_or_default()) {
+                Ok(u) => Transport::Udp(Box::new(u)),
+                Err(e) => {
+                    eprintln!("не удалось начать соединение: {e}");
+                    std::process::exit(1);
+                }
             }
         };
-        let mut core = ClientCore::new(&args.build, &args.world_id, 0);
-        let mut tcp = tcp;
-        if let Err(e) = tcp.send(&core.hello_packet()) {
-            eprintln!("не удалось отправить Hello: {e}");
-            std::process::exit(1);
+        let core = ClientCore::new(&args.build, &args.world_id, 0);
+        transport.send(true, &core.hello_packet());
+        if let Some(dir) = args.assets.clone() {
+            app.insert_resource(ModelLibrary::new(dir));
         }
-        let _ = &mut core;
-        app.insert_non_send(Net { tcp, core })
-            .add_systems(Update, (net_poll, sync_remote_players, door_key).chain())
-            .add_systems(FixedUpdate, send_input);
+        app.insert_non_send(Net {
+            transport,
+            core,
+            started: std::time::Instant::now(),
+        })
+        .add_systems(Update, (net_poll, sync_remote_players, door_key).chain())
+        .add_systems(FixedUpdate, send_input);
     } else {
         app.add_systems(Startup, setup_demo_world.after(setup));
     }
@@ -207,16 +280,8 @@ fn setup_demo_world(
 ) {
     let slice = Slice::build().expect("демо-сцена строится");
     commands.insert_resource(RenderedWorld::new(slice.world));
-    // Земля для ориентира и спрайты у южной стены, повёрнутые в разные стороны.
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(240.0, 0.2, 240.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.30, 0.42, 0.28),
-            perceptual_roughness: 1.0,
-            ..default()
-        })),
-        Transform::from_xyz(32.0, -0.1, 3.0),
-    ));
+    commands.insert_resource(RenderedTerrain::new(demo_terrain()));
+    // Спрайты у южной стены, повёрнутые в разные стороны.
     let spots = [
         (Vec3::new(30.0, 0.0, 8.5), Vec3::Z),
         (Vec3::new(31.8, 0.0, 8.5), Vec3::NEG_Z),
@@ -299,12 +364,14 @@ fn drive_camera(look: Res<Look>, net: Option<NonSend<Net>>, mut rigs: Query<&mut
 fn net_poll(
     mut net: NonSendMut<Net>,
     mut rendered: Option<ResMut<RenderedWorld>>,
+    mut rendered_terrain: Option<ResMut<RenderedTerrain>>,
     mut commands: Commands,
     mut snapshot_serial: Local<u32>,
+    mut terrain_serial: Local<u32>,
 ) {
     let net = &mut *net;
-    let mut last_serial = None;
-    for packet in net.tcp.poll() {
+    let now_ms = net.started.elapsed().as_millis() as u64;
+    for packet in net.transport.poll(now_ms) {
         let events = match net.core.on_packet(&packet) {
             Ok(e) => e,
             Err(e) => {
@@ -315,7 +382,8 @@ fn net_poll(
         for ev in events {
             match ev {
                 ClientEvent::ResyncRequested => {
-                    let _ = net.tcp.send(&net.core.snapshot_request_packet());
+                    net.transport
+                        .send(true, &net.core.snapshot_request_packet());
                 }
                 ClientEvent::Rejected { reason, detail } => {
                     eprintln!("сервер отклонил: {reason:?}: {detail}")
@@ -324,9 +392,13 @@ fn net_poll(
                 _ => {}
             }
         }
-        last_serial = Some(net.core.snapshot_serial());
     }
-    let _ = last_serial;
+    sync_terrain(
+        net,
+        &mut rendered_terrain,
+        &mut commands,
+        &mut terrain_serial,
+    );
     let Some(world) = net.core.world().cloned() else {
         return;
     };
@@ -351,6 +423,39 @@ fn net_poll(
     }
 }
 
+fn sync_terrain(
+    net: &mut Net,
+    rendered: &mut Option<ResMut<RenderedTerrain>>,
+    commands: &mut Commands,
+    serial: &mut u32,
+) {
+    if net.core.terrain().is_none() {
+        return;
+    }
+    let new_serial = net.core.terrain_serial();
+    let dirty = net.core.take_terrain_dirty();
+    if dirty.is_empty() && *serial == new_serial && rendered.is_some() {
+        return;
+    }
+    let Some(terrain) = net.core.terrain().cloned() else {
+        return;
+    };
+    match rendered.as_mut() {
+        None => {
+            commands.insert_resource(RenderedTerrain::new(terrain));
+            *serial = new_serial;
+        }
+        Some(r) => {
+            if *serial != new_serial {
+                r.rebuild_all = true;
+                *serial = new_serial;
+            }
+            r.terrain = terrain;
+            r.dirty.extend(dirty);
+        }
+    }
+}
+
 fn send_input(keys: Res<ButtonInput<KeyCode>>, look: Res<Look>, mut net: NonSendMut<Net>) {
     let axis =
         |neg: KeyCode, pos: KeyCode| i8::from(keys.pressed(pos)) - i8::from(keys.pressed(neg));
@@ -360,7 +465,7 @@ fn send_input(keys: Res<ButtonInput<KeyCode>>, look: Res<Look>, mut net: NonSend
     );
     let net = &mut *net;
     if let Some(packet) = net.core.input_packet(move_x, move_z, look.yaw) {
-        let _ = net.tcp.send(&packet);
+        net.transport.send(false, &packet);
     }
 }
 
@@ -390,7 +495,7 @@ fn door_key(keys: Res<ButtonInput<KeyCode>>, mut net: NonSendMut<Net>) {
         })
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((id, _)) = nearest {
-        let _ = net.tcp.send(&net.core.interact_packet(id));
+        net.transport.send(true, &net.core.interact_packet(id));
     }
 }
 
@@ -464,4 +569,22 @@ fn screenshot_and_exit(
             exit.write(AppExit::Success);
         }
     }
+}
+
+/// Демонстрационный рельеф: плоская площадка под зданием и холмы вокруг.
+fn demo_terrain() -> astrocore_terrain::Terrain {
+    use astrocore_math::glam::Vec2;
+    let mut t = astrocore_terrain::Terrain::new(1.0, 16, 0.0).expect("конфиг рельефа");
+    // Пологая подложка: рельеф хранит только изменённые чанки, остальное — плоская база.
+    for (c, r, h) in [
+        (Vec2::new(32.0, 24.0), 64.0, 0.15),
+        (Vec2::new(8.0, 30.0), 9.0, 3.0),
+        (Vec2::new(58.0, 26.0), 11.0, 4.0),
+        (Vec2::new(32.0, 40.0), 8.0, 2.0),
+    ] {
+        let e = t.brush_raise(c, r, h);
+        let _ = t.apply(&e);
+    }
+    let _ = t.take_dirty();
+    t
 }

@@ -1,5 +1,3 @@
-//! Приёмочные проверки AC-VS1 (headless-часть).
-
 use std::collections::HashSet;
 
 use astrocore_core::ObjectId;

@@ -1,5 +1,3 @@
-//! Преобразование геометрии мира в меши Bevy и цвета материалов-заглушек.
-
 use astrocore_core::PrototypeId;
 use astrocore_geometry::MeshData;
 use bevy::asset::RenderAssetUsages;

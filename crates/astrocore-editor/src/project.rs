@@ -1,5 +1,3 @@
-//! Проект редактора: карта, библиотека префабов и записи экземпляров.
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;

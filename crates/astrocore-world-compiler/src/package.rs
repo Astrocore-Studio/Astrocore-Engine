@@ -1,5 +1,3 @@
-//! Контейнер пакета: `MAGIC | вид | версия схемы | длина | полезная нагрузка | SHA-256`.
-
 use astrocore_assets::ContentHash;
 use serde::{Deserialize, Serialize};
 

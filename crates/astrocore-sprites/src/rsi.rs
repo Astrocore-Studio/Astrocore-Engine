@@ -1,6 +1,3 @@
-//! Чтение метаданных RSI (`meta.json`) с жёсткой валидацией: файл считается
-//! недоверенным (раздел 21 дизайн-документа).
-
 use std::collections::HashSet;
 
 use serde::Deserialize;

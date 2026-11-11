@@ -1,5 +1,3 @@
-//! Режимы просмотра этажей. Мир не меняется — решается только, что показывать.
-
 use std::collections::BTreeSet;
 
 use astrocore_world::{FloorId, StructureElement, StructureKind, World};

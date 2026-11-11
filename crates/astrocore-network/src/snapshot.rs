@@ -1,5 +1,3 @@
-//! Передача снимка мира частями.
-
 use astrocore_protocol::{MAX_SNAPSHOT_PART_BYTES, MAX_SNAPSHOT_PARTS, ServerMessage};
 use astrocore_world::WorldState;
 
@@ -17,12 +15,20 @@ pub enum SnapshotError {
 
 /// Разбить состояние мира на сообщения-части.
 pub fn split(state: &WorldState) -> Result<Vec<ServerMessage>, SnapshotError> {
-    split_bytes(state, |index, total, data| ServerMessage::SnapshotPart { index, total, data })
+    split_bytes(state, |index, total, data| ServerMessage::SnapshotPart {
+        index,
+        total,
+        data,
+    })
 }
 
 /// Разбить состояние рельефа на сообщения-части.
-pub fn split_terrain(state: &astrocore_terrain::TerrainState) -> Result<Vec<ServerMessage>, SnapshotError> {
-    split_bytes(state, |index, total, data| ServerMessage::TerrainSnapshotPart { index, total, data })
+pub fn split_terrain(
+    state: &astrocore_terrain::TerrainState,
+) -> Result<Vec<ServerMessage>, SnapshotError> {
+    split_bytes(state, |index, total, data| {
+        ServerMessage::TerrainSnapshotPart { index, total, data }
+    })
 }
 
 fn split_bytes<T: serde::Serialize>(
@@ -35,7 +41,11 @@ fn split_bytes<T: serde::Serialize>(
         return Err(SnapshotError::TooLarge(chunks.len()));
     }
     let total = chunks.len() as u16;
-    Ok(chunks.into_iter().enumerate().map(|(i, c)| make(i as u16, total, c.to_vec())).collect())
+    Ok(chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| make(i as u16, total, c.to_vec()))
+        .collect())
 }
 
 /// Сборщик снимка из частей (части могут приходить повторно).
@@ -51,7 +61,12 @@ impl Reassembler {
     }
 
     /// Добавить часть. `Some(state)` — снимок мира собран.
-    pub fn push(&mut self, index: u16, total: u16, data: Vec<u8>) -> Result<Option<WorldState>, SnapshotError> {
+    pub fn push(
+        &mut self,
+        index: u16,
+        total: u16,
+        data: Vec<u8>,
+    ) -> Result<Option<WorldState>, SnapshotError> {
         self.push_decoded(index, total, data)
     }
 
