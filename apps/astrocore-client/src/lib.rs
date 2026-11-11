@@ -144,6 +144,14 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
 #[derive(Resource)]
 struct Sheet(SpriteSheet);
 
+/// Спрайт игрока от игры: лист направлений и размер в метрах. Если ресурс есть, клиент рисует им
+/// и чужих игроков, и своё тело (в виде от третьего лица); иначе — демонстрационный человечек.
+#[derive(Resource, Clone)]
+pub struct PlayerSprite {
+    pub sheet: SpriteSheet,
+    pub size: Vec2,
+}
+
 /// Состояние взгляда игрока.
 #[derive(Resource)]
 struct Look {
@@ -331,6 +339,7 @@ pub fn build_app(args: Args) -> App {
                 net_poll,
                 sync_door_states,
                 sync_remote_players,
+                sync_local_body,
                 door_key,
                 interact_key,
             )
@@ -728,11 +737,16 @@ fn sync_remote_players(
     net: NonSend<Net>,
     mut remote: ResMut<RemoteSprites>,
     sheet: Option<Res<Sheet>>,
+    player: Option<Res<PlayerSprite>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut sprites: Query<(&mut Transform, &mut DirectionalSprite)>,
 ) {
-    let Some(sheet) = sheet else { return };
+    let (sheet, size) = match (&player, &sheet) {
+        (Some(p), _) => (p.sheet.clone(), p.size),
+        (None, Some(s)) => (s.0.clone(), Vec2::new(0.9, 1.8)),
+        _ => return,
+    };
     let ids = net.core.remote_entities();
     remote.0.retain(|id, entity| {
         let keep = ids.contains(id);
@@ -763,14 +777,59 @@ fn sync_remote_players(
                     &mut commands,
                     &mut meshes,
                     &mut materials,
-                    &sheet.0,
+                    &sheet,
                     feet,
-                    Vec2::new(0.9, 1.8),
+                    size,
                     facing,
                     DirectionSet::Four,
                 );
                 remote.0.insert(id, e);
             }
+        }
+    }
+}
+
+/// Своё тело: спрайт игрока в точке, где его держит сервер; в виде от первого лица скрыт.
+fn sync_local_body(
+    mut commands: Commands,
+    net: NonSend<Net>,
+    player: Option<Res<PlayerSprite>>,
+    look: Res<Look>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut body: Local<Option<Entity>>,
+    mut sprites: Query<(&mut Transform, &mut DirectionalSprite, &mut Visibility)>,
+) {
+    let Some(player) = player else { return };
+    if net.core.net_id().is_none() {
+        return;
+    }
+    let p = net.core.position();
+    let feet = Vec3::new(p.x, p.y, p.z);
+    let facing = Vec3::new(-look.yaw.sin(), 0.0, -look.yaw.cos());
+    match *body {
+        Some(e) => {
+            if let Ok((mut t, mut s, mut v)) = sprites.get_mut(e) {
+                t.translation = feet;
+                s.facing = facing;
+                *v = if look.first_person {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
+            }
+        }
+        None => {
+            *body = Some(spawn_billboard(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &player.sheet,
+                feet,
+                player.size,
+                facing,
+                DirectionSet::Four,
+            ));
         }
     }
 }
