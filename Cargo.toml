@@ -9,6 +9,9 @@ members = [
     "crates/astrocore-navigation",
     "crates/astrocore-sprites",
     "crates/astrocore-prefabs",
+    "crates/astrocore-runtime",
+    "crates/astrocore-assets",
+    "crates/astrocore-world-compiler",
     "crates/astrocore-persistence",
     "crates/astrocore-protocol",
     "crates/astrocore-bevy",
@@ -31,6 +34,9 @@ astrocore-spatial = { path = "crates/astrocore-spatial" }
 astrocore-navigation = { path = "crates/astrocore-navigation" }
 astrocore-sprites = { path = "crates/astrocore-sprites" }
 astrocore-prefabs = { path = "crates/astrocore-prefabs" }
+astrocore-runtime = { path = "crates/astrocore-runtime" }
+astrocore-assets = { path = "crates/astrocore-assets" }
+astrocore-world-compiler = { path = "crates/astrocore-world-compiler" }
 astrocore-persistence = { path = "crates/astrocore-persistence" }
 astrocore-protocol = { path = "crates/astrocore-protocol" }
 astrocore-bevy = { path = "crates/astrocore-bevy" }
@@ -45,6 +51,7 @@ thiserror = "2"
 postcard = { version = "1", features = ["use-std"] }
 crc32fast = "1"
 tempfile = "3"
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

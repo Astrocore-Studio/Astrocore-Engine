@@ -1,0 +1,16 @@
+[package]
+name = "astrocore-runtime"
+description = "Серверная среда выполнения: двери и взаимодействия, стриминг чанков, уровни активности, API игровых модулей"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-spatial.workspace = true
+astrocore-world.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

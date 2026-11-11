@@ -1,0 +1,24 @@
+[package]
+name = "astrocore-world-compiler"
+description = "Компилятор карты: клиентский и серверный пакеты, хеши, инкрементальная сборка"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-assets.workspace = true
+astrocore-core.workspace = true
+astrocore-geometry.workspace = true
+astrocore-math.workspace = true
+astrocore-spatial.workspace = true
+astrocore-world.workspace = true
+postcard.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

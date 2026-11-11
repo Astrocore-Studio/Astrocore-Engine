@@ -16,7 +16,7 @@ use astrocore_world::{FloorDef, FloorId, Placement, StructureElement, StructureK
 
 /// Индексированная геометрия. Все позиции — в мировых координатах (Y-up, метры),
 /// треугольники обходятся против часовой стрелки при взгляде снаружи.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -173,6 +173,82 @@ fn run_footprint(start: GridCell, dir: Facing, length: u8, step: f32) -> (Vec3, 
     (a.min(b), a.max(b) + Vec3::new(step, 0.0, step))
 }
 
+/// Коллизионные коробки элемента («cooking»). Стена, перекрытие — одна коробка;
+/// лестница — по коробке на ступень; пандус — тонкие срезы (аппроксимация склона
+/// ступенями высотой не более [`RAMP_SLICE_M`]).
+pub fn collision_boxes(world: &World, floor: &FloorDef, e: &StructureElement) -> Vec<Aabb> {
+    let step = world.config().grid_step_m;
+    match (e.kind, e.placement) {
+        (StructureKind::Stair { to }, Placement::Run { start, dir, length }) => world
+            .floor(to)
+            .map(|top| {
+                run_slices(
+                    step,
+                    floor.base_y,
+                    top.base_y,
+                    start,
+                    dir,
+                    length,
+                    stair_step_count(top.base_y - floor.base_y),
+                )
+            })
+            .unwrap_or_default(),
+        (StructureKind::Ramp { to }, Placement::Run { start, dir, length }) => world
+            .floor(to)
+            .map(|top| {
+                let n = (((top.base_y - floor.base_y) / RAMP_SLICE_M).ceil() as usize).max(1);
+                run_slices(step, floor.base_y, top.base_y, start, dir, length, n)
+            })
+            .unwrap_or_default(),
+        _ => element_bounds(world, floor, e).into_iter().collect(),
+    }
+}
+
+/// Максимальная высота ступени аппроксимации пандуса, метры.
+pub const RAMP_SLICE_M: f32 = 0.1;
+
+/// Разбиение марша на `n` последовательных коробок, высота растёт вдоль направления.
+fn run_slices(
+    step: f32,
+    base_y: f32,
+    top_y: f32,
+    start: GridCell,
+    dir: Facing,
+    length: u8,
+    n: usize,
+) -> Vec<Aabb> {
+    let (min, max) = run_footprint(start, dir, length, step);
+    let (rise, run_len) = (top_y - base_y, f32::from(length) * step);
+    (0..n)
+        .map(|i| {
+            let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+            let (mut lo, mut hi) = (
+                Vec3::new(min.x, base_y, min.z),
+                Vec3::new(max.x, base_y + rise * t1, max.z),
+            );
+            match dir {
+                Facing::East => {
+                    lo.x = min.x + run_len * t0;
+                    hi.x = min.x + run_len * t1;
+                }
+                Facing::West => {
+                    lo.x = max.x - run_len * t1;
+                    hi.x = max.x - run_len * t0;
+                }
+                Facing::South => {
+                    lo.z = min.z + run_len * t0;
+                    hi.z = min.z + run_len * t1;
+                }
+                Facing::North => {
+                    lo.z = max.z - run_len * t1;
+                    hi.z = max.z - run_len * t0;
+                }
+            }
+            Aabb::new(lo, hi)
+        })
+        .collect()
+}
+
 /// Высота одной ступени по умолчанию, метры.
 pub const STAIR_RISER_M: f32 = 0.2;
 
@@ -245,36 +321,9 @@ fn push_stair(
     dir: Facing,
     length: u8,
 ) {
-    let (min, max) = run_footprint(start, dir, length, step);
     let n = stair_step_count(top_y - base_y);
-    let (rise, run_len) = (top_y - base_y, f32::from(length) * step);
-    for i in 0..n {
-        let (t0, t1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
-        let height = base_y + rise * t1;
-        let (mut lo, mut hi) = (
-            Vec3::new(min.x, base_y, min.z),
-            Vec3::new(max.x, height, max.z),
-        );
-        // Сужаем бокс до доли марша вдоль направления подъёма.
-        match dir {
-            Facing::East => {
-                lo.x = min.x + run_len * t0;
-                hi.x = min.x + run_len * t1;
-            }
-            Facing::West => {
-                lo.x = max.x - run_len * t1;
-                hi.x = max.x - run_len * t0;
-            }
-            Facing::South => {
-                lo.z = min.z + run_len * t0;
-                hi.z = min.z + run_len * t1;
-            }
-            Facing::North => {
-                lo.z = max.z - run_len * t1;
-                hi.z = max.z - run_len * t0;
-            }
-        }
-        mesh.push_box(lo, hi);
+    for b in run_slices(step, base_y, top_y, start, dir, length, n) {
+        mesh.push_box(b.min, b.max);
     }
 }
 
@@ -690,6 +739,96 @@ mod tests {
                 (b.min.z - 1.0).abs() < 1e-5 && (b.max.z - 4.0).abs() < 1e-5,
                 "{b:?}"
             );
+        }
+    }
+
+    mod collision {
+        use super::*;
+        use astrocore_world::{FloorDef, WorldCommand};
+
+        fn two_floors() -> World {
+            let mut w = world();
+            w.apply(WorldCommand::DefineFloor(FloorDef {
+                id: FloorId(1),
+                name: "up".into(),
+                base_y: 6.0,
+                height: 3.0,
+            }))
+            .unwrap();
+            w
+        }
+
+        fn put_run(w: &mut World, kind: StructureKind) -> StructureElement {
+            let e = StructureElement {
+                id: ObjectId::from_u128(1),
+                kind,
+                placement: Placement::Run {
+                    start: GridCell::new(0, 0),
+                    dir: Facing::East,
+                    length: 4,
+                },
+                floor: FloorId(0),
+                material: PrototypeId::new("t:m").unwrap(),
+                thickness: 0.2,
+            };
+            w.apply(WorldCommand::PlaceElement(e.clone())).unwrap();
+            e
+        }
+
+        #[test]
+        fn walls_and_slabs_have_one_box() {
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Wall,
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:m",
+            );
+            let e = w.element(ObjectId::from_u128(1)).unwrap().clone();
+            let boxes = collision_boxes(&w, w.floor(FloorId(0)).unwrap(), &e);
+            assert_eq!(boxes.len(), 1);
+        }
+
+        #[test]
+        fn stair_boxes_form_a_walkable_staircase() {
+            let mut w = two_floors();
+            let e = put_run(&mut w, StructureKind::Stair { to: FloorId(1) });
+            let boxes = collision_boxes(&w, w.floor(FloorId(0)).unwrap(), &e);
+            assert_eq!(boxes.len(), stair_step_count(4.0));
+            // Высота ступеней строго растёт вдоль +X; соседние ступени вплотную по X.
+            for pair in boxes.windows(2) {
+                assert!(pair[1].max.y > pair[0].max.y);
+                assert!((pair[0].max.x - pair[1].min.x).abs() < 1e-5);
+                assert!(
+                    pair[1].max.y - pair[0].max.y <= STAIR_RISER_M + 1e-4,
+                    "подступенок не выше нормы"
+                );
+            }
+            assert!((boxes.last().unwrap().max.y - 6.0).abs() < 1e-5);
+        }
+
+        #[test]
+        fn ramp_is_sliced_finer_than_a_stair() {
+            let mut w = two_floors();
+            let e = put_run(&mut w, StructureKind::Ramp { to: FloorId(1) });
+            let boxes = collision_boxes(&w, w.floor(FloorId(0)).unwrap(), &e);
+            assert_eq!(boxes.len(), 40);
+            assert!(boxes[1].max.y - boxes[0].max.y <= RAMP_SLICE_M + 1e-4);
+        }
+
+        #[test]
+        fn openings_have_no_collision() {
+            let mut w = world();
+            put(
+                &mut w,
+                1,
+                StructureKind::Opening(astrocore_world::OpeningKind::Door),
+                Placement::Edge(GridEdge::along_x(0, 0)),
+                "t:d",
+            );
+            let e = w.element(ObjectId::from_u128(1)).unwrap().clone();
+            assert!(collision_boxes(&w, w.floor(FloorId(0)).unwrap(), &e).is_empty());
         }
     }
 }
