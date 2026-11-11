@@ -40,6 +40,7 @@ struct Args {
     server_key: Option<[u8; 32]>,
     assets: Option<PathBuf>,
     render_manifest: Option<PathBuf>,
+    camera: Option<(f32, f32, f32)>,
     build: String,
     world_id: String,
     screenshot: Option<PathBuf>,
@@ -59,6 +60,7 @@ fn parse_args() -> Result<Args, String> {
         server_key: None,
         assets: None,
         render_manifest: None,
+        camera: None,
         build: "client".into(),
         world_id: "world".into(),
         screenshot: None,
@@ -92,6 +94,17 @@ fn parse_args() -> Result<Args, String> {
             }
             "--render-manifest" => {
                 a.render_manifest = Some(PathBuf::from(value("--render-manifest")?))
+            }
+            "--camera" => {
+                let v: Vec<f32> = value("--camera")?
+                    .split(',')
+                    .map(|p| p.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| format!("--camera: {e}"))?;
+                let [yaw, pitch, distance] = v[..] else {
+                    return Err("--camera: ожидается yaw,pitch,distance".into());
+                };
+                a.camera = Some((yaw, pitch, distance));
             }
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
@@ -346,14 +359,20 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
     } else {
         CameraMode::Perspective
     };
+    let (cam_yaw, cam_pitch, cam_distance) = args.camera.unwrap_or((0.7, 0.5, 34.0));
+    commands.insert_resource(Look {
+        yaw: cam_yaw,
+        pitch: cam_pitch,
+        first_person: false,
+    });
     commands.spawn((
         Camera3d::default(),
         CameraRig {
             mode,
             target: Vec3::new(32.0, 4.0, 3.0),
-            yaw: 0.7,
-            pitch: 0.5,
-            distance: 34.0,
+            yaw: cam_yaw,
+            pitch: cam_pitch,
+            distance: cam_distance,
             ortho_height: 26.0,
         },
         Transform::default(),
