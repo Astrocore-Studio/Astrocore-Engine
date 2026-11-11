@@ -1025,3 +1025,339 @@ fn metrics_are_exported_as_text() {
     }
     assert!(h.server.metrics().tick_micros_max >= h.server.metrics().tick_micros_last);
 }
+
+mod components {
+    use astrocore_api::{Interest, ReplicatedKind, ReplicationChannel, ReplicationRegistry};
+
+    use super::*;
+    use crate::server::GameServer;
+    use crate::testkit::{ByBuild, test_world};
+
+    fn kind(name: &str, channel: ReplicationChannel, interest: Interest) -> ReplicatedKind {
+        ReplicatedKind {
+            name: name.into(),
+            channel,
+            interest,
+            max_bytes: 16,
+        }
+    }
+
+    fn harness_with_kinds() -> Harness {
+        let mut reg = ReplicationRegistry::new();
+        reg.register(kind(
+            "game.tag",
+            ReplicationChannel::ReliableOrdered,
+            Interest::Everyone,
+        ))
+        .unwrap();
+        reg.register(kind(
+            "game.aura",
+            ReplicationChannel::UnreliableSequenced,
+            Interest::Radius(5.0),
+        ))
+        .unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_replication(reg);
+        Harness::with_server(server)
+    }
+
+    fn net_of(h: &Harness, c: ConnId) -> astrocore_core::NetworkEntityId {
+        h.client(c).net_id().unwrap()
+    }
+
+    #[test]
+    fn values_reach_every_client_and_late_joiners() {
+        let mut h = harness_with_kinds();
+        let a = h.join("a");
+        let b = h.join("b");
+        let me = net_of(&h, a);
+        let outs = h
+            .server
+            .set_component(me, "game.tag", b"red".to_vec())
+            .unwrap();
+        h.deliver(outs);
+        assert_eq!(h.client(a).component(me, "game.tag"), Some(&b"red"[..]));
+        assert_eq!(h.client(b).component(me, "game.tag"), Some(&b"red"[..]));
+        assert!(h.take_events(b).iter().any(
+            |e| matches!(e, ClientEvent::ComponentChanged { kind, .. } if kind == "game.tag")
+        ));
+        // Обновление заменяет значение.
+        let outs = h
+            .server
+            .set_component(me, "game.tag", b"blue".to_vec())
+            .unwrap();
+        h.deliver(outs);
+        assert_eq!(h.client(b).component(me, "game.tag"), Some(&b"blue"[..]));
+        // Вошедший позже получает текущие значения вместе со снимком.
+        let c = h.join("c");
+        assert_eq!(h.client(c).component(me, "game.tag"), Some(&b"blue"[..]));
+    }
+
+    #[test]
+    fn unknown_oversized_and_orphan_values_are_refused() {
+        let mut h = harness_with_kinds();
+        let a = h.join("a");
+        let me = net_of(&h, a);
+        assert!(h.server.set_component(me, "game.nope", vec![1]).is_err());
+        assert!(h.server.set_component(me, "game.tag", vec![0; 17]).is_err());
+        assert!(
+            h.server
+                .set_component(astrocore_core::NetworkEntityId(9999), "game.tag", vec![1])
+                .is_err()
+        );
+        assert_eq!(h.client(a).component(me, "game.tag"), None);
+    }
+
+    #[test]
+    fn radius_interest_limits_recipients_and_disconnect_clears_values() {
+        let mut h = harness_with_kinds();
+        let a = h.join("a");
+        let b = h.join("b");
+        let me = net_of(&h, a);
+        // Игрок b уходит далеко от a: на +X идти по 4 м/с.
+        for _ in 0..60 {
+            h.input(b, 0, 1, EAST);
+        }
+        let near_far = h.server.set_component(me, "game.aura", vec![7]).unwrap();
+        let targets: Vec<ConnId> = near_far
+            .iter()
+            .filter_map(|o| match o {
+                Out::Send { to, .. } => Some(*to),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            targets.contains(&a),
+            "владелец всегда получает своё значение"
+        );
+        assert!(!targets.contains(&b), "далёкий игрок вне радиуса");
+        h.deliver(near_far);
+        // После выхода владельца его значения забываются: новый игрок их не получит.
+        let outs = h.server.disconnect(a);
+        h.deliver(outs);
+        let c = h.join("c");
+        assert_eq!(h.client(c).component(me, "game.aura"), None);
+    }
+
+    #[test]
+    fn stale_sequence_numbers_are_ignored_by_the_client() {
+        let mut h = harness_with_kinds();
+        let a = h.join("a");
+        let me = net_of(&h, a);
+        let mk = |seq: u32, v: u8| {
+            encode(&ServerMessage::ComponentDelta {
+                net: me,
+                kind: "game.aura".into(),
+                seq,
+                reliable: false,
+                data: vec![v],
+            })
+            .unwrap()
+        };
+        let evs = h
+            .clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&mk(5, 50))
+            .unwrap();
+        assert_eq!(evs.len(), 1);
+        // Запоздавший пакет со старым номером не затирает новое значение.
+        let evs = h
+            .clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&mk(3, 30))
+            .unwrap();
+        assert!(evs.is_empty());
+        assert_eq!(h.client(a).component(me, "game.aura"), Some(&[50u8][..]));
+    }
+
+    #[test]
+    fn protocol_limits_and_udp_channel_selection() {
+        let bad = |kind: &str, len: usize| {
+            encode(&ServerMessage::ComponentDelta {
+                net: astrocore_core::NetworkEntityId(1),
+                kind: kind.into(),
+                seq: 1,
+                reliable: true,
+                data: vec![0; len],
+            })
+        };
+        assert!(bad("ok", 8).is_ok());
+        assert!(bad("", 1).is_err());
+        assert!(bad(&"x".repeat(65), 1).is_err());
+        assert!(bad("ok", astrocore_protocol::MAX_COMPONENT_BYTES + 1).is_err());
+        let msg = |reliable| ServerMessage::ComponentDelta {
+            net: astrocore_core::NetworkEntityId(1),
+            kind: "k".into(),
+            seq: 1,
+            reliable,
+            data: vec![1],
+        };
+        assert!(crate::udp::server_message_is_reliable(&msg(true), 20));
+        assert!(!crate::udp::server_message_is_reliable(&msg(false), 20));
+        assert!(crate::udp::server_message_is_reliable(&msg(false), 5000));
+    }
+}
+
+mod content {
+    use astrocore_protocol::CONTENT_PART_BYTES;
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+
+    fn blob(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 31 % 251) as u8).collect()
+    }
+
+    fn pump(h: &mut Harness, ticks: usize) {
+        for _ in 0..ticks {
+            h.tick();
+        }
+    }
+
+    #[test]
+    fn content_is_delivered_in_parts_by_hash_and_verified() {
+        let mut h = harness();
+        let big = blob(CONTENT_PART_BYTES * 5 + 123);
+        let hash = h.server.register_content(big.clone()).unwrap();
+        let expect: [u8; 32] = Sha256::digest(&big).into();
+        assert_eq!(hash, expect);
+        let a = h.join("a");
+        h.send(a, h.client(a).request_content_packet(hash));
+        pump(&mut h, 12);
+        assert_eq!(h.client(a).content(&hash), Some(&big[..]));
+        assert!(
+            h.take_events(a)
+                .iter()
+                .any(|e| matches!(e, ClientEvent::ContentReceived { hash: x } if *x == hash))
+        );
+    }
+
+    #[test]
+    fn per_tick_budget_keeps_gameplay_flowing_and_unknown_hash_is_reported() {
+        let mut cfg = Harness::default_cfg();
+        cfg.content_bytes_per_tick = CONTENT_PART_BYTES; // одна часть за тик
+        let mut h = Harness::new(cfg);
+        let big = blob(CONTENT_PART_BYTES * 10);
+        let hash = h.server.register_content(big.clone()).unwrap();
+        let a = h.join("a");
+        h.send(a, h.client(a).request_content_packet(hash));
+        pump(&mut h, 3);
+        assert_eq!(
+            h.client(a).content(&hash),
+            None,
+            "загрузка идёт частями, не одним залпом"
+        );
+        // Пока грузится, игра отвечает на ввод.
+        let before = h.server.player_position(a).unwrap();
+        h.input(a, 0, 1, EAST);
+        assert!(h.server.player_position(a).unwrap().x > before.x);
+        pump(&mut h, 12);
+        assert_eq!(h.client(a).content(&hash), Some(&big[..]));
+        // Неизвестный хеш.
+        let missing = [9u8; 32];
+        h.send(a, h.client(a).request_content_packet(missing));
+        assert!(
+            h.take_events(a)
+                .iter()
+                .any(|e| matches!(e, ClientEvent::ContentFailed { hash: x } if *x == missing))
+        );
+    }
+
+    #[test]
+    fn corrupted_or_inconsistent_parts_never_become_content() {
+        let mut h = harness();
+        let a = h.join("a");
+        let data = blob(100);
+        let hash: [u8; 32] = Sha256::digest(&data).into();
+        let part = |index: u32, total: u32, bytes: &[u8]| {
+            encode(&ServerMessage::ContentPart {
+                hash,
+                index,
+                total,
+                data: bytes.to_vec(),
+            })
+            .unwrap()
+        };
+        // Подмена данных: хеш не сходится.
+        let mut forged = data.clone();
+        forged[0] ^= 1;
+        let evs = h
+            .clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&part(0, 1, &forged))
+            .unwrap();
+        assert!(matches!(evs[0], ClientEvent::ContentFailed { .. }));
+        assert_eq!(h.client(a).content(&hash), None);
+        // Несогласованное число частей.
+        h.clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&part(0, 2, &data[..50]))
+            .unwrap();
+        let evs = h
+            .clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&part(1, 3, &data[50..]))
+            .unwrap();
+        assert!(matches!(evs[0], ClientEvent::ContentFailed { .. }));
+        // Корректная сборка в обратном порядке частей.
+        h.clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&part(1, 2, &data[50..]))
+            .unwrap();
+        let evs = h
+            .clients
+            .get_mut(&a)
+            .unwrap()
+            .on_packet(&part(0, 2, &data[..50]))
+            .unwrap();
+        assert!(matches!(evs[0], ClientEvent::ContentReceived { .. }));
+        assert_eq!(h.client(a).content(&hash), Some(&data[..]));
+        // Недопустимые параметры не кодируются вовсе.
+        assert!(
+            encode(&ServerMessage::ContentPart {
+                hash,
+                index: 2,
+                total: 2,
+                data: vec![]
+            })
+            .is_err()
+        );
+        assert!(
+            encode(&ServerMessage::ContentPart {
+                hash,
+                index: 0,
+                total: 0,
+                data: vec![]
+            })
+            .is_err()
+        );
+        assert!(h.server.register_content(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn request_flood_is_bounded() {
+        let mut cfg = Harness::default_cfg();
+        cfg.content_queue_max = 2;
+        cfg.content_bytes_per_tick = 1; // почти не отправляем: очередь копится
+        let mut h = Harness::new(cfg);
+        let hashes: Vec<[u8; 32]> = (0..6)
+            .map(|i| {
+                h.server
+                    .register_content(blob(CONTENT_PART_BYTES * 2 + i))
+                    .unwrap()
+            })
+            .collect();
+        let a = h.join("a");
+        for hash in &hashes {
+            h.send(a, h.client(a).request_content_packet(*hash));
+        }
+        let queued = h.server.content_queue_len(a);
+        assert!(queued <= 2 * 3 + 3, "очередь ограничена: {queued}");
+    }
+}

@@ -726,3 +726,205 @@ mod freeform {
         let _ = Vec3::ZERO;
     }
 }
+
+mod authored {
+    use astrocore_math::glam::Vec3;
+
+    use crate::authored::MAX_METADATA_ENTRIES;
+
+    use super::*;
+
+    fn id(n: u128) -> ObjectId {
+        ObjectId::from_u128(n)
+    }
+
+    fn volume(n: u128, lo: [f32; 3], hi: [f32; 3]) -> AuthoredObject {
+        AuthoredObject::new(
+            id(n),
+            AuthoredKind::Volume,
+            FloorId(0),
+            Vec3::from(lo),
+            Vec3::from(hi),
+        )
+    }
+
+    fn portal(n: u128, to: u128, channels: u8) -> AuthoredObject {
+        AuthoredObject::new(
+            id(n),
+            AuthoredKind::Portal {
+                to: id(to),
+                channels,
+            },
+            FloorId(0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(5.0, 2.0, 2.0),
+        )
+    }
+
+    #[test]
+    fn zones_volumes_and_portals_live_in_the_canonical_world() {
+        let mut w = world();
+        let r0 = w.revision();
+        w.apply(WorldCommand::PlaceAuthored(volume(
+            1,
+            [0.0, 0.0, 0.0],
+            [4.0, 3.0, 4.0],
+        )))
+        .unwrap();
+        let mut zone = volume(2, [-10.0, 0.0, -10.0], [10.0, 4.0, 10.0]);
+        zone.kind = AuthoredKind::Zone;
+        zone.metadata.insert("name".into(), "двор".into());
+        w.apply(WorldCommand::PlaceAuthored(zone)).unwrap();
+        w.apply(WorldCommand::PlaceAuthored(portal(
+            3,
+            1,
+            CHANNEL_PASS | CHANNEL_SIGHT,
+        )))
+        .unwrap();
+        assert_eq!(w.revision().0, r0.0 + 3);
+        assert_eq!(w.authored_count(), 3);
+        let at: Vec<_> = w
+            .authored_at(Vec3::new(1.0, 1.0, 1.0))
+            .iter()
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(at, vec![id(1), id(2)], "объём и зона содержат точку");
+        assert_eq!(
+            w.authored_at(Vec3::new(8.0, 1.0, 8.0)).len(),
+            1,
+            "только зона"
+        );
+        // Топология чанка помечена грязной.
+        let dirty = w.take_dirty();
+        assert!(dirty.iter().any(|d| d.flags.contains(DirtyFlags::TOPOLOGY)));
+    }
+
+    #[test]
+    fn invalid_authored_objects_are_rejected_without_changing_the_world() {
+        let mut w = world();
+        let rev = w.revision();
+        let mut cases: Vec<(AuthoredObject, &str)> = Vec::new();
+        cases.push((volume(1, [0.0, 0.0, 0.0], [0.0, 3.0, 4.0]), "нулевой объём"));
+        cases.push((
+            portal(2, 99, CHANNEL_PASS),
+            "портал на несуществующий объём",
+        ));
+        let mut far = volume(3, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        far.max_mm[0] = MAX_AUTHORED_MM + 1;
+        cases.push((far, "слишком далеко"));
+        let mut bad_floor = volume(4, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        bad_floor.floor = FloorId(7);
+        cases.push((bad_floor, "нет этажа"));
+        let mut meta = volume(5, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        for i in 0..=MAX_METADATA_ENTRIES {
+            meta.metadata.insert(format!("k{i}"), "v".into());
+        }
+        cases.push((meta, "метаданные"));
+        for (obj, why) in cases {
+            assert!(w.apply(WorldCommand::PlaceAuthored(obj)).is_err(), "{why}");
+        }
+        assert_eq!(w.revision(), rev);
+        // Точка размещения может быть нулевого размера.
+        let spawn = AuthoredObject::new(
+            id(6),
+            AuthoredKind::Placement {
+                prototype: PrototypeId::new("test:spawn").unwrap(),
+            },
+            FloorId(0),
+            Vec3::new(3.0, 0.0, 3.0),
+            Vec3::new(3.0, 0.0, 3.0),
+        );
+        w.apply(WorldCommand::PlaceAuthored(spawn)).unwrap();
+        // Дубль идентификатора, в том числе со структурным элементом.
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceAuthored(volume(6, [0.0; 3], [1.0; 3]))),
+            Err(WorldError::DuplicateId(_))
+        ));
+        w.apply(WorldCommand::PlaceElement(wall(
+            50,
+            GridEdge::along_x(0, 0),
+        )))
+        .unwrap();
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceAuthored(volume(50, [0.0; 3], [1.0; 3]))),
+            Err(WorldError::DuplicateId(_))
+        ));
+    }
+
+    #[test]
+    fn referenced_volumes_and_used_floors_cannot_be_removed() {
+        let mut w = world();
+        w.apply(WorldCommand::PlaceAuthored(volume(
+            1,
+            [0.0; 3],
+            [4.0, 3.0, 4.0],
+        )))
+        .unwrap();
+        w.apply(WorldCommand::PlaceAuthored(portal(2, 1, CHANNEL_GAS)))
+            .unwrap();
+        assert!(w.apply(WorldCommand::RemoveAuthored { id: id(1) }).is_err());
+        assert!(matches!(
+            w.apply(WorldCommand::RemoveFloor { id: FloorId(0) }),
+            Err(WorldError::FloorNotEmpty(_))
+        ));
+        w.apply(WorldCommand::RemoveAuthored { id: id(2) }).unwrap();
+        w.apply(WorldCommand::RemoveAuthored { id: id(1) }).unwrap();
+        assert_eq!(w.authored_count(), 0);
+        assert!(w.apply(WorldCommand::RemoveAuthored { id: id(1) }).is_err());
+    }
+
+    #[test]
+    fn state_round_trips_and_old_worlds_keep_their_hash() {
+        let plain = world();
+        // Старые снимки без поля `authored` читаются как пустой список с прежним хешем.
+        let mut value = serde_json::to_value(plain.to_state()).unwrap();
+        value.as_object_mut().unwrap().remove("authored");
+        let old: WorldState = serde_json::from_value(value).unwrap();
+        assert!(old.authored.is_empty());
+        assert_eq!(
+            World::from_state(old).unwrap().content_hash(),
+            plain.content_hash()
+        );
+        let mut w = world();
+        w.apply(WorldCommand::PlaceAuthored(volume(
+            1,
+            [0.0; 3],
+            [4.0, 3.0, 4.0],
+        )))
+        .unwrap();
+        w.apply(WorldCommand::PlaceAuthored(portal(2, 1, CHANNEL_PASS)))
+            .unwrap();
+        let back = World::from_state(w.to_state()).unwrap();
+        assert_eq!(back.content_hash(), w.content_hash());
+        assert_eq!(back.authored_count(), 2);
+        // Повреждённое состояние (портал на неизвестный объём) не загружается.
+        let mut state = w.to_state();
+        state.authored.retain(|o| o.id != id(1));
+        assert!(World::from_state(state).is_err());
+    }
+
+    #[test]
+    fn authored_operations_replicate_idempotently() {
+        let mut server = world();
+        let mut client = server.clone();
+        let ops = vec![
+            server
+                .apply(WorldCommand::PlaceAuthored(volume(
+                    1,
+                    [0.0; 3],
+                    [4.0, 3.0, 4.0],
+                )))
+                .unwrap(),
+            server
+                .apply(WorldCommand::PlaceAuthored(portal(2, 1, CHANNEL_PASS)))
+                .unwrap(),
+        ];
+        for op in &ops {
+            assert_eq!(client.apply_replicated(op), ReplicaOutcome::Applied);
+        }
+        for op in &ops {
+            assert_eq!(client.apply_replicated(op), ReplicaOutcome::Duplicate);
+        }
+        assert_eq!(client.content_hash(), server.content_hash());
+    }
+}

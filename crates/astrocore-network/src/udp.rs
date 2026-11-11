@@ -70,6 +70,9 @@ impl Datagram for SystemSocket {
 
 /// Надёжно ли доставлять сообщение сервера.
 pub fn server_message_is_reliable(msg: &ServerMessage, encoded_len: usize) -> bool {
+    if let ServerMessage::ComponentDelta { reliable, .. } = msg {
+        return *reliable || encoded_len > MTU_PAYLOAD;
+    }
     !matches!(
         msg,
         ServerMessage::EntityState { .. } | ServerMessage::InputAck { .. }

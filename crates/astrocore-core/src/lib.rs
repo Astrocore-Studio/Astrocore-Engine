@@ -1,3 +1,7 @@
+mod entities;
+
+pub use entities::{EntityError, EntityRegistry, RuntimeEntityId};
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

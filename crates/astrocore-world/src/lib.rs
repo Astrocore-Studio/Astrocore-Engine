@@ -1,6 +1,12 @@
+mod authored;
 mod element;
 mod error;
 mod state;
+
+pub use authored::{
+    AuthoredKind, AuthoredObject, CHANNEL_ACOUSTIC, CHANNEL_GAS, CHANNEL_HEAT, CHANNEL_PASS,
+    CHANNEL_SIGHT, CHANNELS_ALL, MAX_AUTHORED_MM,
+};
 
 pub use element::{
     FloorDef, FloorId, FreePlacement, MAX_FREE_HALF_MM, MAX_RUN_LENGTH, OpeningKind, Placement,
@@ -110,6 +116,11 @@ pub enum WorldCommand {
     RemoveElement {
         id: ObjectId,
     },
+    /// Зона, объём, портал-маркер или точка размещения (авторские объекты).
+    PlaceAuthored(AuthoredObject),
+    RemoveAuthored {
+        id: ObjectId,
+    },
 }
 
 /// Подтверждённая операция — запись журнала и единица репликации.
@@ -145,6 +156,7 @@ pub struct World {
     config: WorldConfig,
     floors: BTreeMap<FloorId, FloorDef>,
     elements: BTreeMap<ObjectId, StructureElement>,
+    authored: BTreeMap<ObjectId, AuthoredObject>,
     revision: Revision,
     chunk_revisions: BTreeMap<ChunkCoord, Revision>,
     // Производные индексы (не сериализуются, перестраиваются при загрузке).
@@ -162,6 +174,7 @@ impl World {
             config,
             floors: BTreeMap::new(),
             elements: BTreeMap::new(),
+            authored: BTreeMap::new(),
             revision: Revision::ZERO,
             chunk_revisions: BTreeMap::new(),
             slots: HashMap::new(),
@@ -347,6 +360,7 @@ impl World {
                     .elements
                     .values()
                     .any(|e| e.floor == *id || e.kind.target_floor() == Some(*id))
+                    || self.authored.values().any(|o| o.floor == *id)
                 {
                     return Err(WorldError::FloorNotEmpty(*id));
                 }
@@ -361,6 +375,32 @@ impl World {
                 self.mark_dirty(element);
                 self.elements.insert(element.id, element.clone());
             }
+            WorldCommand::PlaceAuthored(obj) => {
+                self.validate_authored(obj)?;
+                self.revision = self.revision.next();
+                self.mark_authored_dirty(obj);
+                self.authored.insert(obj.id, obj.clone());
+            }
+            WorldCommand::RemoveAuthored { id } => {
+                let obj = self
+                    .authored
+                    .get(id)
+                    .cloned()
+                    .ok_or(WorldError::UnknownElement(*id))?;
+                if let Some(by) = self
+                    .authored
+                    .values()
+                    .find(|o| matches!(&o.kind, AuthoredKind::Portal { to, .. } if to == id))
+                {
+                    return Err(WorldError::InvalidAuthored(format!(
+                        "объект {id} нужен порталу {}",
+                        by.id
+                    )));
+                }
+                self.revision = self.revision.next();
+                self.mark_authored_dirty(&obj);
+                self.authored.remove(id);
+            }
             WorldCommand::RemoveElement { id } => {
                 let element = self
                     .elements
@@ -374,6 +414,67 @@ impl World {
             }
         }
         Ok(())
+    }
+
+    fn validate_authored(&self, o: &AuthoredObject) -> Result<(), WorldError> {
+        o.validate()?;
+        if !self.floors.contains_key(&o.floor) {
+            return Err(WorldError::UnknownFloor(o.floor));
+        }
+        if self.authored.contains_key(&o.id) || self.elements.contains_key(&o.id) {
+            return Err(WorldError::DuplicateId(o.id));
+        }
+        if let AuthoredKind::Portal { to, .. } = &o.kind {
+            match self.authored.get(to) {
+                Some(t) if t.is_volume_like() => {}
+                _ => {
+                    return Err(WorldError::InvalidAuthored(format!(
+                        "портал {} ведёт на {to}, который не объём и не зона",
+                        o.id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Авторские объекты помечают топологию чанков, которые перекрывают.
+    fn mark_authored_dirty(&mut self, o: &AuthoredObject) {
+        let rev = self.revision;
+        let size = self.config.chunk_size_m;
+        let (lo, hi) = (o.min(), o.max());
+        let (c0, c1) = (
+            ChunkCoord::from_world(lo, size),
+            ChunkCoord::from_world(hi, size),
+        );
+        for x in c0.x..=c1.x {
+            for z in c0.z..=c1.z {
+                let chunk = ChunkCoord::new(x, z);
+                let entry = self.dirty.entry((chunk, o.floor)).or_default();
+                *entry = entry.union(DirtyFlags::TOPOLOGY);
+                self.chunk_revisions.insert(chunk, rev);
+            }
+        }
+    }
+
+    pub fn authored(&self) -> impl Iterator<Item = &AuthoredObject> {
+        self.authored.values()
+    }
+
+    pub fn authored_object(&self, id: ObjectId) -> Option<&AuthoredObject> {
+        self.authored.get(&id)
+    }
+
+    /// Зоны и объёмы, содержащие точку (метры), по возрастанию `ObjectId`.
+    pub fn authored_at(&self, p: astrocore_math::glam::Vec3) -> Vec<&AuthoredObject> {
+        self.authored
+            .values()
+            .filter(|o| o.is_volume_like() && o.contains(p))
+            .collect()
+    }
+
+    pub fn authored_count(&self) -> usize {
+        self.authored.len()
     }
 
     fn validate_element(&self, e: &StructureElement) -> Result<(), WorldError> {

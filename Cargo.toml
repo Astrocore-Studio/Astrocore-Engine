@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/astrocore-math",
+    "crates/astrocore-api",
     "crates/astrocore-core",
     "crates/astrocore-world",
     "crates/astrocore-geometry",
@@ -25,6 +26,7 @@ members = [
     "apps/astrocore-studio",
     "tools/astrocore-tools",
     "examples/vertical-slice",
+    "examples/spatial-topology",
 ]
 
 [workspace.package]
@@ -38,6 +40,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
 # Внутренние крейты
 astrocore-math = { path = "crates/astrocore-math" }
+astrocore-api = { path = "crates/astrocore-api" }
+astrocore-vertical-slice = { path = "examples/vertical-slice" }
 astrocore-core = { path = "crates/astrocore-core" }
 astrocore-world = { path = "crates/astrocore-world" }
 astrocore-geometry = { path = "crates/astrocore-geometry" }

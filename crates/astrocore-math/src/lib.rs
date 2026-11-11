@@ -1,4 +1,7 @@
 use glam::Vec3;
+mod origin;
+pub use origin::{FloatingOrigin, WorldPos};
+
 use serde::{Deserialize, Serialize};
 
 pub use glam;

@@ -77,6 +77,10 @@ pub struct ServerNetConfig {
     pub reach_m: f32,
     pub spawn: Vec3,
     pub shape: CharacterShape,
+    /// Сколько байт содержимого отправляется клиенту за тик: игровой поток не должен голодать.
+    pub content_bytes_per_tick: usize,
+    /// Сколько запросов содержимого может ждать у одного клиента.
+    pub content_queue_max: usize,
 }
 
 impl Default for ServerNetConfig {
@@ -94,6 +98,8 @@ impl Default for ServerNetConfig {
             reach_m: DEFAULT_REACH_M,
             spawn: Vec3::new(0.5, 1.0, 0.5),
             shape: CharacterShape::default(),
+            content_bytes_per_tick: 64 * 1024,
+            content_queue_max: 8,
         }
     }
 }
@@ -166,6 +172,11 @@ pub struct GameServer {
     cfg: ServerNetConfig,
     auth: Box<dyn Authenticator>,
     modules: Option<ModuleHost>,
+    replication: astrocore_api::ReplicationRegistry,
+    content: BTreeMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
+    content_queue: BTreeMap<ConnId, VecDeque<([u8; 32], u32)>>,
+    /// Последние значения реплицируемых данных: (сущность, вид) → (номер, байты).
+    components: BTreeMap<(NetworkEntityId, String), (u32, Vec<u8>)>,
     /// Соединения до `Hello`: тик подключения.
     pending: BTreeMap<ConnId, u32>,
     players: BTreeMap<ConnId, Player>,
@@ -189,6 +200,10 @@ impl GameServer {
             cfg,
             auth,
             modules: None,
+            replication: astrocore_api::ReplicationRegistry::new(),
+            content: BTreeMap::new(),
+            content_queue: BTreeMap::new(),
+            components: BTreeMap::new(),
             pending: BTreeMap::new(),
             players: BTreeMap::new(),
             next_net: 1,
@@ -224,6 +239,134 @@ impl GameServer {
             self.broadcast(&mut out, ServerMessage::TerrainOp { seq: op.seq, data });
         }
         Ok(out)
+    }
+
+    /// Виды данных, которые игровые модули могут привязывать к сущностям и реплицировать.
+    pub fn with_replication(mut self, registry: astrocore_api::ReplicationRegistry) -> Self {
+        self.replication = registry;
+        self
+    }
+
+    /// Задать значение зарегистрированного вида данных для сущности и разослать его клиентам
+    /// по правилам вида (канал, зона интереса). Неизвестный вид, слишком большое значение или
+    /// несуществующая сущность — ошибка, состояние не меняется.
+    pub fn set_component(
+        &mut self,
+        net: NetworkEntityId,
+        kind: &str,
+        data: Vec<u8>,
+    ) -> Result<Vec<Out>, String> {
+        let spec = self
+            .replication
+            .check(kind, data.len())
+            .map_err(|e| e.to_string())?
+            .clone();
+        let Some(owner) = self.players.values().find(|p| p.net == net) else {
+            return Err(format!("сущность {net:?} не найдена"));
+        };
+        let owner_pos = owner.state.pos;
+        let key = (net, kind.to_string());
+        let seq = self
+            .components
+            .get(&key)
+            .map_or(1, |(s, _)| s.wrapping_add(1));
+        self.components.insert(key, (seq, data.clone()));
+        let msg = ServerMessage::ComponentDelta {
+            net,
+            kind: kind.to_string(),
+            seq,
+            reliable: spec.channel == astrocore_api::ReplicationChannel::ReliableOrdered,
+            data,
+        };
+        let out = self
+            .players
+            .iter()
+            .filter(|(_, p)| match spec.interest {
+                astrocore_api::Interest::Everyone => true,
+                astrocore_api::Interest::Radius(r) => {
+                    p.net == net || p.state.pos.distance(owner_pos) <= r
+                }
+            })
+            .map(|(&to, _)| Out::Send {
+                to,
+                msg: msg.clone(),
+            })
+            .collect();
+        Ok(out)
+    }
+
+    /// Сколько частей содержимого ждёт отправки клиенту (диагностика и тесты).
+    pub fn content_queue_len(&self, conn: ConnId) -> usize {
+        self.content_queue.get(&conn).map_or(0, VecDeque::len)
+    }
+
+    /// Сделать содержимое доступным клиентам по хешу (SHA-256). Возвращает хеш.
+    pub fn register_content(&mut self, bytes: Vec<u8>) -> Result<[u8; 32], String> {
+        use sha2::{Digest, Sha256};
+        let parts = bytes.len().div_ceil(astrocore_protocol::CONTENT_PART_BYTES);
+        if bytes.is_empty() || parts as u32 > astrocore_protocol::MAX_CONTENT_PARTS {
+            return Err("содержимое пусто или превышает 64 МиБ".into());
+        }
+        let hash: [u8; 32] = Sha256::digest(&bytes).into();
+        self.content.insert(hash, std::sync::Arc::new(bytes));
+        Ok(hash)
+    }
+
+    fn on_request_content(&mut self, conn: ConnId, hash: [u8; 32], out: &mut Vec<Out>) {
+        let Some(blob) = self.content.get(&hash) else {
+            out.push(Out::Send {
+                to: conn,
+                msg: ServerMessage::ContentMissing { hash },
+            });
+            return;
+        };
+        let total = blob.len().div_ceil(astrocore_protocol::CONTENT_PART_BYTES) as u32;
+        let queue = self.content_queue.entry(conn).or_default();
+        let waiting = queue.iter().filter(|(h, i)| *i == 0 && *h != hash).count();
+        if waiting >= self.cfg.content_queue_max || queue.iter().any(|(h, _)| *h == hash) {
+            return; // слишком много запросов или такой уже в очереди
+        }
+        queue.extend((0..total).map(|i| (hash, i)));
+    }
+
+    /// Отправить часть очередей содержимого в пределах бюджета тика.
+    fn pump_content(&mut self, out: &mut Vec<Out>) {
+        let part = astrocore_protocol::CONTENT_PART_BYTES;
+        let conns: Vec<ConnId> = self.content_queue.keys().copied().collect();
+        for conn in conns {
+            let mut budget = self.cfg.content_bytes_per_tick;
+            while budget > 0 {
+                let Some(queue) = self.content_queue.get_mut(&conn) else {
+                    break;
+                };
+                let Some((hash, index)) = queue.pop_front() else {
+                    break;
+                };
+                let Some(blob) = self.content.get(&hash) else {
+                    continue;
+                };
+                let total = blob.len().div_ceil(part) as u32;
+                let start = index as usize * part;
+                let end = (start + part).min(blob.len());
+                out.push(Out::Send {
+                    to: conn,
+                    msg: ServerMessage::ContentPart {
+                        hash,
+                        index,
+                        total,
+                        data: blob[start..end].to_vec(),
+                    },
+                });
+                budget = budget.saturating_sub(end - start);
+            }
+            if self
+                .content_queue
+                .get(&conn)
+                .is_some_and(VecDeque::is_empty)
+            {
+                self.content_queue.remove(&conn);
+            }
+        }
     }
 
     pub fn with_modules(mut self, host: ModuleHost) -> Self {
@@ -332,6 +475,8 @@ impl GameServer {
         let Some(p) = self.players.remove(&conn) else {
             return Vec::new();
         };
+        self.components.retain(|(n, _), _| *n != p.net);
+        self.content_queue.remove(&conn);
         self.players
             .keys()
             .map(|&to| Out::Send {
@@ -433,6 +578,9 @@ impl GameServer {
                         command,
                     } => self.on_edit(conn, base_revision, command, &mut out),
                     ClientMessage::RequestSnapshot => self.send_snapshot(conn, &mut out),
+                    ClientMessage::RequestContent { hash } => {
+                        self.on_request_content(conn, hash, &mut out)
+                    }
                     ClientMessage::EditTerrain {
                         base_revision,
                         data,
@@ -571,6 +719,18 @@ impl GameServer {
                     net: *net,
                     element: *element,
                     open: self.doors.is_open(*element),
+                },
+            });
+        }
+        for ((net, kind), (seq, data)) in &self.components {
+            out.push(Out::Send {
+                to: conn,
+                msg: ServerMessage::ComponentDelta {
+                    net: *net,
+                    kind: kind.clone(),
+                    seq: *seq,
+                    reliable: true,
+                    data: data.clone(),
                 },
             });
         }
@@ -882,6 +1042,7 @@ impl GameServer {
         }
 
         self.replicate_entities(&mut out);
+        self.pump_content(&mut out);
         self.metrics.messages_out += out.len() as u64;
         let micros = started.elapsed().as_micros() as u64;
         self.metrics.tick_micros_last = micros;

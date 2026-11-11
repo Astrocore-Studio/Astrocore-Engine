@@ -263,6 +263,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-api"
+version = "0.1.0"
+dependencies = [
+ "astrocore-assets",
+ "astrocore-core",
+ "astrocore-math",
+ "astrocore-physics",
+ "astrocore-runtime",
+ "astrocore-spatial",
+ "astrocore-world",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-assets"
 version = "0.1.0"
 dependencies = [
@@ -360,6 +374,7 @@ dependencies = [
 name = "astrocore-network"
 version = "0.1.0"
 dependencies = [
+ "astrocore-api",
  "astrocore-core",
  "astrocore-math",
  "astrocore-physics",
@@ -481,6 +496,18 @@ dependencies = [
  "astrocore-world",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "astrocore-spatial-topology-example"
+version = "0.1.0"
+dependencies = [
+ "astrocore-api",
+ "astrocore-core",
+ "astrocore-math",
+ "astrocore-spatial",
+ "astrocore-vertical-slice",
+ "astrocore-world",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use astrocore_core::{Revision, SchemaVersion};
 use astrocore_math::ChunkCoord;
 use serde::{Deserialize, Serialize};
 
-use crate::{FloorDef, StructureElement, World, WorldConfig, WorldError};
+use crate::{AuthoredObject, FloorDef, StructureElement, World, WorldConfig, WorldError};
 
 /// Версия схемы сериализованного состояния мира.
 pub const WORLD_SCHEMA_VERSION: SchemaVersion = SchemaVersion(1);
@@ -18,6 +18,9 @@ pub struct WorldState {
     pub config: WorldConfig,
     pub floors: Vec<FloorDef>,
     pub elements: Vec<StructureElement>,
+    /// Авторские объекты; поле отсутствует в старых снимках и в мирах без них.
+    #[serde(default)]
+    pub authored: Vec<AuthoredObject>,
     pub revision: Revision,
     pub chunk_revisions: Vec<(ChunkCoord, Revision)>,
 }
@@ -31,6 +34,7 @@ impl World {
             config: self.config,
             floors: self.floors.values().cloned().collect(),
             elements: self.elements.values().cloned().collect(),
+            authored: self.authored.values().cloned().collect(),
             revision: self.revision,
             chunk_revisions: self.chunk_revisions.iter().map(|(c, r)| (*c, *r)).collect(),
         }
@@ -57,6 +61,15 @@ impl World {
             world.index_insert(&element);
             world.elements.insert(element.id, element);
         }
+        // Порталы ссылаются на объёмы, поэтому сначала всё, на что можно сослаться.
+        let (portals, rest): (Vec<_>, Vec<_>) = state
+            .authored
+            .into_iter()
+            .partition(|o| matches!(o.kind, crate::AuthoredKind::Portal { .. }));
+        for o in rest.into_iter().chain(portals) {
+            world.validate_authored(&o)?;
+            world.authored.insert(o.id, o);
+        }
         world.revision = state.revision;
         let mut chunk_revisions = BTreeMap::new();
         for (chunk, rev) in state.chunk_revisions {
@@ -75,7 +88,13 @@ impl World {
     /// Нужен для сравнения «одинаковы ли два мира» и для проверки совместимости
     /// клиента и сервера по версии карты.
     pub fn content_hash(&self) -> u64 {
-        let bytes = serde_json::to_vec(&self.to_state()).unwrap_or_default();
+        // Пустой список авторских объектов в хеш не входит: хеши миров без них прежние.
+        // Порядок полей в JSON — порядок объявления структуры, поэтому вырезка точная.
+        let mut text = serde_json::to_string(&self.to_state()).unwrap_or_default();
+        if self.authored.is_empty() {
+            text = text.replacen("\"authored\":[],", "", 1);
+        }
+        let bytes = text.into_bytes();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for b in bytes {
             hash ^= u64::from(b);

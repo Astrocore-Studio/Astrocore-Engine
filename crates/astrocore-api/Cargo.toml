@@ -1,0 +1,20 @@
+[package]
+name = "astrocore-api"
+description = "Публичные интерфейсы Astrocore для игровых модулей и расширений редактора"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+astrocore-assets.workspace = true
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-physics.workspace = true
+astrocore-runtime.workspace = true
+astrocore-spatial.workspace = true
+astrocore-world.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

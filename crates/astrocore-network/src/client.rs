@@ -37,6 +37,19 @@ pub enum ClientEvent {
     },
     EntityUpdated(NetworkEntityId),
     EntityRemoved(NetworkEntityId),
+    /// Пришло новое значение реплицируемого вида данных сущности.
+    ComponentChanged {
+        net: NetworkEntityId,
+        kind: String,
+    },
+    /// Содержимое по хешу получено и проверено.
+    ContentReceived {
+        hash: [u8; 32],
+    },
+    /// Содержимого нет у сервера или оно повреждено.
+    ContentFailed {
+        hash: [u8; 32],
+    },
     /// Рельеф получен целиком или изменился.
     TerrainChanged,
     Rejected {
@@ -61,6 +74,16 @@ pub enum ClientError {
     Unexpected(&'static str),
 }
 
+/// Сколько загрузок содержимого клиент собирает одновременно.
+const MAX_CONTENT_DOWNLOADS: usize = 8;
+
+#[derive(Debug, Default)]
+struct ContentAssembly {
+    total: u32,
+    parts: BTreeMap<u32, Vec<u8>>,
+    bytes: usize,
+}
+
 pub struct ClientCore {
     build: String,
     world_id: String,
@@ -73,6 +96,9 @@ pub struct ClientCore {
     reassembler: Reassembler,
     buffered_ops: Vec<WorldOp>,
     doors: BTreeMap<NetworkEntityId, (ObjectId, bool)>,
+    components: BTreeMap<(NetworkEntityId, String), (u32, Vec<u8>)>,
+    content: BTreeMap<[u8; 32], Vec<u8>>,
+    content_partial: BTreeMap<[u8; 32], ContentAssembly>,
     state: CharacterState,
     seq: u32,
     pending: VecDeque<InputCmd>,
@@ -101,6 +127,9 @@ impl ClientCore {
             reassembler: Reassembler::new(),
             buffered_ops: Vec::new(),
             doors: BTreeMap::new(),
+            components: BTreeMap::new(),
+            content: BTreeMap::new(),
+            content_partial: BTreeMap::new(),
             state: CharacterState::at(Vec3::ZERO),
             seq: 0,
             pending: VecDeque::new(),
@@ -148,6 +177,22 @@ impl ClientCore {
             data,
         })
         .ok()
+    }
+
+    /// Последнее принятое значение вида данных у сущности.
+    pub fn component(&self, net: NetworkEntityId, kind: &str) -> Option<&[u8]> {
+        self.components
+            .get(&(net, kind.to_string()))
+            .map(|(_, d)| d.as_slice())
+    }
+
+    pub fn request_content_packet(&self, hash: [u8; 32]) -> Vec<u8> {
+        encode(&ClientMessage::RequestContent { hash }).unwrap_or_default()
+    }
+
+    /// Полученное и проверенное содержимое.
+    pub fn content(&self, hash: &[u8; 32]) -> Option<&[u8]> {
+        self.content.get(hash).map(Vec::as_slice)
     }
 
     pub fn terrain(&self) -> Option<&Terrain> {
@@ -375,7 +420,69 @@ impl ClientCore {
                 }
                 events.push(ClientEvent::EntityUpdated(id));
             }
+            ServerMessage::ComponentDelta {
+                net,
+                kind,
+                seq,
+                data,
+                ..
+            } => {
+                // Последовательность: значение со старым номером (задержанный датаграммой пакет) игнорируется.
+                let key = (net, kind.clone());
+                if self.components.get(&key).is_none_or(|(old, _)| seq > *old) {
+                    self.components.insert(key, (seq, data));
+                    events.push(ClientEvent::ComponentChanged { net, kind });
+                }
+            }
+            ServerMessage::ContentMissing { hash } => {
+                self.content_partial.remove(&hash);
+                events.push(ClientEvent::ContentFailed { hash });
+            }
+            ServerMessage::ContentPart {
+                hash,
+                index,
+                total,
+                data,
+            } => {
+                if self.content.contains_key(&hash) {
+                    return Ok(events); // уже есть
+                }
+                if !self.content_partial.contains_key(&hash)
+                    && self.content_partial.len() >= MAX_CONTENT_DOWNLOADS
+                {
+                    return Ok(events); // слишком много одновременных загрузок
+                }
+                let asm = self
+                    .content_partial
+                    .entry(hash)
+                    .or_insert_with(|| ContentAssembly {
+                        total,
+                        parts: BTreeMap::new(),
+                        bytes: 0,
+                    });
+                if asm.total != total {
+                    self.content_partial.remove(&hash);
+                    events.push(ClientEvent::ContentFailed { hash });
+                    return Ok(events);
+                }
+                if asm.parts.insert(index, data.clone()).is_none() {
+                    asm.bytes += data.len();
+                }
+                if asm.parts.len() as u32 == asm.total {
+                    let asm = self.content_partial.remove(&hash).unwrap_or_default();
+                    let blob: Vec<u8> = asm.parts.into_values().flatten().collect();
+                    use sha2::{Digest, Sha256};
+                    let actual: [u8; 32] = Sha256::digest(&blob).into();
+                    if actual == hash {
+                        self.content.insert(hash, blob);
+                        events.push(ClientEvent::ContentReceived { hash });
+                    } else {
+                        events.push(ClientEvent::ContentFailed { hash });
+                    }
+                }
+            }
             ServerMessage::EntityRemoved { id } => {
+                self.components.retain(|(n, _), _| *n != id);
                 self.remotes.remove(&id);
                 events.push(ClientEvent::EntityRemoved(id));
             }

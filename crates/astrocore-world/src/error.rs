@@ -31,6 +31,8 @@ pub enum WorldError {
     },
     #[error("версия схемы {found} не поддерживается (текущая {supported})")]
     UnsupportedSchema { found: u32, supported: u32 },
+    #[error("недопустимый авторский объект: {0}")]
+    InvalidAuthored(String),
     #[error("повреждённое состояние мира: {0}")]
     CorruptState(String),
     #[error(transparent)]

@@ -36,6 +36,8 @@ pub enum ClientMessage {
     RequestSnapshot,
     /// Правка рельефа (postcard-байты `TerrainEdit`); сервер проверяет права и ревизию рельефа.
     EditTerrain { base_revision: u64, data: Vec<u8> },
+    /// Запросить содержимое по SHA-256 (ассеты и пакеты доставляются отдельно от игрового потока).
+    RequestContent { hash: [u8; 32] },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,11 +81,38 @@ pub enum ServerMessage {
         element: astrocore_core::ObjectId,
         open: bool,
     },
+    /// Значение зарегистрированного вида данных, привязанное к сущности (репликация игровых
+    /// модулей). `seq` растёт с каждым изменением вида у сущности; клиент отбрасывает старые.
+    ComponentDelta {
+        net: NetworkEntityId,
+        kind: String,
+        seq: u32,
+        /// Доставлять надёжно (иначе — последнее значение важнее порядка).
+        reliable: bool,
+        data: Vec<u8>,
+    },
+    /// Часть запрошенного содержимого; целостность проверяется клиентом по `hash`.
+    ContentPart {
+        hash: [u8; 32],
+        index: u32,
+        total: u32,
+        data: Vec<u8>,
+    },
+    /// Содержимого с таким хешем у сервера нет.
+    ContentMissing { hash: [u8; 32] },
     Reject {
         reason: RejectReason,
         detail: String,
     },
 }
+
+/// Размер части содержимого и предел числа частей (64 МиБ на объект).
+pub const CONTENT_PART_BYTES: usize = 16 * 1024;
+pub const MAX_CONTENT_PARTS: u32 = 4096;
+
+/// Предел длины имени вида и размера значения в `ComponentDelta`.
+pub const MAX_COMPONENT_KIND_LEN: usize = 64;
+pub const MAX_COMPONENT_BYTES: usize = 16 * 1024;
 
 /// Максимальный размер одного куска снимка, байты.
 pub const MAX_SNAPSHOT_PART_BYTES: usize = 48 * 1024;
@@ -157,6 +186,7 @@ impl Validate for ClientMessage {
             }
             ClientMessage::Interact { .. }
             | ClientMessage::RequestSnapshot
+            | ClientMessage::RequestContent { .. }
             | ClientMessage::EditTerrain { .. } => {}
             ClientMessage::Edit { .. } => {}
         }
@@ -183,6 +213,23 @@ impl Validate for ServerMessage {
             }
             ServerMessage::TerrainOp { data, .. } if data.len() > MAX_TERRAIN_EDIT_BYTES => {
                 Err(ProtocolError::Invalid("terrain op size"))
+            }
+            ServerMessage::ComponentDelta { kind, data, .. }
+                if kind.is_empty()
+                    || kind.len() > MAX_COMPONENT_KIND_LEN
+                    || kind.chars().any(char::is_control)
+                    || data.len() > MAX_COMPONENT_BYTES =>
+            {
+                Err(ProtocolError::Invalid("component delta"))
+            }
+            ServerMessage::ContentPart {
+                index, total, data, ..
+            } if *total == 0
+                || *total > MAX_CONTENT_PARTS
+                || index >= total
+                || data.len() > CONTENT_PART_BYTES =>
+            {
+                Err(ProtocolError::Invalid("content part"))
             }
             ServerMessage::InputAck { pos, .. } if !finite(pos) => {
                 Err(ProtocolError::Invalid("pos"))

@@ -100,6 +100,11 @@ impl EditSession {
                 .world
                 .element(*id)
                 .map(|e| WorldCommand::PlaceElement(e.clone())),
+            WorldCommand::PlaceAuthored(o) => Some(WorldCommand::RemoveAuthored { id: o.id }),
+            WorldCommand::RemoveAuthored { id } => self
+                .world
+                .authored_object(*id)
+                .map(|o| WorldCommand::PlaceAuthored(o.clone())),
             WorldCommand::DefineFloor(def) => Some(WorldCommand::RemoveFloor { id: def.id }),
             WorldCommand::RemoveFloor { id } => self
                 .world
