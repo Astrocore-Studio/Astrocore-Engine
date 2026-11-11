@@ -106,6 +106,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-prefabs"
+version = "0.1.0"
+dependencies = [
+ "astrocore-core",
+ "astrocore-math",
+ "astrocore-world",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1289,6 +1301,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1504,6 +1522,7 @@ dependencies = [
  "getrandom",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

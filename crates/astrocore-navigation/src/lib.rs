@@ -11,7 +11,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use astrocore_core::ObjectId;
 use astrocore_math::{GridCell, GridEdge};
-use astrocore_world::{FloorId, OpeningKind, StructureKind, World};
+use astrocore_world::{FloorId, OpeningKind, StructureKind, VerticalLink, World};
 
 /// Верхняя граница числа раскрытых ячеек за один запрос (защита сервера).
 pub const DEFAULT_NODE_LIMIT: usize = 200_000;
@@ -128,6 +128,113 @@ pub fn find_path(
                 g_score.insert(next, ng);
                 came_from.insert(next, cur);
                 open.push(Reverse((ng + h(next), ng, next)));
+            }
+        }
+    }
+    Err(PathError::NoPath)
+}
+
+/// Узел многоэтажного графа: этаж и ячейка.
+pub type Node = (FloorId, GridCell);
+
+/// Кратчайший путь между этажами (A*): шаги по сетке этажей + переходы по лестницам
+/// и пандусам ([`VerticalLink`], двусторонние, стоимость — длина марша).
+///
+/// Ячейки марша на нижнем этаже обычные проходимые; подъём моделируется переходом
+/// из входа марша на выход верхнего этажа.
+pub fn find_path_3d(
+    world: &World,
+    start: Node,
+    goal: Node,
+    opts: &PathOptions,
+) -> Result<Vec<Node>, PathError> {
+    for (floor, _) in [start, goal] {
+        if world.floor(floor).is_none() {
+            return Err(PathError::UnknownFloor(floor));
+        }
+    }
+    if start == goal {
+        return Ok(vec![start]);
+    }
+    let links = world.vertical_links();
+    let mut jumps: HashMap<Node, Vec<(Node, u32)>> = HashMap::new();
+    for VerticalLink {
+        element,
+        lower,
+        upper,
+        ..
+    } in &links
+    {
+        let len = world.element(*element).map_or(1, |e| match e.placement {
+            astrocore_world::Placement::Run { length, .. } => u32::from(length) + 1,
+            _ => 1,
+        });
+        jumps.entry(*lower).or_default().push((*upper, len));
+        jumps.entry(*upper).or_default().push((*lower, len));
+    }
+
+    // Общее окно поиска: постройки всех этажей + старт, цель, концы связей + кольцо.
+    let mut points: Vec<GridCell> = vec![start.1, goal.1];
+    for f in world.floors() {
+        if let Some((lo, hi)) = world.floor_cell_bounds(f.id) {
+            points.push(lo);
+            points.push(hi);
+        }
+    }
+    points.extend(jumps.keys().map(|n| n.1));
+    let lo = GridCell::new(
+        points.iter().map(|c| c.x).min().unwrap_or(0) - 1,
+        points.iter().map(|c| c.z).min().unwrap_or(0) - 1,
+    );
+    let hi = GridCell::new(
+        points.iter().map(|c| c.x).max().unwrap_or(0) + 1,
+        points.iter().map(|c| c.z).max().unwrap_or(0) + 1,
+    );
+    let in_window = |c: GridCell| c.x >= lo.x && c.x <= hi.x && c.z >= lo.z && c.z <= hi.z;
+    let h = |n: Node| ((n.1.x - goal.1.x).abs() + (n.1.z - goal.1.z).abs()) as u32;
+
+    let mut open = BinaryHeap::new();
+    let mut g_score: HashMap<Node, u32> = HashMap::from([(start, 0)]);
+    let mut came_from: HashMap<Node, Node> = HashMap::new();
+    let mut closed: HashSet<Node> = HashSet::new();
+    open.push(Reverse((h(start), 0u32, start)));
+    while let Some(Reverse((_, g, cur))) = open.pop() {
+        if cur == goal {
+            let mut path = vec![cur];
+            let mut at = cur;
+            while let Some(&prev) = came_from.get(&at) {
+                path.push(prev);
+                at = prev;
+            }
+            path.reverse();
+            return Ok(path);
+        }
+        if !closed.insert(cur) {
+            continue;
+        }
+        if closed.len() > opts.node_limit {
+            return Err(PathError::LimitExceeded(opts.node_limit));
+        }
+        let (floor, cell) = cur;
+        let mut next: Vec<(Node, u32)> = Vec::new();
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let n = cell.offset(dx, dz);
+            if in_window(n) && can_step(world, floor, cell, n, opts) {
+                next.push(((floor, n), 1));
+            }
+        }
+        if let Some(js) = jumps.get(&cur) {
+            next.extend(js.iter().copied());
+        }
+        for (n, cost) in next {
+            if closed.contains(&n) {
+                continue;
+            }
+            let ng = g + cost;
+            if g_score.get(&n).is_none_or(|&old| ng < old) {
+                g_score.insert(n, ng);
+                came_from.insert(n, cur);
+                open.push(Reverse((ng + h(n), ng, n)));
             }
         }
     }
@@ -300,5 +407,101 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.len(), 1 + 5 + 6);
+    }
+
+    mod multi_floor {
+        use super::*;
+        use astrocore_math::Facing;
+
+        /// Два этажа; на нижнем — лестница из (5,5) на юг длиной 3 (выход на втором этаже в (5,8)).
+        fn two_floors() -> World {
+            let mut w = world();
+            w.apply(WorldCommand::DefineFloor(FloorDef {
+                id: FloorId(1),
+                name: "up".into(),
+                base_y: 3.0,
+                height: 3.0,
+            }))
+            .unwrap();
+            w.apply(WorldCommand::PlaceElement(StructureElement {
+                id: ObjectId::from_u128(77),
+                kind: StructureKind::Stair { to: FloorId(1) },
+                placement: Placement::Run {
+                    start: GridCell::new(5, 5),
+                    dir: Facing::South,
+                    length: 3,
+                },
+                floor: FloorId(0),
+                material: PrototypeId::new("t:m").unwrap(),
+                thickness: 0.2,
+            }))
+            .unwrap();
+            w
+        }
+
+        #[test]
+        fn path_climbs_stairs_between_floors() {
+            let w = two_floors();
+            let start = (FloorId(0), GridCell::new(5, 3));
+            let goal = (FloorId(1), GridCell::new(7, 8));
+            let path = find_path_3d(&w, start, goal, &PathOptions::default()).unwrap();
+            assert_eq!(path.first(), Some(&start));
+            assert_eq!(path.last(), Some(&goal));
+            let jump = path
+                .windows(2)
+                .position(|p| p[0].0 != p[1].0)
+                .expect("есть переход между этажами");
+            assert_eq!(
+                path[jump],
+                (FloorId(0), GridCell::new(5, 5)),
+                "вход на марш"
+            );
+            assert_eq!(
+                path[jump + 1],
+                (FloorId(1), GridCell::new(5, 8)),
+                "выход наверху"
+            );
+        }
+
+        #[test]
+        fn links_work_in_both_directions_and_without_stairs_there_is_no_path() {
+            let w = two_floors();
+            let down = find_path_3d(
+                &w,
+                (FloorId(1), GridCell::new(5, 8)),
+                (FloorId(0), GridCell::new(5, 4)),
+                &PathOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(down.last(), Some(&(FloorId(0), GridCell::new(5, 4))));
+
+            let mut no_stairs = world();
+            no_stairs
+                .apply(WorldCommand::DefineFloor(FloorDef {
+                    id: FloorId(1),
+                    name: "up".into(),
+                    base_y: 3.0,
+                    height: 3.0,
+                }))
+                .unwrap();
+            assert_eq!(
+                find_path_3d(
+                    &no_stairs,
+                    (FloorId(0), GridCell::new(0, 0)),
+                    (FloorId(1), GridCell::new(0, 0)),
+                    &PathOptions::default()
+                ),
+                Err(PathError::NoPath)
+            );
+            assert_eq!(
+                find_path_3d(
+                    &no_stairs,
+                    (FloorId(9), GridCell::new(0, 0)),
+                    (FloorId(1), GridCell::new(0, 0)),
+                    &PathOptions::default()
+                ),
+                Err(PathError::UnknownFloor(FloorId(9)))
+            );
+        }
     }
 }

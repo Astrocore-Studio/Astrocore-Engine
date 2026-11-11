@@ -53,10 +53,7 @@ impl World {
         }
         for element in state.elements {
             world.validate_element(&element)?;
-            let slot = element.slot();
-            if let Some(&by) = world.slots.get(&slot) {
-                return Err(WorldError::SlotOccupied { slot, by });
-            }
+            world.check_slots_free(&element)?;
             world.index_insert(&element);
             world.elements.insert(element.id, element);
         }

@@ -364,3 +364,180 @@ fn invalid_floor_is_rejected() {
     assert!(matches!(r, Err(WorldError::InvalidFloor(_))));
     assert_eq!(w.revision(), Revision::ZERO);
 }
+
+mod stairs {
+    use astrocore_math::Facing;
+
+    use super::*;
+
+    fn two_floor_world() -> World {
+        let mut w = world();
+        w.apply(WorldCommand::DefineFloor(FloorDef {
+            id: FloorId(1),
+            name: "up".into(),
+            base_y: 4.0,
+            height: 4.0,
+        }))
+        .unwrap();
+        w
+    }
+
+    fn stair(id: u128, start: GridCell, length: u8, to: FloorId) -> StructureElement {
+        StructureElement {
+            id: ObjectId::from_u128(id),
+            kind: StructureKind::Stair { to },
+            placement: Placement::Run {
+                start,
+                dir: Facing::East,
+                length,
+            },
+            floor: FloorId(0),
+            material: mat(),
+            thickness: 0.2,
+        }
+    }
+
+    #[test]
+    fn stair_occupies_every_cell_of_its_run_and_creates_a_link() {
+        let mut w = two_floor_world();
+        w.apply(WorldCommand::PlaceElement(stair(
+            1,
+            GridCell::new(2, 2),
+            4,
+            FloorId(1),
+        )))
+        .unwrap();
+        for x in 2..6 {
+            assert!(
+                w.element_at(FloorId(0), SlotKey::Run(GridCell::new(x, 2)))
+                    .is_some(),
+                "x={x}"
+            );
+        }
+        assert!(
+            w.element_at(FloorId(0), SlotKey::Run(GridCell::new(6, 2)))
+                .is_none()
+        );
+        let links = w.vertical_links();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].lower, (FloorId(0), GridCell::new(2, 2)));
+        assert_eq!(
+            links[0].upper,
+            (FloorId(1), GridCell::new(6, 2)),
+            "выход на верхнем этаже за маршем"
+        );
+    }
+
+    #[test]
+    fn overlapping_runs_are_rejected_and_removal_frees_all_cells() {
+        let mut w = two_floor_world();
+        w.apply(WorldCommand::PlaceElement(stair(
+            1,
+            GridCell::new(2, 2),
+            4,
+            FloorId(1),
+        )))
+        .unwrap();
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(stair(
+                2,
+                GridCell::new(4, 2),
+                3,
+                FloorId(1)
+            ))),
+            Err(WorldError::SlotOccupied { .. })
+        ));
+        w.apply(WorldCommand::RemoveElement {
+            id: ObjectId::from_u128(1),
+        })
+        .unwrap();
+        w.apply(WorldCommand::PlaceElement(stair(
+            2,
+            GridCell::new(4, 2),
+            3,
+            FloorId(1),
+        )))
+        .unwrap();
+        assert!(
+            w.element_at(FloorId(0), SlotKey::Run(GridCell::new(2, 2)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_stairs_are_rejected() {
+        let mut w = two_floor_world();
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(stair(
+                1,
+                GridCell::new(0, 0),
+                0,
+                FloorId(1)
+            ))),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(stair(
+                1,
+                GridCell::new(0, 0),
+                200,
+                FloorId(1)
+            ))),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(stair(
+                1,
+                GridCell::new(0, 0),
+                3,
+                FloorId(9)
+            ))),
+            Err(WorldError::UnknownFloor(_))
+        ));
+        // «Лестница вниз» (на этаж, который не выше) — ошибка.
+        let mut down = stair(2, GridCell::new(0, 0), 3, FloorId(0));
+        down.floor = FloorId(1);
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(down)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        // Лестница с размещением по ребру — ошибка.
+        let mut bad = stair(3, GridCell::new(0, 0), 3, FloorId(1));
+        bad.placement = Placement::Edge(GridEdge::along_x(0, 0));
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(bad)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        assert_eq!(w.element_count(), 0);
+    }
+
+    #[test]
+    fn stairs_survive_state_roundtrip_and_replication() {
+        let mut w = two_floor_world();
+        w.apply(WorldCommand::PlaceElement(stair(
+            1,
+            GridCell::new(2, 2),
+            4,
+            FloorId(1),
+        )))
+        .unwrap();
+        let restored = World::from_state(w.to_state()).unwrap();
+        assert_eq!(restored.content_hash(), w.content_hash());
+        assert_eq!(restored.vertical_links(), w.vertical_links());
+    }
+
+    #[test]
+    fn run_touches_chunks_across_a_boundary() {
+        let mut w = two_floor_world();
+        w.take_dirty();
+        w.apply(WorldCommand::PlaceElement(stair(
+            1,
+            GridCell::new(30, 2),
+            5,
+            FloorId(1),
+        )))
+        .unwrap();
+        let chunks: Vec<_> = w.take_dirty().into_iter().map(|d| d.chunk).collect();
+        assert_eq!(chunks, vec![ChunkCoord::new(0, 0), ChunkCoord::new(1, 0)]);
+    }
+}

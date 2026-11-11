@@ -15,7 +15,8 @@ mod error;
 mod state;
 
 pub use element::{
-    FloorDef, FloorId, OpeningKind, Placement, Slot, SlotKey, StructureElement, StructureKind,
+    FloorDef, FloorId, MAX_RUN_LENGTH, OpeningKind, Placement, Slot, SlotKey, StructureElement,
+    StructureKind,
 };
 pub use error::WorldError;
 pub use state::{WORLD_SCHEMA_VERSION, WorldState};
@@ -63,6 +64,17 @@ impl WorldConfig {
         }
         Ok(())
     }
+}
+
+/// Связь между этажами через лестницу или пандус (двусторонняя).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerticalLink {
+    pub element: ObjectId,
+    pub kind: StructureKind,
+    /// Вход на нижнем этаже.
+    pub lower: (FloorId, GridCell),
+    /// Выход на верхнем этаже.
+    pub upper: (FloorId, GridCell),
 }
 
 /// Что именно нужно пересобрать в затронутом регионе.
@@ -335,10 +347,7 @@ impl World {
             }
             WorldCommand::PlaceElement(element) => {
                 self.validate_element(element)?;
-                let slot = element.slot();
-                if let Some(&by) = self.slots.get(&slot) {
-                    return Err(WorldError::SlotOccupied { slot, by });
-                }
+                self.check_slots_free(element)?;
                 self.revision = self.revision.next();
                 self.index_insert(element);
                 self.mark_dirty(element);
@@ -367,11 +376,55 @@ impl World {
         if self.elements.contains_key(&e.id) {
             return Err(WorldError::DuplicateId(e.id));
         }
+        if let Some(to) = e.kind.target_floor() {
+            let (Some(from), Some(top)) = (self.floors.get(&e.floor), self.floors.get(&to)) else {
+                return Err(WorldError::UnknownFloor(to));
+            };
+            if top.base_y <= from.base_y {
+                return Err(WorldError::InvalidPlacement(format!(
+                    "{:?} ведёт с этажа {:?} на {:?}, который не выше",
+                    e.kind, e.floor, to
+                )));
+            }
+        }
         Ok(())
     }
 
+    fn check_slots_free(&self, e: &StructureElement) -> Result<(), WorldError> {
+        for slot in e.slots() {
+            if let Some(&by) = self.slots.get(&slot) {
+                return Err(WorldError::SlotOccupied { slot, by });
+            }
+        }
+        Ok(())
+    }
+
+    /// Вертикальные связи этажей (лестницы и пандусы) в порядке `ObjectId`.
+    pub fn vertical_links(&self) -> Vec<VerticalLink> {
+        self.elements
+            .values()
+            .filter_map(|e| {
+                let (to, Placement::Run { start, .. }, Some(landing)) = (
+                    e.kind.target_floor()?,
+                    e.placement,
+                    e.placement.run_landing(),
+                ) else {
+                    return None;
+                };
+                Some(VerticalLink {
+                    element: e.id,
+                    kind: e.kind,
+                    lower: (e.floor, start),
+                    upper: (to, landing),
+                })
+            })
+            .collect()
+    }
+
     fn index_insert(&mut self, e: &StructureElement) {
-        self.slots.insert(e.slot(), e.id);
+        for slot in e.slots() {
+            self.slots.insert(slot, e.id);
+        }
         for chunk in self.affected_chunks(e) {
             self.chunk_index
                 .entry((chunk, e.floor))
@@ -381,7 +434,9 @@ impl World {
     }
 
     fn index_remove(&mut self, e: &StructureElement) {
-        self.slots.remove(&e.slot());
+        for slot in e.slots() {
+            self.slots.remove(&slot);
+        }
         for chunk in self.affected_chunks(e) {
             if let Some(set) = self.chunk_index.get_mut(&(chunk, e.floor)) {
                 set.remove(&e.id);

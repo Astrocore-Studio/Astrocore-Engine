@@ -30,6 +30,17 @@ impl ObjectId {
     pub const fn as_uuid(&self) -> Uuid {
         self.0
     }
+
+    pub const fn from_uuid(v: Uuid) -> Self {
+        Self(v)
+    }
+
+    /// Детерминированный идентификатор, выведенный из пространства имён и «имени»
+    /// (UUID v5). Нужен для объектов, порождаемых префабами: тот же узел того же
+    /// экземпляра всегда получает тот же `ObjectId`.
+    pub fn derive(namespace: &ObjectId, name: &[u8]) -> Self {
+        Self(Uuid::new_v5(&namespace.0, name))
+    }
 }
 
 impl fmt::Display for ObjectId {
@@ -48,6 +59,10 @@ impl PrefabNodeId {
         Self(Uuid::new_v4())
     }
 
+    pub const fn as_uuid(&self) -> Uuid {
+        self.0
+    }
+
     pub const fn from_u128(v: u128) -> Self {
         Self(Uuid::from_u128(v))
     }
@@ -61,6 +76,10 @@ pub struct PrefabInstanceId(Uuid);
 impl PrefabInstanceId {
     pub fn new_random() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    pub const fn as_uuid(&self) -> Uuid {
+        self.0
     }
 
     pub const fn from_u128(v: u128) -> Self {
@@ -230,6 +249,17 @@ mod tests {
         let id = ObjectId::from_u128(0xDEADBEEF);
         let s = serde_json::to_string(&id).unwrap();
         assert_eq!(serde_json::from_str::<ObjectId>(&s).unwrap(), id);
+    }
+
+    #[test]
+    fn derived_ids_are_deterministic_and_distinct() {
+        let ns = ObjectId::from_u128(1);
+        assert_eq!(ObjectId::derive(&ns, b"a"), ObjectId::derive(&ns, b"a"));
+        assert_ne!(ObjectId::derive(&ns, b"a"), ObjectId::derive(&ns, b"b"));
+        assert_ne!(
+            ObjectId::derive(&ns, b"a"),
+            ObjectId::derive(&ObjectId::from_u128(2), b"a")
+        );
     }
 
     #[test]

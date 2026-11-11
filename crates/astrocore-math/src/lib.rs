@@ -99,6 +99,51 @@ impl GridCell {
     }
 }
 
+/// Одно из четырёх горизонтальных направлений (вдоль осей сетки).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Facing {
+    /// +X
+    East,
+    /// −X
+    West,
+    /// +Z
+    South,
+    /// −Z (направление «вперёд» по умолчанию)
+    North,
+}
+
+impl Facing {
+    /// Смещение в ячейках.
+    pub const fn delta(self) -> (i32, i32) {
+        match self {
+            Facing::East => (1, 0),
+            Facing::West => (-1, 0),
+            Facing::South => (0, 1),
+            Facing::North => (0, -1),
+        }
+    }
+
+    pub const fn as_vec3(self) -> Vec3 {
+        match self {
+            Facing::East => Vec3::X,
+            Facing::West => Vec3::NEG_X,
+            Facing::South => Vec3::Z,
+            Facing::North => Vec3::NEG_Z,
+        }
+    }
+}
+
+impl GridCell {
+    /// Ячейка на `n` шагов в направлении `dir`.
+    pub const fn step(self, dir: Facing, n: i32) -> Self {
+        let (dx, dz) = dir.delta();
+        Self {
+            x: self.x + dx * n,
+            z: self.z + dz * n,
+        }
+    }
+}
+
 /// Ребро сетки: отрезок между двумя соседними вершинами сетки. Стены и проёмы
 /// лежат на рёбрах.
 ///
@@ -168,6 +213,111 @@ impl GridEdge {
             EdgeDir::AlongZ => a + Vec3::new(0.0, 0.0, step_m),
         };
         (a, b)
+    }
+}
+
+/// Преобразование сетки: отражение по X, поворот на четверти оборота, перенос.
+///
+/// Порядок: сначала отражение (`x → −x`), затем поворот, затем перенос. Поворот на
+/// одну четверть — «по часовой стрелке» при взгляде сверху, когда +X вправо, а +Z
+/// вниз: вершина `(x, z) → (−z, x)`, `East → South → West → North`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct GridTransform {
+    pub mirror_x: bool,
+    /// Число четвертей оборота (берётся по модулю 4).
+    pub quarter_turns: u8,
+    pub dx: i32,
+    pub dz: i32,
+}
+
+impl GridTransform {
+    pub const IDENTITY: GridTransform = GridTransform {
+        mirror_x: false,
+        quarter_turns: 0,
+        dx: 0,
+        dz: 0,
+    };
+
+    pub const fn translate(dx: i32, dz: i32) -> Self {
+        Self {
+            mirror_x: false,
+            quarter_turns: 0,
+            dx,
+            dz,
+        }
+    }
+
+    pub const fn rotate(quarter_turns: u8) -> Self {
+        Self {
+            mirror_x: false,
+            quarter_turns: quarter_turns % 4,
+            dx: 0,
+            dz: 0,
+        }
+    }
+
+    /// Преобразование вершины сетки.
+    pub fn vertex(self, (x, z): (i32, i32)) -> (i32, i32) {
+        let (mut x, mut z) = (if self.mirror_x { -x } else { x }, z);
+        for _ in 0..(self.quarter_turns % 4) {
+            (x, z) = (-z, x);
+        }
+        (x + self.dx, z + self.dz)
+    }
+
+    /// Ячейка = квадрат из четырёх вершин; результат — ячейка с минимальным углом.
+    pub fn cell(self, c: GridCell) -> GridCell {
+        let corners = [
+            (c.x, c.z),
+            (c.x + 1, c.z),
+            (c.x, c.z + 1),
+            (c.x + 1, c.z + 1),
+        ]
+        .map(|v| self.vertex(v));
+        GridCell::new(
+            corners.iter().map(|v| v.0).min().unwrap_or(0),
+            corners.iter().map(|v| v.1).min().unwrap_or(0),
+        )
+    }
+
+    pub fn edge(self, e: GridEdge) -> GridEdge {
+        let (a, b) = match e.dir {
+            EdgeDir::AlongX => ((e.x, e.z), (e.x + 1, e.z)),
+            EdgeDir::AlongZ => ((e.x, e.z), (e.x, e.z + 1)),
+        };
+        let (a, b) = (self.vertex(a), self.vertex(b));
+        let min = (a.0.min(b.0), a.1.min(b.1));
+        if a.0 == b.0 {
+            GridEdge::along_z(min.0, min.1)
+        } else {
+            GridEdge::along_x(min.0, min.1)
+        }
+    }
+
+    pub fn facing(self, f: Facing) -> Facing {
+        let mut f = if self.mirror_x {
+            match f {
+                Facing::East => Facing::West,
+                Facing::West => Facing::East,
+                other => other,
+            }
+        } else {
+            f
+        };
+        for _ in 0..(self.quarter_turns % 4) {
+            f = match f {
+                Facing::East => Facing::South,
+                Facing::South => Facing::West,
+                Facing::West => Facing::North,
+                Facing::North => Facing::East,
+            };
+        }
+        f
+    }
+
+    /// Прямой марш: начальная ячейка и направление преобразуются, длина сохраняется.
+    pub fn run(self, start: GridCell, dir: Facing) -> (GridCell, Facing) {
+        (self.cell(start), self.facing(dir))
     }
 }
 
@@ -290,6 +440,90 @@ mod tests {
         }
         assert_eq!(GridEdge::between(a, a.offset(1, 1)), None);
         assert_eq!(GridEdge::between(a, a), None);
+    }
+
+    #[test]
+    fn facing_deltas_match_axes() {
+        assert_eq!(Facing::North.as_vec3(), FORWARD);
+        assert_eq!(Facing::East.as_vec3(), RIGHT);
+        assert_eq!(
+            GridCell::new(1, 1).step(Facing::South, 3),
+            GridCell::new(1, 4)
+        );
+        assert_eq!(
+            GridCell::new(1, 1).step(Facing::West, 2),
+            GridCell::new(-1, 1)
+        );
+    }
+
+    #[test]
+    fn transform_rotation_is_consistent_for_vertices_cells_edges_and_facing() {
+        let r = GridTransform::rotate(1);
+        assert_eq!(r.vertex((3, 2)), (-2, 3));
+        assert_eq!(r.facing(Facing::East), Facing::South);
+        // Четыре поворота — тождество, для любых объектов.
+        let r4 = GridTransform::rotate(4);
+        let (c, e) = (GridCell::new(3, -2), GridEdge::along_z(5, 1));
+        assert_eq!((r4.cell(c), r4.edge(e)), (c, e));
+        let mut cur = (c, e, Facing::North);
+        for _ in 0..4 {
+            cur = (r.cell(cur.0), r.edge(cur.1), r.facing(cur.2));
+        }
+        assert_eq!(cur, (c, e, Facing::North));
+    }
+
+    #[test]
+    fn transformed_edge_stays_between_transformed_adjacent_cells() {
+        // Главный инвариант: ребро между двумя ячейками остаётся ребром между их образами.
+        for quarter_turns in 0..4 {
+            for mirror_x in [false, true] {
+                let t = GridTransform {
+                    mirror_x,
+                    quarter_turns,
+                    dx: 7,
+                    dz: -3,
+                };
+                for edge in [
+                    GridEdge::along_x(2, 5),
+                    GridEdge::along_z(-4, 1),
+                    GridEdge::along_x(0, 0),
+                ] {
+                    let [a, b] = edge.adjacent_cells();
+                    let expected = GridEdge::between(t.cell(a), t.cell(b));
+                    assert_eq!(Some(t.edge(edge)), expected, "{t:?} {edge:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transformed_run_cells_are_the_images_of_run_cells() {
+        let t = GridTransform {
+            mirror_x: true,
+            quarter_turns: 3,
+            dx: 2,
+            dz: 9,
+        };
+        let (start, dir, len) = (GridCell::new(1, 2), Facing::East, 4);
+        let (s2, d2) = t.run(start, dir);
+        for i in 0..len {
+            assert_eq!(s2.step(d2, i), t.cell(start.step(dir, i)), "i={i}");
+        }
+    }
+
+    #[test]
+    fn mirror_swaps_east_west_and_translate_moves() {
+        let m = GridTransform {
+            mirror_x: true,
+            ..GridTransform::IDENTITY
+        };
+        assert_eq!(m.facing(Facing::East), Facing::West);
+        assert_eq!(m.facing(Facing::North), Facing::North);
+        assert_eq!(m.cell(GridCell::new(0, 0)), GridCell::new(-1, 0));
+        assert_eq!(
+            GridTransform::translate(3, 4).cell(GridCell::new(1, 1)),
+            GridCell::new(4, 5)
+        );
     }
 
     #[test]
