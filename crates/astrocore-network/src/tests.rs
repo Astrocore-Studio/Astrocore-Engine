@@ -1512,6 +1512,126 @@ mod game_commands {
         assert_eq!(*seen.lock().unwrap(), vec![(me, 2.5)]);
     }
 
+    /// Модуль управляет дверью по команде и пытается зациклить сам себя через PortalChanged.
+    struct DoorMan;
+
+    impl GameModule for DoorMan {
+        fn id(&self) -> &str {
+            "test.doorman"
+        }
+        fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+            use astrocore_runtime::modules::DoorAction;
+            match event {
+                HookEvent::Command { kind, data, .. } if kind == "door" => {
+                    let force = data.first() == Some(&1);
+                    if let Some(id) = ctx
+                        .world
+                        .elements()
+                        .find(|e| {
+                            matches!(
+                                e.kind,
+                                astrocore_world::StructureKind::Opening(
+                                    astrocore_world::OpeningKind::Door
+                                )
+                            )
+                        })
+                        .map(|e| e.id)
+                    {
+                        ctx.request_door(id, DoorAction::Toggle, force);
+                    }
+                }
+                // Каждое изменение двери вызывает новое — без ограничителя это бесконечно.
+                HookEvent::PortalChanged { element, .. } => {
+                    ctx.request_door(*element, DoorAction::Toggle, true)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn modules_control_doors_through_the_engine_and_cannot_loop_forever() {
+        let mut host = ModuleHost::new();
+        host.register(Box::new(DoorMan)).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        let b = h.join("b");
+        let door = h.client(a).door_ids()[0];
+        let before = h.client(b).door_open(door);
+        let p = h.client(a).command_packet("door", vec![0]).unwrap();
+        h.send(a, p); // не зацикливается и возвращается
+        // Состояние у второго клиента согласовано с сервером, а не «залипло» посреди цепочки.
+        let element = h.client(b).door_element(door).unwrap();
+        assert_eq!(
+            h.client(b).door_open(door),
+            Some(h.server.doors().is_open(element))
+        );
+        assert!(before.is_some());
+        assert!(h.server.metrics().door_toggles <= 5, "цепочка ограничена");
+    }
+
+    #[test]
+    fn locked_doors_ignore_ordinary_requests_but_yield_to_forced_ones() {
+        struct Once;
+        impl GameModule for Once {
+            fn id(&self) -> &str {
+                "test.once"
+            }
+            fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+                use astrocore_runtime::modules::DoorAction;
+                if let HookEvent::Command { kind, data, .. } = event
+                    && kind == "door"
+                    && let Some(id) = ctx
+                        .world
+                        .elements()
+                        .find(|e| {
+                            matches!(
+                                e.kind,
+                                astrocore_world::StructureKind::Opening(
+                                    astrocore_world::OpeningKind::Door
+                                )
+                            )
+                        })
+                        .map(|e| e.id)
+                {
+                    ctx.request_door(id, DoorAction::Open, data.first() == Some(&1));
+                }
+            }
+        }
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Once)).unwrap();
+        host.finalize().unwrap();
+        let mut server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        server
+            .door_state_mut(crate::testkit::DOOR_ID)
+            .unwrap()
+            .locked = true;
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        let p = h.client(a).command_packet("door", vec![0]).unwrap();
+        h.send(a, p);
+        assert!(
+            !h.server.doors().is_open(crate::testkit::DOOR_ID),
+            "замок держит"
+        );
+        let p = h.client(a).command_packet("door", vec![1]).unwrap();
+        h.send(a, p);
+        assert!(
+            h.server.doors().is_open(crate::testkit::DOOR_ID),
+            "взлом открывает"
+        );
+        let door = h.client(a).door_ids()[0];
+        assert_eq!(
+            h.client(a).door_open(door),
+            Some(true),
+            "клиент видит открытую дверь"
+        );
+    }
+
     #[test]
     fn modules_can_check_whether_a_path_is_obstructed() {
         use astrocore_math::glam::Vec3;

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use astrocore_core::{NetworkEntityId, ObjectId};
+
+use crate::doors::DoorRegistry;
 use astrocore_math::ChunkCoord;
 use astrocore_world::{World, WorldCommand};
 
@@ -48,9 +50,28 @@ pub struct HookContext<'a> {
     pub world: &'a World,
     positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
     physics: Option<&'a astrocore_physics::BoxWorld>,
+    doors: Option<&'a DoorRegistry>,
+    door_requests: Vec<DoorRequest>,
     commands: Vec<WorldCommand>,
     components: Vec<ComponentUpdate>,
     log: Vec<String>,
+}
+
+/// Что модуль просит сделать с дверью. Дверью управляет движок: он же проверяет замок, меняет
+/// коллизию и рассылает состояние всем клиентам.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorAction {
+    Open,
+    Close,
+    Toggle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoorRequest {
+    pub element: ObjectId,
+    pub action: DoorAction,
+    /// Действовать, даже если дверь заперта (взлом, ломик).
+    pub force: bool,
 }
 
 /// Значение реплицируемого вида данных, которое модуль просит установить сущности.
@@ -76,6 +97,8 @@ impl<'a> HookContext<'a> {
             world,
             positions,
             physics: None,
+            doors: None,
+            door_requests: Vec::new(),
             commands: Vec::new(),
             components: Vec::new(),
             log: Vec::new(),
@@ -88,6 +111,32 @@ impl<'a> HookContext<'a> {
             net,
             kind: kind.into(),
             data,
+        });
+    }
+
+    /// Подключить реестр дверей: модули смогут читать их состояние.
+    #[must_use]
+    pub fn with_doors(mut self, doors: &'a DoorRegistry) -> Self {
+        self.doors = Some(doors);
+        self
+    }
+
+    /// Открыта ли дверь; `None`, если двери нет или реестр не подключён.
+    pub fn door_open(&self, element: ObjectId) -> Option<bool> {
+        self.doors?.get(element).map(|d| d.open)
+    }
+
+    /// Заперта ли дверь.
+    pub fn door_locked(&self, element: ObjectId) -> Option<bool> {
+        self.doors?.get(element).map(|d| d.locked)
+    }
+
+    /// Попросить движок изменить состояние двери.
+    pub fn request_door(&mut self, element: ObjectId, action: DoorAction, force: bool) {
+        self.door_requests.push(DoorRequest {
+            element,
+            action,
+            force,
         });
     }
 
@@ -138,6 +187,7 @@ impl<'a> HookContext<'a> {
         HookOutput {
             commands: self.commands,
             components: self.components,
+            doors: self.door_requests,
             log: self.log,
         }
     }
@@ -157,6 +207,7 @@ impl<'a> HookContext<'a> {
 pub struct HookOutput {
     pub commands: Vec<WorldCommand>,
     pub components: Vec<ComponentUpdate>,
+    pub doors: Vec<DoorRequest>,
     pub log: Vec<String>,
 }
 
@@ -248,7 +299,7 @@ impl ModuleHost {
 
     /// Разослать событие всем модулям в порядке зависимостей.
     pub fn dispatch(&mut self, world: &World, event: &HookEvent) -> HookOutput {
-        self.dispatch_with(world, &BTreeMap::new(), None, event)
+        self.dispatch_with(world, &BTreeMap::new(), None, None, event)
     }
 
     /// То же, но модули видят позиции игроков (`HookContext::position_of`).
@@ -257,6 +308,7 @@ impl ModuleHost {
         world: &World,
         positions: &BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
         physics: Option<&astrocore_physics::BoxWorld>,
+        doors: Option<&DoorRegistry>,
         event: &HookEvent,
     ) -> HookOutput {
         let mut out = HookOutput::default();
@@ -265,9 +317,13 @@ impl ModuleHost {
             if let Some(p) = physics {
                 ctx = ctx.with_physics(p);
             }
+            if let Some(d) = doors {
+                ctx = ctx.with_doors(d);
+            }
             self.modules[i].handle(&mut ctx, event);
             out.commands.append(&mut ctx.commands);
             out.components.append(&mut ctx.components);
+            out.doors.append(&mut ctx.door_requests);
             out.log.append(&mut ctx.log);
         }
         out

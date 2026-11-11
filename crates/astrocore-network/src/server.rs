@@ -173,6 +173,8 @@ pub struct GameServer {
     auth: Box<dyn Authenticator>,
     modules: Option<ModuleHost>,
     replication: astrocore_api::ReplicationRegistry,
+    /// Глубина вложенных вызовов хуков: ответные действия модулей не должны зацикливаться.
+    hook_depth: u8,
     content: BTreeMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
     content_queue: BTreeMap<ConnId, VecDeque<([u8; 32], u32)>>,
     /// Последние значения реплицируемых данных: (сущность, вид) → (номер, байты).
@@ -201,6 +203,7 @@ impl GameServer {
             auth,
             modules: None,
             replication: astrocore_api::ReplicationRegistry::new(),
+            hook_depth: 0,
             content: BTreeMap::new(),
             content_queue: BTreeMap::new(),
             components: BTreeMap::new(),
@@ -412,6 +415,53 @@ impl GameServer {
     }
 
     /// Изменить состояние двери напрямую (игровая логика: замки, электроника).
+    /// Выполнить просьбу модуля об изменении двери: замок уважается, если не задано `force`;
+    /// коллизия и клиенты синхронизируются так же, как при обычном взаимодействии.
+    fn apply_door_request(
+        &mut self,
+        r: astrocore_runtime::modules::DoorRequest,
+        out: &mut Vec<Out>,
+    ) {
+        use astrocore_runtime::modules::DoorAction;
+        let Some(&net) = self.door_net.get(&r.element) else {
+            return;
+        };
+        let Some(state) = self.doors.get_mut(r.element) else {
+            return;
+        };
+        if state.locked && !r.force {
+            return;
+        }
+        let target = match r.action {
+            DoorAction::Open => true,
+            DoorAction::Close => false,
+            DoorAction::Toggle => !state.open,
+        };
+        if state.open == target {
+            return;
+        }
+        state.open = target;
+        self.metrics.door_toggles += 1;
+        let doors = &self.doors;
+        self.physics.sync_doors(&self.world, |id| doors.is_open(id));
+        let element = r.element;
+        self.broadcast(
+            out,
+            ServerMessage::DoorState {
+                net,
+                element,
+                open: target,
+            },
+        );
+        self.dispatch_hook(
+            HookEvent::PortalChanged {
+                element,
+                open: target,
+            },
+            out,
+        );
+    }
+
     pub fn door_state_mut(
         &mut self,
         element: ObjectId,
@@ -980,6 +1030,17 @@ impl GameServer {
     }
 
     fn dispatch_hook(&mut self, event: HookEvent, out: &mut Vec<Out>) {
+        /// Предел вложенности: событие → просьба модуля → событие → …
+        const MAX_HOOK_DEPTH: u8 = 4;
+        if self.hook_depth >= MAX_HOOK_DEPTH {
+            return;
+        }
+        self.hook_depth += 1;
+        self.dispatch_hook_inner(event, out);
+        self.hook_depth -= 1;
+    }
+
+    fn dispatch_hook_inner(&mut self, event: HookEvent, out: &mut Vec<Out>) {
         let Some(host) = self.modules.as_mut() else {
             return;
         };
@@ -988,7 +1049,16 @@ impl GameServer {
             .values()
             .map(|p| (p.net, p.state.pos))
             .collect();
-        let result = host.dispatch_with(&self.world, &positions, Some(&self.physics), &event);
+        let result = host.dispatch_with(
+            &self.world,
+            &positions,
+            Some(&self.physics),
+            Some(&self.doors),
+            &event,
+        );
+        for r in result.doors {
+            self.apply_door_request(r, out);
+        }
         for u in result.components {
             // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
             if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {
