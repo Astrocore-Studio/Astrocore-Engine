@@ -24,7 +24,9 @@ use astrocore_world::{DirtyRegion, FloorId, OpeningKind, StructureKind, World};
 
 pub mod character;
 
-pub use character::{CharacterShape, CharacterState, move_character};
+pub use character::{
+    CharacterShape, CharacterState, GroundProvider, move_character, move_character_on_ground,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RayHit {
@@ -187,6 +189,10 @@ impl BoxWorld {
     }
 
     fn chunk_range(&self, aabb: &Aabb) -> (ChunkCoord, ChunkCoord) {
+        if self.chunk_size_m <= 0.0 {
+            // Пустой мир без размера чанка: диапазон пуст.
+            return (ChunkCoord::new(1, 1), ChunkCoord::new(0, 0));
+        }
         // +1 чанк с каждой стороны: коробка элемента может выходить за границу чанка-владельца.
         let lo = ChunkCoord::from_world(aabb.min, self.chunk_size_m);
         let hi = ChunkCoord::from_world(aabb.max, self.chunk_size_m);

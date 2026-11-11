@@ -455,6 +455,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-terrain"
+version = "0.1.0"
+dependencies = [
+ "astrocore-core",
+ "astrocore-geometry",
+ "astrocore-math",
+ "astrocore-physics",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-vertical-slice"
 version = "0.1.0"
 dependencies = [

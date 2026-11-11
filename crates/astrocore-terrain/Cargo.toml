@@ -1,0 +1,20 @@
+[package]
+name = "astrocore-terrain"
+description = "Рельеф: карта высот, кисти, дороги, вода, меши и коллизия земли"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-geometry.workspace = true
+astrocore-math.workspace = true
+astrocore-physics.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -194,3 +194,40 @@ pub fn move_character(
 pub fn character_overlaps(state: &CharacterState, shape: &CharacterShape, b: &Aabb) -> bool {
     aabb_overlap(&state.aabb(shape), b)
 }
+
+/// Поверхность земли (рельеф): высота под точкой. Реализуется крейтом рельефа.
+pub trait GroundProvider {
+    /// Высота поверхности в точке (x, z) или `None`, если рельефа там нет.
+    fn ground_height(&self, x: f32, z: f32) -> Option<f32>;
+}
+
+/// Шаг движения по коробкам мира **и** рельефу: персонаж стоит на земле, не заходит на
+/// слишком крутые склоны (подъём больше `step_height` за шаг блокируется) и не проваливается.
+pub fn move_character_on_ground(
+    world: &BoxWorld,
+    ground: &dyn GroundProvider,
+    state: &mut CharacterState,
+    shape: &CharacterShape,
+    wish: Vec3,
+    dt: f32,
+) {
+    let before = state.pos;
+    let mut wish = wish;
+    // Склон впереди: если земля поднимается круче допустимого, горизонтальное движение гасится.
+    let probe = Vec3::new(before.x + wish.x, before.y, before.z + wish.z);
+    if let (Some(h0), Some(h1)) = (
+        ground.ground_height(before.x, before.z),
+        ground.ground_height(probe.x, probe.z),
+    ) && h1 - h0 > shape.step_height
+    {
+        wish = Vec3::ZERO;
+    }
+    move_character(world, state, shape, wish, dt);
+    if let Some(h) = ground.ground_height(state.pos.x, state.pos.z)
+        && state.pos.y <= h + 1e-3
+    {
+        state.pos.y = h;
+        state.vel_y = 0.0;
+        state.grounded = true;
+    }
+}
