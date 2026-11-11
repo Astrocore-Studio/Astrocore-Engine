@@ -138,3 +138,14 @@ fn disconnect_frees_the_player_slot_on_the_server() {
         "таймаут соединения освободил слот"
     );
 }
+
+#[test]
+fn packets_sent_before_the_handshake_finishes_are_queued_and_delivered() {
+    let mut r = Rig::new();
+    assert!(!r.client.is_connected());
+    assert!(r.client.send(true, r.core.hello_packet()));
+    assert!(
+        r.until(20, |r| r.core.is_ready()),
+        "Hello из очереди дошёл, мир получен"
+    );
+}

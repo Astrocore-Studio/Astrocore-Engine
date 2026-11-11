@@ -161,6 +161,8 @@ impl LyServer {
 pub struct LyClient {
     app: App,
     client: Entity,
+    /// Пакеты, отправленные до установки соединения: уходят при первом кадре с `Connected`.
+    queued: Vec<(bool, Vec<u8>)>,
 }
 
 impl LyClient {
@@ -202,11 +204,20 @@ impl LyClient {
         app.cleanup();
         app.world_mut().trigger(Connect { entity: client });
         app.update();
-        Ok(Self { app, client })
+        Ok(Self {
+            app,
+            client,
+            queued: Vec::new(),
+        })
     }
 
     pub fn step(&mut self) {
         self.app.update();
+        if self.is_connected() && !self.queued.is_empty() {
+            for (reliable, bytes) in std::mem::take(&mut self.queued) {
+                self.send_now(reliable, bytes);
+            }
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -221,7 +232,19 @@ impl LyClient {
             .collect()
     }
 
+    /// Отправить пакет; до подключения пакеты ждут в очереди (до 256 штук).
     pub fn send(&mut self, reliable: bool, bytes: Vec<u8>) -> bool {
+        if self.is_connected() {
+            return self.send_now(reliable, bytes);
+        }
+        if self.queued.len() >= 256 {
+            return false;
+        }
+        self.queued.push((reliable, bytes));
+        true
+    }
+
+    fn send_now(&mut self, reliable: bool, bytes: Vec<u8>) -> bool {
         let Some(mut tx) = self
             .app
             .world_mut()

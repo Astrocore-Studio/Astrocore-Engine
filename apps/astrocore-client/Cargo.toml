@@ -9,6 +9,7 @@ license-file.workspace = true
 [dependencies]
 astrocore-core.workspace = true
 astrocore-math.workspace = true
+astrocore-lightyear.workspace = true
 astrocore-network.workspace = true
 astrocore-render.workspace = true
 astrocore-terrain.workspace = true

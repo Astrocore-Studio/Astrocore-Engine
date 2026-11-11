@@ -27,6 +27,7 @@
 API            api ◄── world, physics, spatial, assets, runtime (WorldApi, EntityApi, PhysicsQuery,
                         AssetRegistry, SimulationTopology, ReplicationRegistry, EditorExtension, GameModule)
 Сеть           network (сервер, клиент, TCP/UDP) ◄── world, physics, runtime, spatial, protocol, api
+Адаптеры       lightyear (транспорт Lightyear), physics-avian (Avian3D за PhysicsQuery)
 Редактор       editor ◄── world, prefabs, spatial, physics, network (для «играть отсюда»)
 Адаптеры       bevy (серверное расписание), render (клиентский рендер)
 Приложения     server, client, tools, vertical-slice

@@ -44,6 +44,10 @@ pub struct ServerConfig {
     pub key_file: Option<PathBuf>,
     /// Сколько автоматических резервных копий хранить (0 — выключено).
     pub backup_keep: usize,
+    /// Адрес слушателя Lightyear (UDP + netcode). Требует `ly_key`.
+    pub listen_lightyear: Option<String>,
+    /// Общий секрет netcode, 32 байта.
+    pub ly_key: Option<[u8; 32]>,
 }
 
 impl ServerConfig {
@@ -60,6 +64,8 @@ impl ServerConfig {
             listen_udp: None,
             key_file: None,
             backup_keep: 0,
+            listen_lightyear: None,
+            ly_key: None,
         }
     }
 }
@@ -253,6 +259,100 @@ impl ListenServer {
     }
 }
 
+/// Сетевой сервер на Lightyear.
+pub struct LyListenServer {
+    host: astrocore_lightyear::LyGameHost,
+    store: Store,
+    ticks: u64,
+    ops_since_snapshot: usize,
+}
+
+impl LyListenServer {
+    pub fn start(config: &ServerConfig) -> Result<Self, ServerError> {
+        use astrocore_network::server::{AllowAll, GameServer, ServerNetConfig};
+        let key = config
+            .ly_key
+            .ok_or_else(|| ServerError::Script("для Lightyear нужен --ly-key".into()))?;
+        let addr: std::net::SocketAddr = config
+            .listen_lightyear
+            .as_deref()
+            .unwrap_or("127.0.0.1:0")
+            .parse()
+            .map_err(|e| ServerError::Script(format!("--listen-lightyear: {e}")))?;
+        let store = Store::open(&config.data_dir)?.with_auto_backup(config.backup_keep);
+        let (world, _) = load_or_create(&store, &config.world_id)?;
+        let tick_hz = config.tick_hz.round().clamp(1.0, 240.0) as u8;
+        let mut net = ServerNetConfig {
+            tick_hz,
+            ..ServerNetConfig::default()
+        };
+        if let Some(s) = config.spawn {
+            net.spawn = astrocore_math::glam::Vec3::from_array(s);
+        }
+        let mut core = GameServer::new(
+            world,
+            net,
+            Box::new(AllowAll {
+                can_edit: config.allow_edit,
+            }),
+        );
+        if let Some(t) = load_terrain(&config.data_dir)? {
+            core = core.with_terrain(t);
+        }
+        Ok(Self {
+            host: astrocore_lightyear::LyGameHost::start(addr, key, core, tick_hz),
+            store,
+            ticks: 0,
+            ops_since_snapshot: 0,
+        })
+    }
+
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.host.local_addr()
+    }
+
+    pub fn core(&self) -> &astrocore_network::server::GameServer {
+        self.host.game()
+    }
+
+    pub fn step(&mut self) -> Result<(), ServerError> {
+        self.host.step();
+        self.ticks += 1;
+        for op in self.host.game_mut().take_applied_ops() {
+            self.store.append(&op)?;
+            self.ops_since_snapshot += 1;
+        }
+        if self.ops_since_snapshot >= SNAPSHOT_EVERY_OPS {
+            self.store.save_snapshot(self.host.game().world())?;
+            self.ops_since_snapshot = 0;
+        }
+        Ok(())
+    }
+
+    pub fn run(&mut self, max_ticks: Option<u64>) -> Result<RunReport, ServerError> {
+        let mut done = 0u64;
+        while max_ticks.is_none_or(|m| done < m) {
+            self.step()?;
+            done += 1;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.finish()
+    }
+
+    pub fn finish(&mut self) -> Result<RunReport, ServerError> {
+        let world = self.host.game().world();
+        self.store.save_snapshot(world)?;
+        Ok(RunReport {
+            ticks: self.ticks,
+            revision: world.revision().0,
+            element_count: world.element_count(),
+            content_hash: world.content_hash(),
+            rejected: self.host.game().metrics().rejected_packets as usize,
+            recovered: false,
+        })
+    }
+}
+
 /// Сетевой сервер на шифрованном UDP.
 pub struct UdpListenServer {
     udp: astrocore_network::udp::UdpServer<astrocore_network::udp::SystemSocket>,
@@ -376,6 +476,11 @@ impl UdpListenServer {
 }
 
 pub fn run(config: &ServerConfig) -> Result<RunReport, ServerError> {
+    if config.listen_lightyear.is_some() {
+        let mut s = LyListenServer::start(config)?;
+        println!("Lightyear: {}", s.local_addr());
+        return s.run(config.max_ticks);
+    }
     if config.listen_udp.is_some() {
         let mut s = UdpListenServer::start(config)?;
         println!(

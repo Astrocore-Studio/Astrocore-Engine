@@ -20,6 +20,7 @@ astrocore-server — headless-сервер Astrocore
   --listen     принимать игроков по TCP на этом адресе (например 127.0.0.1:7777)
   --listen-udp принимать игроков по шифрованному UDP; печатает открытый ключ сервера
   --key-file   файл долговременного ключа сервера (создаётся при отсутствии, права 600)
+  --listen-lightyear  принимать игроков через Lightyear (UDP + netcode); нужен --ly-key <hex32>
   --backup-keep N  после каждого снимка делать резервную копию (хранить N последних)
   --allow-edit разрешить игрокам править структуру мира (разработка, пробная игра)
   --spawn      точка появления игроков, метры: x,y,z
@@ -57,6 +58,13 @@ fn parse_args() -> Result<ServerConfig, String> {
             "--listen-udp" => cfg.listen_udp = Some(value("--listen-udp")?),
             "--key-file" => cfg.key_file = Some(PathBuf::from(value("--key-file")?)),
             "--allow-edit" => cfg.allow_edit = true,
+            "--listen-lightyear" => cfg.listen_lightyear = Some(value("--listen-lightyear")?),
+            "--ly-key" => {
+                cfg.ly_key = Some(
+                    astrocore_network::secure::parse_hex32(&value("--ly-key")?)
+                        .ok_or("--ly-key: нужно 64 шестнадцатеричных символа")?,
+                )
+            }
             "--backup-keep" => {
                 cfg.backup_keep = value("--backup-keep")?
                     .parse()

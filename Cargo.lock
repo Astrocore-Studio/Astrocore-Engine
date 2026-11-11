@@ -483,6 +483,7 @@ name = "astrocore-client"
 version = "0.1.0"
 dependencies = [
  "astrocore-core",
+ "astrocore-lightyear",
  "astrocore-math",
  "astrocore-network",
  "astrocore-render",
@@ -681,6 +682,7 @@ version = "0.1.0"
 dependencies = [
  "astrocore-bevy",
  "astrocore-core",
+ "astrocore-lightyear",
  "astrocore-math",
  "astrocore-network",
  "astrocore-persistence",

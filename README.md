@@ -40,11 +40,13 @@
 | `astrocore-studio` | Окно редактора карт (Bevy + egui) |
 | `astrocore-render` | Клиентский рендер: меши чанков, направленные спрайты, камеры |
 | `astrocore-server` | Headless-сервер (пакетный режим и сетевой `--listen`) |
+| `astrocore-physics-avian` | Адаптер Avian3D: запросы и динамические тела |
+| `astrocore-lightyear` | Транспорт на Lightyear (UDP + netcode) |
 | `astrocore-client` | Клиент: `--demo`, `--connect` (TCP), `--connect-udp` (шифрованный UDP), `--assets`, `--screenshot` |
 | `astrocore-tools` | Валидатор карты, компилятор пакетов, демо-проект, бенчмарки |
 | `astrocore-vertical-slice` | Приёмочные сценарии AC-VS1 |
 
-**Ещё нет:** гизмо и браузера ресурсов в Studio, подключения Avian/Lightyear. Подробности — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
+**Ещё нет:** браузера ресурсов в Studio, репликации динамических тел Avian. Подробности — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ![Клиент, перспектива](docs/img/client-demo-perspective.png)
 
@@ -76,6 +78,14 @@ cargo run -p astrocore-client -- --connect 127.0.0.1:7777 --world-id world
 
 ```bash
 cargo run -p astrocore-server -- --data-dir ./data --listen-udp 127.0.0.1:7778 --key-file ./server.key --allow-edit
+```
+
+```bash
+cargo run -p astrocore-server -- --data-dir ./data --listen-lightyear 127.0.0.1:7779 --ly-key <64 hex-символа>
+```
+
+```bash
+cargo run -p astrocore-client -- --connect-lightyear 127.0.0.1:7779 --ly-key <64 hex-символа>
 ```
 
 ```bash

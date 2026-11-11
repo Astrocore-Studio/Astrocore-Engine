@@ -25,6 +25,7 @@ astrocore-client — клиент Astrocore
 
   astrocore-client --demo [--ortho] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
+  astrocore-client --connect-lightyear 127.0.0.1:7779 --ly-key <hex32> [--assets папка]
   astrocore-client --connect-udp 127.0.0.1:7778 --server-key <hex32> [--assets папка]
 ";
 
@@ -33,6 +34,8 @@ struct Args {
     demo: bool,
     connect: Option<String>,
     connect_udp: Option<String>,
+    connect_lightyear: Option<String>,
+    ly_key: Option<[u8; 32]>,
     server_key: Option<[u8; 32]>,
     assets: Option<PathBuf>,
     build: String,
@@ -49,6 +52,8 @@ fn parse_args() -> Result<Args, String> {
         demo: false,
         connect: None,
         connect_udp: None,
+        connect_lightyear: None,
+        ly_key: None,
         server_key: None,
         assets: None,
         build: "client".into(),
@@ -75,6 +80,13 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or("--server-key: нужно 64 шестнадцатеричных символа")?,
                 )
             }
+            "--connect-lightyear" => a.connect_lightyear = Some(value("--connect-lightyear")?),
+            "--ly-key" => {
+                a.ly_key = Some(
+                    parse_hex32(&value("--ly-key")?)
+                        .ok_or("--ly-key: нужно 64 шестнадцатеричных символа")?,
+                )
+            }
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
             "--world-id" => a.world_id = value("--world-id")?,
@@ -88,8 +100,11 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("неизвестный аргумент {other:?}")),
         }
     }
-    if !a.demo && a.connect.is_none() && a.connect_udp.is_none() {
-        return Err("укажите --demo, --connect или --connect-udp".into());
+    if !a.demo && a.connect.is_none() && a.connect_udp.is_none() && a.connect_lightyear.is_none() {
+        return Err("укажите --demo, --connect, --connect-udp или --connect-lightyear".into());
+    }
+    if a.connect_lightyear.is_some() && a.ly_key.is_none() {
+        return Err("для --connect-lightyear нужен --ly-key".into());
     }
     if a.connect_udp.is_some() && a.server_key.is_none() {
         return Err("для --connect-udp нужен --server-key".into());
@@ -111,6 +126,7 @@ struct Look {
 enum Transport {
     Tcp(TcpClient),
     Udp(Box<UdpClient<SystemSocket>>),
+    Lightyear(Box<astrocore_lightyear::LyClient>),
 }
 
 impl Transport {
@@ -122,12 +138,19 @@ impl Transport {
             Transport::Udp(u) => {
                 let _ = u.send(reliable, data);
             }
+            Transport::Lightyear(l) => {
+                l.send(reliable, data.to_vec());
+            }
         }
     }
 
     fn poll(&mut self, now_ms: u64) -> Vec<Vec<u8>> {
         match self {
             Transport::Tcp(t) => t.poll(),
+            Transport::Lightyear(l) => {
+                l.step();
+                l.take_packets()
+            }
             Transport::Udp(u) => {
                 if let Err(e) = u.step(now_ms) {
                     eprintln!("ошибка сокета: {e}");
@@ -202,8 +225,29 @@ fn main() {
     .add_systems(Startup, setup)
     .add_systems(Update, (look_input, drive_camera).chain());
 
-    if args.connect.is_some() || args.connect_udp.is_some() {
-        let mut transport = if let Some(addr) = args.connect.clone() {
+    if args.connect.is_some() || args.connect_udp.is_some() || args.connect_lightyear.is_some() {
+        let mut transport = if let Some(addr) = args.connect_lightyear.clone() {
+            let server: std::net::SocketAddr = match addr.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("--connect-lightyear: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let id = std::process::id() as u64 ^ 0x4153_0000;
+            match astrocore_lightyear::LyClient::connect(
+                server,
+                id,
+                args.ly_key.unwrap_or_default(),
+                60,
+            ) {
+                Ok(c) => Transport::Lightyear(Box::new(c)),
+                Err(e) => {
+                    eprintln!("не удалось начать соединение Lightyear: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(addr) = args.connect.clone() {
             match TcpClient::connect(&addr) {
                 Ok(t) => Transport::Tcp(t),
                 Err(e) => {
