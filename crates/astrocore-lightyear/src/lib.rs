@@ -97,7 +97,7 @@ impl LyServer {
                         .with_key(key),
                 ),
                 LocalAddr(addr),
-                ServerUdpIo::default(),
+                ServerUdpIo,
             ))
             .id();
         app.finish();
