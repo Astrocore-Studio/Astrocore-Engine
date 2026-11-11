@@ -189,6 +189,11 @@ impl<'a> HookContext<'a> {
         self.unobstructed_distance(from, to) >= (to - from).length() - 1e-4
     }
 
+    /// Все подключённые игроки на момент вызова (по возрастанию сетевого идентификатора).
+    pub fn players(&self) -> impl Iterator<Item = NetworkEntityId> + '_ {
+        self.positions.keys().copied()
+    }
+
     /// Позиция (ступни) подключённого игрока на момент вызова.
     pub fn position_of(&self, net: NetworkEntityId) -> Option<astrocore_math::glam::Vec3> {
         self.positions.get(&net).copied()
