@@ -9,6 +9,7 @@ license-file.workspace = true
 [dependencies]
 astrocore-core.workspace = true
 astrocore-math.workspace = true
+astrocore-physics.workspace = true
 astrocore-spatial.workspace = true
 astrocore-world.workspace = true
 thiserror.workspace = true

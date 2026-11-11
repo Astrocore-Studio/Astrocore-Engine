@@ -671,6 +671,7 @@ version = "0.1.0"
 dependencies = [
  "astrocore-core",
  "astrocore-math",
+ "astrocore-physics",
  "astrocore-spatial",
  "astrocore-world",
  "thiserror 2.0.21",

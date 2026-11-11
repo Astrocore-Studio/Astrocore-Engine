@@ -969,7 +969,7 @@ impl GameServer {
             .values()
             .map(|p| (p.net, p.state.pos))
             .collect();
-        let result = host.dispatch_with(&self.world, &positions, &event);
+        let result = host.dispatch_with(&self.world, &positions, Some(&self.physics), &event);
         for u in result.components {
             // Несуществующая сущность или незарегистрированный вид — ошибка модуля, а не клиента.
             if let Ok(msgs) = self.set_component(u.net, &u.kind, u.data) {

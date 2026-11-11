@@ -1472,6 +1472,39 @@ mod game_commands {
     }
 
     #[test]
+    fn modules_can_check_whether_a_path_is_obstructed() {
+        use astrocore_math::glam::Vec3;
+        // Проверка прямо на контексте с коллизией тестового мира (стены, закрытая дверь).
+        let world = test_world();
+        let bw = astrocore_physics::BoxWorld::from_world(&world);
+        let ctx = HookContext::new(&world).with_physics(&bw);
+        // Сквозь любую статическую коробку мира путь перекрыт, и расстояние обрезается по её грани.
+        let (_, b) = *bw
+            .static_boxes()
+            .next()
+            .expect("в тестовом мире есть коллизия");
+        let c = b.center();
+        let half = b.size() * 0.5;
+        let (from, to) = (c - Vec3::X * (half.x + 1.0), c + Vec3::X * (half.x + 1.0));
+        assert!(!ctx.is_unobstructed(from, to));
+        let cut = ctx.unobstructed_distance(from, to);
+        assert!(
+            cut > 0.0 && cut < (to - from).length() - 0.5,
+            "упёрлись раньше цели: {cut}"
+        );
+        // Через открытое пространство путь свободен.
+        let outside = Vec3::new(-5.0, 1.0, -5.0);
+        assert!(ctx.is_unobstructed(outside, outside + Vec3::new(1.0, 0.0, 0.0)));
+        let free = ctx.unobstructed_distance(Vec3::new(2.5, 1.0, 2.5), Vec3::new(3.0, 1.0, 2.5));
+        assert!((free - 0.5).abs() < 1e-4);
+        // Без подключённой коллизии препятствий нет.
+        let blind = HookContext::new(&world);
+        assert!(blind.is_unobstructed(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0)));
+        // Нулевая длина не делит на ноль.
+        assert_eq!(ctx.unobstructed_distance(Vec3::ONE, Vec3::ONE), 0.0);
+    }
+
+    #[test]
     fn modules_see_player_positions() {
         let mut h = harness();
         let a = h.join("a");

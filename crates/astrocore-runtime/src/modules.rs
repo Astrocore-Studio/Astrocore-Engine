@@ -47,6 +47,7 @@ pub enum HookEvent {
 pub struct HookContext<'a> {
     pub world: &'a World,
     positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
+    physics: Option<&'a astrocore_physics::BoxWorld>,
     commands: Vec<WorldCommand>,
     components: Vec<ComponentUpdate>,
     log: Vec<String>,
@@ -74,6 +75,7 @@ impl<'a> HookContext<'a> {
         Self {
             world,
             positions,
+            physics: None,
             commands: Vec::new(),
             components: Vec::new(),
             log: Vec::new(),
@@ -87,6 +89,42 @@ impl<'a> HookContext<'a> {
             kind: kind.into(),
             data,
         });
+    }
+
+    /// Подключить коллизию мира: модули смогут проверять, что путь между точками свободен.
+    #[must_use]
+    pub fn with_physics(mut self, physics: &'a astrocore_physics::BoxWorld) -> Self {
+        self.physics = Some(physics);
+        self
+    }
+
+    /// Расстояние от `from` до `to`, на котором путь упирается в преграду (стену, закрытую дверь);
+    /// без коллизии или без преград — полная длина. Аналог `UnobstructedDistance` в SS14.
+    pub fn unobstructed_distance(
+        &self,
+        from: astrocore_math::glam::Vec3,
+        to: astrocore_math::glam::Vec3,
+    ) -> f32 {
+        use astrocore_physics::SpatialQuery;
+        let delta = to - from;
+        let len = delta.length();
+        let Some(bw) = self.physics else {
+            return len;
+        };
+        if len < 1e-6 {
+            return 0.0;
+        }
+        bw.raycast(from, delta / len, len)
+            .map_or(len, |h| h.distance.min(len))
+    }
+
+    /// Свободен ли путь от `from` до `to`.
+    pub fn is_unobstructed(
+        &self,
+        from: astrocore_math::glam::Vec3,
+        to: astrocore_math::glam::Vec3,
+    ) -> bool {
+        self.unobstructed_distance(from, to) >= (to - from).length() - 1e-4
     }
 
     /// Позиция (ступни) подключённого игрока на момент вызова.
@@ -200,7 +238,7 @@ impl ModuleHost {
 
     /// Разослать событие всем модулям в порядке зависимостей.
     pub fn dispatch(&mut self, world: &World, event: &HookEvent) -> HookOutput {
-        self.dispatch_with(world, &BTreeMap::new(), event)
+        self.dispatch_with(world, &BTreeMap::new(), None, event)
     }
 
     /// То же, но модули видят позиции игроков (`HookContext::position_of`).
@@ -208,11 +246,15 @@ impl ModuleHost {
         &mut self,
         world: &World,
         positions: &BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
+        physics: Option<&astrocore_physics::BoxWorld>,
         event: &HookEvent,
     ) -> HookOutput {
         let mut out = HookOutput::default();
         for &i in &self.order {
             let mut ctx = HookContext::with_positions(world, positions);
+            if let Some(p) = physics {
+                ctx = ctx.with_physics(p);
+            }
             self.modules[i].handle(&mut ctx, event);
             out.commands.append(&mut ctx.commands);
             out.components.append(&mut ctx.components);
