@@ -7,6 +7,7 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+tracing.workspace = true
 astrocore-core.workspace = true
 astrocore-math.workspace = true
 astrocore-physics.workspace = true

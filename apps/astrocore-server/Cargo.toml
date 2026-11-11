@@ -15,6 +15,8 @@ name = "astrocore-server"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
 astrocore-bevy.workspace = true
 astrocore-core.workspace = true
 astrocore-math.workspace = true

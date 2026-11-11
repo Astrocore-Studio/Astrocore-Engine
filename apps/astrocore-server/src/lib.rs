@@ -223,15 +223,7 @@ impl ListenServer {
             self.step()?;
             done += 1;
             if last_log.elapsed() >= Duration::from_secs(30) {
-                let m = self.core().metrics();
-                eprintln!(
-                    "метрики: тиков {}, игроков {}, пакетов {}, правок {}, отказов {}",
-                    m.ticks,
-                    self.core().player_count(),
-                    m.packets_in,
-                    m.edits_applied,
-                    m.rejected_packets
-                );
+                tracing::info!(target: "astrocore_metrics", "\n{}{}", self.core().metrics_text(), process_memory_line());
                 last_log = std::time::Instant::now();
             }
             next += period;
@@ -489,6 +481,19 @@ fn persist_outbox(
             }
         }
     }
+}
+
+/// Резидентная память процесса (Linux), строкой метрики; на других системах пусто.
+fn process_memory_line() -> String {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
+        .map(|kb| format!("astrocore_ram_kib {kb}\n"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

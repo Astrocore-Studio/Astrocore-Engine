@@ -348,6 +348,13 @@ impl Aabb {
         self.max - self.min
     }
 
+    pub fn translated(&self, delta: Vec3) -> Aabb {
+        Aabb {
+            min: self.min + delta,
+            max: self.max + delta,
+        }
+    }
+
     pub fn union(&self, other: &Aabb) -> Aabb {
         Aabb {
             min: self.min.min(other.min),

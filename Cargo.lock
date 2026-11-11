@@ -335,6 +335,7 @@ dependencies = [
  "gltf",
  "serde",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -374,6 +375,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.21",
+ "tracing",
  "x25519-dalek",
 ]
 
@@ -389,6 +391,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -399,6 +402,7 @@ dependencies = [
  "astrocore-geometry",
  "astrocore-math",
  "astrocore-world",
+ "tracing",
 ]
 
 [[package]]
@@ -464,6 +468,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

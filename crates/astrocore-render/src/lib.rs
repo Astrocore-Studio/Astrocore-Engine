@@ -1,5 +1,8 @@
 pub mod billboard;
 pub mod camera;
+pub mod diagnostics;
+pub mod lighting;
+pub mod lod;
 pub mod meshes;
 pub mod models;
 pub mod terrain;
@@ -12,6 +15,9 @@ use bevy::prelude::*;
 
 pub use billboard::{BillboardPlugin, DirectionalSprite, SpriteSheet};
 pub use camera::{CameraMode, CameraRig, CameraRigPlugin};
+pub use diagnostics::{RenderDiagnosticsPlugin, RenderStats, RenderStatsConfig};
+pub use lighting::{EmissiveMaterials, LightKind, LightSource, LightingPlugin, ShadowSettings};
+pub use lod::{DrawDistance, DrawDistancePlugin};
 pub use meshes::{material_color, to_bevy_mesh};
 pub use models::ModelLibrary;
 pub use terrain::{RenderedTerrain, TerrainPlugin};
@@ -47,6 +53,8 @@ impl RenderedWorld {
 #[derive(Resource, Default)]
 pub struct MaterialCache {
     handles: HashMap<PrototypeId, Handle<StandardMaterial>>,
+    /// Излучающие материалы; задаются до первого использования прототипа.
+    pub emissive: EmissiveMaterials,
 }
 
 impl MaterialCache {
@@ -61,6 +69,7 @@ impl MaterialCache {
                 materials.add(StandardMaterial {
                     base_color: material_color(id),
                     perceptual_roughness: 0.9,
+                    emissive: self.emissive.linear(id).unwrap_or(LinearRgba::BLACK),
                     ..default()
                 })
             })

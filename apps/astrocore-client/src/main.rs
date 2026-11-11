@@ -9,8 +9,9 @@ use astrocore_network::tcp::TcpClient;
 use astrocore_network::udp::{SystemSocket, UdpClient};
 use astrocore_render::billboard::{demo_sprite_sheet, spawn_billboard};
 use astrocore_render::{
-    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, DirectionalSprite, ModelLibrary,
-    RenderedTerrain, RenderedWorld, SpriteSheet, TerrainPlugin, WorldMeshPlugin,
+    BillboardPlugin, CameraMode, CameraRig, CameraRigPlugin, DirectionalSprite, DrawDistancePlugin,
+    LightSource, LightingPlugin, ModelLibrary, RenderDiagnosticsPlugin, RenderStats,
+    RenderedTerrain, RenderedWorld, ShadowSettings, SpriteSheet, TerrainPlugin, WorldMeshPlugin,
 };
 use astrocore_sprites::DirectionSet;
 use astrocore_vertical_slice::Slice;
@@ -22,7 +23,7 @@ use bevy::window::WindowResolution;
 const USAGE: &str = "\
 astrocore-client — клиент Astrocore
 
-  astrocore-client --demo [--ortho] [--screenshot файл.png [--frames N]]
+  astrocore-client --demo [--ortho] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
   astrocore-client --connect-udp 127.0.0.1:7778 --server-key <hex32> [--assets папка]
 ";
@@ -39,6 +40,8 @@ struct Args {
     screenshot: Option<PathBuf>,
     frames: u32,
     ortho: bool,
+    shadows: bool,
+    stats: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -53,6 +56,8 @@ fn parse_args() -> Result<Args, String> {
         screenshot: None,
         frames: 20,
         ortho: false,
+        shadows: true,
+        stats: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -60,6 +65,8 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--demo" => a.demo = true,
             "--ortho" => a.ortho = true,
+            "--no-shadows" => a.shadows = false,
+            "--stats" => a.stats = true,
             "--connect" => a.connect = Some(value("--connect")?),
             "--connect-udp" => a.connect_udp = Some(value("--connect-udp")?),
             "--server-key" => {
@@ -169,6 +176,9 @@ fn main() {
         TerrainPlugin,
         BillboardPlugin,
         CameraRigPlugin,
+        LightingPlugin,
+        RenderDiagnosticsPlugin,
+        DrawDistancePlugin,
     ))
     .insert_resource(Time::<Fixed>::from_hz(20.0))
     .insert_resource(ClearColor(Color::srgb(0.53, 0.66, 0.80)))
@@ -181,6 +191,11 @@ fn main() {
         yaw: 0.7,
         pitch: 0.5,
         first_person: false,
+    })
+    .insert_resource(ShadowSettings {
+        sun: args.shadows,
+        local_lights: args.shadows,
+        ..default()
     })
     .init_resource::<RemoteSprites>()
     .insert_resource(args.clone())
@@ -236,6 +251,9 @@ fn main() {
         app.add_systems(Startup, setup_demo_world.after(setup));
     }
 
+    if args.stats {
+        app.add_systems(Update, print_stats);
+    }
     if args.screenshot.is_some() {
         app.add_systems(Update, screenshot_and_exit);
     }
@@ -263,7 +281,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
     commands.spawn((
         DirectionalLight {
             illuminance: 9000.0,
-            shadow_maps_enabled: false,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, 0.5, 0.0)),
@@ -281,6 +299,10 @@ fn setup_demo_world(
     let slice = Slice::build().expect("демо-сцена строится");
     commands.insert_resource(RenderedWorld::new(slice.world));
     commands.insert_resource(RenderedTerrain::new(demo_terrain()));
+    commands.spawn((
+        LightSource::point(Color::srgb(1.0, 0.85, 0.6), 400_000.0, 14.0),
+        Transform::from_xyz(32.0, 3.0, 3.0),
+    ));
     // Спрайты у южной стены, повёрнутые в разные стороны.
     let spots = [
         (Vec3::new(30.0, 0.0, 8.5), Vec3::Z),
@@ -549,6 +571,13 @@ fn sync_remote_players(
                 remote.0.insert(id, e);
             }
         }
+    }
+}
+
+fn print_stats(stats: Res<RenderStats>, time: Res<Time>, mut last: Local<f32>) {
+    if time.elapsed_secs() - *last >= 2.0 {
+        *last = time.elapsed_secs();
+        println!("рендер: {}", stats.summary());
     }
 }
 

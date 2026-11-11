@@ -82,6 +82,7 @@ impl Store {
     /// выполнен, действует старый снимок + журнал; после — новый снимок, а оставшийся
     /// журнал безвреден, потому что повтор пропускает уже учтённые операции.
     pub fn save_snapshot(&self, world: &World) -> Result<(), PersistError> {
+        let _span = tracing::info_span!("save_snapshot").entered();
         let file = SnapshotFile {
             format_version: SNAPSHOT_FORMAT_VERSION,
             world_revision: world.revision().0,
@@ -117,6 +118,7 @@ impl Store {
 
     /// Восстановить мир. `Ok(None)` — сохранений нет (первый запуск).
     pub fn recover(&self) -> Result<Option<Recovered>, PersistError> {
+        let _span = tracing::info_span!("recover").entered();
         let snapshot_path = self.dir.join(SNAPSHOT_FILE);
         if !snapshot_path.is_file() {
             return if self.journal_has_entries()? {

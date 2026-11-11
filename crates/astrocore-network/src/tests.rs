@@ -941,3 +941,87 @@ mod terrain {
         );
     }
 }
+
+mod hooks {
+    use std::sync::{Arc, Mutex};
+
+    use astrocore_runtime::modules::{GameModule, HookContext, HookEvent, ModuleHost};
+
+    use super::*;
+    use crate::server::GameServer;
+    use crate::testkit::{ByBuild, test_world};
+
+    struct Tap(Arc<Mutex<Vec<HookEvent>>>);
+
+    impl GameModule for Tap {
+        fn id(&self) -> &str {
+            "test.tap"
+        }
+        fn handle(&mut self, _ctx: &mut HookContext<'_>, event: &HookEvent) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+    }
+
+    #[test]
+    fn engine_raises_universal_hooks() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Tap(seen.clone()))).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let a = h.join("a");
+        let door = h.client(a).door_ids()[0];
+        for _ in 0..26 {
+            h.input(a, 0, 1, EAST);
+        }
+        for _ in 0..6 {
+            h.input(a, 0, 1, std::f32::consts::PI);
+        }
+        h.send(a, h.client(a).interact_packet(door));
+        let outs = h
+            .server
+            .notify_chunk_loaded(astrocore_math::ChunkCoord::new(3, -2));
+        h.deliver(outs);
+        let events = seen.lock().unwrap().clone();
+        let has = |f: &dyn Fn(&HookEvent) -> bool| events.iter().any(f);
+        assert!(has(&|e| matches!(e, HookEvent::EntitySpawned { .. })));
+        assert!(has(&|e| matches!(e, HookEvent::Interact { .. })));
+        assert!(has(&|e| matches!(
+            e,
+            HookEvent::PortalChanged { open: true, .. }
+        )));
+        assert!(has(&|e| matches!(
+            e,
+            HookEvent::ComponentChanged { component, .. } if component == "door.open"
+        )));
+        assert!(has(&|e| matches!(
+            e,
+            HookEvent::ChunkLoaded { chunk } if *chunk == astrocore_math::ChunkCoord::new(3, -2)
+        )));
+        // Игрок упёрся в закрытую дверь: контакт засчитан ровно один раз.
+        let collisions = events
+            .iter()
+            .filter(|e| matches!(e, HookEvent::Collision { .. }))
+            .count();
+        assert_eq!(collisions, 1, "{events:?}");
+    }
+}
+
+#[test]
+fn metrics_are_exported_as_text() {
+    let mut h = harness();
+    let a = h.join("a");
+    h.input(a, 0, 1, 0.0);
+    let text = h.server.metrics_text();
+    for key in [
+        "astrocore_ticks ",
+        "astrocore_players 1",
+        "astrocore_tick_micros_max ",
+        "astrocore_world_revision ",
+    ] {
+        assert!(text.contains(key), "нет {key}: {text}");
+    }
+    assert!(h.server.metrics().tick_micros_max >= h.server.metrics().tick_micros_last);
+}

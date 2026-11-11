@@ -45,6 +45,7 @@ impl ImportedModel {
 /// ссылке на несуществующий аксессор), поэтому разбор изолирован: недоверенный файл
 /// никогда не должен ронять сервер или редактор.
 pub fn import_glb(bytes: &[u8]) -> Result<ImportedModel, GlbError> {
+    let _span = tracing::debug_span!("asset_import", bytes = bytes.len()).entered();
     if bytes.len() > MAX_GLB_BYTES {
         return Err(GlbError::TooLarge(bytes.len()));
     }

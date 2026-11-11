@@ -34,6 +34,8 @@ publish = false
 license-file = "LICENSE"
 
 [workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
 # Внутренние крейты
 astrocore-math = { path = "crates/astrocore-math" }
 astrocore-core = { path = "crates/astrocore-core" }

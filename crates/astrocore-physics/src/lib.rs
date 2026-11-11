@@ -7,9 +7,13 @@ use astrocore_math::{Aabb, ChunkCoord};
 use astrocore_world::{DirtyRegion, FloorId, OpeningKind, StructureKind, World};
 
 pub mod character;
+pub mod queries;
 
 pub use character::{
     CharacterShape, CharacterState, GroundProvider, move_character, move_character_on_ground,
+};
+pub use queries::{
+    Contact, LAYER_ALL, LAYER_DYNAMIC, LAYER_STATIC, LAYER_TRIGGER, ShapeHit, carry_riders,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,6 +87,8 @@ pub struct BoxWorld {
     chunk_size_m: f32,
     statics: BTreeMap<(ChunkCoord, FloorId), Vec<(ObjectId, Aabb)>>,
     dynamics: BTreeMap<ObjectId, Aabb>,
+    /// Переопределённые слои объектов (по умолчанию: статика — `LAYER_STATIC`, динамика — `LAYER_DYNAMIC`).
+    layers: BTreeMap<ObjectId, u32>,
 }
 
 impl BoxWorld {
@@ -103,6 +109,7 @@ impl BoxWorld {
 
     /// Пересобрать указанные регионы (результат `World::take_dirty`).
     pub fn rebuild_regions(&mut self, world: &World, regions: &[DirtyRegion]) {
+        let _span = tracing::debug_span!("collision_rebuild", regions = regions.len()).entered();
         for r in regions {
             self.rebuild_chunk(world, r.chunk, r.floor);
         }

@@ -111,6 +111,8 @@ struct Player {
     known: BTreeMap<NetworkEntityId, u32>,
     /// Тик, когда состояние последний раз менялось.
     moved_tick: u32,
+    /// Динамические объекты (двери, платформы), которых игрок касается сейчас.
+    touching: BTreeSet<ObjectId>,
 }
 
 /// Счётчики наблюдаемости (раздел 21): экспортируются в лог/метрики хозяином процесса.
@@ -123,6 +125,32 @@ pub struct ServerMetrics {
     pub edits_applied: u64,
     pub inputs_applied: u64,
     pub door_toggles: u64,
+    /// Длительность последнего и самого долгого тика, мкс.
+    pub tick_micros_last: u64,
+    pub tick_micros_max: u64,
+}
+
+impl ServerMetrics {
+    /// Текстовый экспорт (формат `имя значение`, по строке на метрику) — для логов и сборщиков.
+    pub fn export_text(&self, players: usize, revision: u64, rebuild_queue: usize) -> String {
+        let rows: [(&str, u64); 12] = [
+            ("ticks", self.ticks),
+            ("packets_in", self.packets_in),
+            ("messages_out", self.messages_out),
+            ("rejected_packets", self.rejected_packets),
+            ("edits_applied", self.edits_applied),
+            ("inputs_applied", self.inputs_applied),
+            ("door_toggles", self.door_toggles),
+            ("tick_micros_last", self.tick_micros_last),
+            ("tick_micros_max", self.tick_micros_max),
+            ("players", players as u64),
+            ("world_revision", revision),
+            ("rebuild_queue", rebuild_queue as u64),
+        ];
+        rows.iter()
+            .map(|(k, v)| format!("astrocore_{k} {v}\n"))
+            .collect()
+    }
 }
 
 pub struct GameServer {
@@ -213,6 +241,13 @@ impl GameServer {
 
     pub fn metrics(&self) -> ServerMetrics {
         self.metrics
+    }
+
+    /// Метрики текстом; очередь пересборки у сервера пуста — коллизия и топология строятся
+    /// синхронно по ревизиям.
+    pub fn metrics_text(&self) -> String {
+        self.metrics
+            .export_text(self.players.len(), self.world.revision().0, 0)
     }
 
     /// Операции, применённые к миру с прошлого вызова (для журнала сохранений).
@@ -309,6 +344,7 @@ impl GameServer {
     // ---- входящие пакеты ----------------------------------------------------
 
     pub fn on_packet(&mut self, conn: ConnId, packet: &[u8]) -> Vec<Out> {
+        let _span = tracing::trace_span!("server_packet", conn = conn.0).entered();
         self.metrics.packets_in += 1;
         let out = self.handle_packet(conn, packet);
         self.metrics.messages_out += out.len() as u64;
@@ -485,8 +521,15 @@ impl GameServer {
             strikes: 0,
             known: BTreeMap::new(),
             moved_tick: self.tick,
+            touching: BTreeSet::new(),
         };
         self.players.insert(conn, player);
+        self.dispatch_hook(
+            HookEvent::EntitySpawned {
+                id: ObjectId::from_u128(u128::from(net.0)),
+            },
+            out,
+        );
         out.push(Out::Send {
             to: conn,
             msg: ServerMessage::Welcome {
@@ -588,6 +631,13 @@ impl GameServer {
                     },
                 );
                 self.dispatch_hook(HookEvent::PortalChanged { element, open }, out);
+                self.dispatch_hook(
+                    HookEvent::ComponentChanged {
+                        id: element,
+                        component: "door.open".into(),
+                    },
+                    out,
+                );
                 let actor_id = ObjectId::from_u128(u128::from(actor_net.0));
                 self.dispatch_hook(
                     HookEvent::Interact {
@@ -713,12 +763,20 @@ impl GameServer {
 
     /// Серверная правка мира без проверки прав (разрушение, скрипты, игровые модули).
     pub fn apply_world_command(&mut self, command: WorldCommand) -> Result<Vec<Out>, WorldError> {
+        let _span = tracing::debug_span!("world_revision").entered();
         let op = self.world.apply(command)?;
         self.applied_ops.push(op.clone());
         self.after_world_change();
         let mut out = Vec::new();
         self.broadcast(&mut out, ServerMessage::WorldOp(op));
         Ok(out)
+    }
+
+    /// Сообщить модулям, что чанк загружен (вызывает хозяин процесса при стриминге).
+    pub fn notify_chunk_loaded(&mut self, chunk: astrocore_math::ChunkCoord) -> Vec<Out> {
+        let mut out = Vec::new();
+        self.dispatch_hook(HookEvent::ChunkLoaded { chunk }, &mut out);
+        out
     }
 
     fn dispatch_hook(&mut self, event: HookEvent, out: &mut Vec<Out>) {
@@ -746,6 +804,8 @@ impl GameServer {
     // ---- тик ----------------------------------------------------------------
 
     pub fn tick(&mut self) -> Vec<Out> {
+        let _span = tracing::debug_span!("network_tick").entered();
+        let started = std::time::Instant::now();
         self.tick += 1;
         self.metrics.ticks += 1;
         let mut out = Vec::new();
@@ -770,6 +830,7 @@ impl GameServer {
         let cap = self.cfg.rate_capacity;
         let shape = self.cfg.shape;
         let tick = self.tick;
+        let mut collisions: Vec<(ObjectId, ObjectId)> = Vec::new();
         for (&conn, p) in &mut self.players {
             p.bucket = (p.bucket + refill).min(cap);
             // Симуляция игрока идёт только по его командам: одна команда — один шаг, точно как
@@ -802,10 +863,29 @@ impl GameServer {
             if p.state.pos != before {
                 p.moved_tick = tick;
             }
+            // Касание динамических объектов порождает событие один раз на начало контакта.
+            let body = astrocore_math::Aabb::new(
+                p.state.pos + Vec3::new(-shape.radius - 0.05, 0.05, -shape.radius - 0.05),
+                p.state.pos + Vec3::new(shape.radius + 0.05, shape.height, shape.radius + 0.05),
+            );
+            let now: BTreeSet<ObjectId> = self
+                .physics
+                .overlap_masked(&body, astrocore_physics::LAYER_DYNAMIC)
+                .into_iter()
+                .collect();
+            let actor = ObjectId::from_u128(u128::from(p.net.0));
+            collisions.extend(now.difference(&p.touching).map(|&other| (actor, other)));
+            p.touching = now;
+        }
+        for (a, b) in collisions {
+            self.dispatch_hook(HookEvent::Collision { a, b }, &mut out);
         }
 
         self.replicate_entities(&mut out);
         self.metrics.messages_out += out.len() as u64;
+        let micros = started.elapsed().as_micros() as u64;
+        self.metrics.tick_micros_last = micros;
+        self.metrics.tick_micros_max = self.metrics.tick_micros_max.max(micros);
         out
     }
 

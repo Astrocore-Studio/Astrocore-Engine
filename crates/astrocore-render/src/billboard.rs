@@ -27,6 +27,17 @@ pub struct DirectionalSprite {
 #[derive(Component)]
 pub struct BillboardQuad;
 
+/// Слой спрайта (экипировка, наложенные кадры): свой лист, тот же поворот и направление, что у
+/// родителя. Порядок слоёв задаётся смещением к камере, поэтому глубина разрешается без сортировки.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteLayer {
+    pub order: u8,
+    columns: u32,
+}
+
+/// Смещение слоя к камере на единицу порядка, м.
+pub const LAYER_DEPTH_STEP: f32 = 0.004;
+
 pub struct BillboardPlugin;
 
 impl Plugin for BillboardPlugin {
@@ -99,6 +110,46 @@ pub fn spawn_billboard(
         .id()
 }
 
+/// Добавить слой к спрайту, созданному `spawn_billboard`. Слой выбирает кадр по тому же
+/// направлению, что и основа; лист слоя должен иметь столько же кадров-направлений.
+pub fn spawn_sprite_layer(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    parent: Entity,
+    sheet: &SpriteSheet,
+    size: Vec2,
+    order: u8,
+) -> Entity {
+    let material = materials.add(StandardMaterial {
+        base_color_texture: Some(sheet.image.clone()),
+        unlit: true,
+        alpha_mode: AlphaMode::Mask(0.5),
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let layer = commands
+        .spawn((
+            Mesh3d(meshes.add(quad_mesh(size.x, size.y))),
+            MeshMaterial3d(material),
+            Transform::from_xyz(0.0, 0.0, LAYER_DEPTH_STEP * f32::from(order)),
+            SpriteLayer {
+                order,
+                columns: sheet.columns,
+            },
+        ))
+        .id();
+    commands.entity(parent).add_child(layer);
+    layer
+}
+
+type QuadFilter = Or<(With<BillboardQuad>, With<SpriteLayer>)>;
+type QuadData = (
+    &'static MeshMaterial3d<StandardMaterial>,
+    Option<&'static SpriteLayer>,
+);
+
 fn update_billboards(
     camera: Query<&GlobalTransform, With<Camera3d>>,
     mut sprites: Query<
@@ -110,7 +161,7 @@ fn update_billboards(
         ),
         Without<Camera3d>,
     >,
-    quads: Query<&MeshMaterial3d<StandardMaterial>, With<BillboardQuad>>,
+    quads: Query<QuadData, QuadFilter>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Ok(cam) = camera.single() else { return };
@@ -126,12 +177,13 @@ fn update_billboards(
             MathVec3::new(cam_pos.x, cam_pos.y, cam_pos.z),
             sprite.set,
         );
-        let column = (dir.index() as u32).min(sprite.columns.saturating_sub(1));
         for &child in children {
-            if let Ok(handle) = quads.get(child)
+            if let Ok((handle, layer)) = quads.get(child)
                 && let Some(mut mat) = materials.get_mut(&handle.0)
             {
-                let scale = 1.0 / sprite.columns as f32;
+                let columns = layer.map_or(sprite.columns, |l| l.columns);
+                let column = (dir.index() as u32).min(columns.saturating_sub(1));
+                let scale = 1.0 / columns as f32;
                 mat.uv_transform = bevy::math::Affine2::from_scale_angle_translation(
                     Vec2::new(scale, 1.0),
                     0.0,
@@ -204,5 +256,85 @@ pub fn demo_sprite_sheet(images: &mut Assets<Image>) -> SpriteSheet {
     SpriteSheet {
         image: images.add(image),
         columns: COLS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layers_follow_the_base_frame_and_stack_toward_the_camera() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin, BillboardPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<Assets<StandardMaterial>>();
+        app.world_mut()
+            .spawn((Camera3d::default(), Transform::from_xyz(10.0, 1.0, 0.0)));
+        let sheet = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            demo_sprite_sheet(&mut images)
+        };
+        let (base, l1, l2) = {
+            let world = app.world_mut();
+            let mut state = bevy::ecs::system::SystemState::<(
+                Commands,
+                ResMut<Assets<Mesh>>,
+                ResMut<Assets<StandardMaterial>>,
+            )>::new(world);
+            let (mut commands, mut meshes, mut materials) = state.get_mut(world).unwrap();
+            let base = spawn_billboard(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &sheet,
+                Vec3::ZERO,
+                Vec2::new(0.9, 1.8),
+                Vec3::X,
+                DirectionSet::Four,
+            );
+            let l1 = spawn_sprite_layer(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                base,
+                &sheet,
+                Vec2::new(0.9, 1.8),
+                1,
+            );
+            let l2 = spawn_sprite_layer(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                base,
+                &sheet,
+                Vec2::new(0.9, 1.8),
+                2,
+            );
+            state.apply(world);
+            (base, l1, l2)
+        };
+        app.update();
+        app.update();
+        let z = |e| app.world().get::<Transform>(e).unwrap().translation.z;
+        assert!(z(l2) > z(l1) && z(l1) > 0.0);
+        let uv = |e: Entity| {
+            let h = app
+                .world()
+                .get::<MeshMaterial3d<StandardMaterial>>(e)
+                .unwrap()
+                .0
+                .clone();
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&h)
+                .unwrap()
+                .uv_transform
+        };
+        let base_quad = app.world().get::<Children>(base).unwrap()[0];
+        // Объект смотрит на +X, камера тоже на +X: кадр «к камере» одинаков у основы и слоёв.
+        assert_eq!(uv(l1), uv(base_quad));
+        assert_eq!(uv(l2), uv(base_quad));
     }
 }

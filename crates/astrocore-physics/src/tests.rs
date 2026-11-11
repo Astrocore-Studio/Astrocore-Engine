@@ -443,3 +443,113 @@ fn freeform_objects_block_characters_with_their_bounding_box() {
         ObjectId::from_u128(4242)
     );
 }
+
+mod queries {
+    use super::*;
+    use crate::{LAYER_DYNAMIC, LAYER_STATIC, carry_riders};
+
+    fn bw_with(boxes: &[(u128, Aabb)], dynamics: &[(u128, Aabb)]) -> BoxWorld {
+        let mut bw = BoxWorld {
+            chunk_size_m: 32.0,
+            ..BoxWorld::default()
+        };
+        let list: Vec<_> = boxes
+            .iter()
+            .map(|(i, b)| (ObjectId::from_u128(*i), *b))
+            .collect();
+        bw.statics
+            .insert((astrocore_math::ChunkCoord::new(0, 0), FloorId(0)), list);
+        for (i, b) in dynamics {
+            bw.set_dynamic(ObjectId::from_u128(*i), Some(*b));
+        }
+        bw
+    }
+
+    fn cube(min: [f32; 3], max: [f32; 3]) -> Aabb {
+        Aabb::new(Vec3::from(min), Vec3::from(max))
+    }
+
+    #[test]
+    fn layers_filter_rays_and_overlaps() {
+        let wall = cube([4.0, 0.0, 0.0], [5.0, 2.0, 2.0]);
+        let door = cube([2.0, 0.0, 0.0], [3.0, 2.0, 2.0]);
+        let bw = bw_with(&[(1, wall)], &[(2, door)]);
+        let o = Vec3::new(0.0, 1.0, 1.0);
+        let all = bw.raycast_masked(o, Vec3::X, 20.0, LAYER_ALL).unwrap();
+        assert_eq!(all.id, ObjectId::from_u128(2));
+        let only_static = bw.raycast_masked(o, Vec3::X, 20.0, LAYER_STATIC).unwrap();
+        assert_eq!(only_static.id, ObjectId::from_u128(1));
+        assert!(bw.raycast_masked(o, Vec3::X, 20.0, 1 << 5).is_none());
+        let area = cube([0.0, 0.0, 0.0], [10.0, 2.0, 2.0]);
+        assert_eq!(bw.overlap_masked(&area, LAYER_DYNAMIC).len(), 1);
+        assert_eq!(bw.overlap_masked(&area, LAYER_ALL).len(), 2);
+        // Переопределённый слой.
+        let mut bw = bw;
+        bw.set_layer(ObjectId::from_u128(2), LAYER_TRIGGER);
+        assert!(bw.overlap_masked(&area, LAYER_DYNAMIC).is_empty());
+        assert_eq!(bw.overlap_masked(&area, LAYER_TRIGGER).len(), 1);
+    }
+
+    #[test]
+    fn shapecast_stops_at_the_first_obstacle() {
+        let wall = cube([5.0, 0.0, -5.0], [6.0, 3.0, 5.0]);
+        let bw = bw_with(&[(1, wall)], &[]);
+        let me = cube([0.0, 0.0, -0.4], [0.8, 1.8, 0.4]);
+        let hit = bw
+            .shapecast(&me, Vec3::new(10.0, 0.0, 0.0), LAYER_ALL)
+            .unwrap();
+        // Коробка шириной 0.8 упирается передней гранью в x = 5: центр останавливается на 4.6.
+        assert!((hit.fraction - 0.42).abs() < 1e-4, "{}", hit.fraction);
+        assert_eq!(hit.normal, Vec3::NEG_X);
+        assert!(
+            bw.shapecast(&me, Vec3::new(3.0, 0.0, 0.0), LAYER_ALL)
+                .is_none()
+        );
+        // Уже внутри преграды: касание в нуле.
+        let inside = cube([4.8, 0.0, 0.0], [5.4, 1.0, 0.5]);
+        assert_eq!(
+            bw.shapecast(&inside, Vec3::X, LAYER_ALL).unwrap().fraction,
+            0.0
+        );
+    }
+
+    #[test]
+    fn contacts_report_minimal_push_out() {
+        let floor = cube([-10.0, -0.2, -10.0], [10.0, 0.0, 10.0]);
+        let bw = bw_with(&[(1, floor)], &[]);
+        let sunk = cube([0.0, -0.05, 0.0], [0.6, 1.75, 0.6]);
+        let c = bw.contacts(&sunk, LAYER_ALL);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].normal, Vec3::Y);
+        assert!((c[0].depth - 0.05).abs() < 1e-5);
+        assert!(
+            bw.contacts(&cube([0.0, 1.0, 0.0], [0.6, 2.8, 0.6]), LAYER_ALL)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn moving_platform_carries_riders_and_not_bystanders() {
+        let plat = cube([0.0, 0.0, 0.0], [3.0, 0.2, 3.0]);
+        let mut bw = bw_with(&[], &[(7, plat)]);
+        let shape = CharacterShape::default();
+        let mut riders = [
+            CharacterState::at(Vec3::new(1.5, 0.2, 1.5)),
+            CharacterState::at(Vec3::new(9.0, 0.2, 9.0)),
+            CharacterState::at(Vec3::new(1.5, 1.2, 1.5)),
+        ];
+        let id = ObjectId::from_u128(7);
+        let n = carry_riders(&mut bw, id, Vec3::new(0.0, 4.0, 0.0), &mut riders, &shape);
+        assert_eq!(n, 1);
+        assert!((riders[0].pos.y - 4.2).abs() < 1e-5);
+        assert_eq!(riders[1].pos.y, 0.2);
+        assert_eq!(riders[2].pos.y, 1.2);
+        assert!((bw.dynamic_box(id).unwrap().max.y - 4.2).abs() < 1e-5);
+        // Персонаж на поднятой платформе остаётся на ней, а не проваливается.
+        assert!(
+            bw.overlap_masked(&cube([0.0, 4.0, 0.0], [1.0, 4.1, 1.0]), LAYER_ALL)
+                .len()
+                == 1
+        );
+    }
+}
