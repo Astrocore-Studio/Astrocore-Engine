@@ -226,8 +226,13 @@ impl Net {
     }
 }
 
+/// Спрайты чужих игроков по сетевому идентификатору (чтобы игра могла менять их внешний вид).
 #[derive(Resource, Default)]
-struct RemoteSprites(HashMap<NetworkEntityId, Entity>);
+pub struct RemoteSprites(pub HashMap<NetworkEntityId, Entity>);
+
+/// Спрайт собственного тела игрока, когда он создан.
+#[derive(Resource, Default)]
+pub struct LocalBody(pub Option<Entity>);
 
 /// Собрать приложение клиента. Игра добавляет свои плагины и запускает `app.run()`.
 pub fn build_app(args: Args) -> App {
@@ -269,6 +274,7 @@ pub fn build_app(args: Args) -> App {
         ..default()
     })
     .init_resource::<RemoteSprites>()
+    .init_resource::<LocalBody>()
     .insert_resource(args.clone())
     .add_systems(Startup, (setup, load_render_manifest))
     .add_systems(Update, (look_input, drive_camera).chain());
@@ -812,7 +818,7 @@ fn sync_local_body(
     look: Res<Look>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut body: Local<Option<Entity>>,
+    mut body: ResMut<LocalBody>,
     mut sprites: Query<(&mut Transform, &mut DirectionalSprite, &mut Visibility)>,
 ) {
     let Some(player) = player else { return };
@@ -822,7 +828,7 @@ fn sync_local_body(
     let p = net.core.position();
     let feet = Vec3::new(p.x, p.y, p.z);
     let facing = Vec3::new(-look.yaw.sin(), 0.0, -look.yaw.cos());
-    match *body {
+    match body.0 {
         Some(e) => {
             if let Ok((mut t, mut s, mut v)) = sprites.get_mut(e) {
                 t.translation = feet;
@@ -835,7 +841,7 @@ fn sync_local_body(
             }
         }
         None => {
-            *body = Some(spawn_billboard(
+            body.0 = Some(spawn_billboard(
                 &mut commands,
                 &mut meshes,
                 &mut materials,
