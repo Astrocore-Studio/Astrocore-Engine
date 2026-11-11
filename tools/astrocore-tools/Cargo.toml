@@ -4,6 +4,7 @@ description = "Командные инструменты Astrocore: валида
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [lib]
 name = "astrocore_tools"

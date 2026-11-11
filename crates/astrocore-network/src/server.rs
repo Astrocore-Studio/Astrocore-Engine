@@ -52,7 +52,7 @@ pub struct Identity {
 }
 
 /// Узел проверки подключения. Конкретные правила (аккаунты, роли) задаёт игра.
-pub trait Authenticator {
+pub trait Authenticator: Send {
     fn authenticate(&mut self, build: &str) -> Result<Identity, RejectReason>;
 }
 

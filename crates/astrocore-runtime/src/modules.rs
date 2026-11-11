@@ -59,8 +59,8 @@ pub struct HookOutput {
     pub log: Vec<String>,
 }
 
-pub trait GameModule {
-    /// Уникальное имя модуля, например `fantasy.magic`.
+pub trait GameModule: Send {
+    /// Уникальное имя модуля, например `example.weather`.
     fn id(&self) -> &str;
 
     /// Модули, которые должны получить событие раньше этого.

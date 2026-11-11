@@ -24,6 +24,10 @@ pub use billboard::{BillboardPlugin, DirectionalSprite, SpriteSheet};
 pub use camera::{CameraMode, CameraRig, CameraRigPlugin};
 pub use meshes::{material_color, to_bevy_mesh};
 
+/// Фильтр видимости элементов мира.
+pub type ElementFilter =
+    std::sync::Arc<dyn Fn(&astrocore_world::StructureElement) -> bool + Send + Sync>;
+
 /// Мир, который нужно отрисовать, и накопленные регионы для пересборки.
 #[derive(Resource)]
 pub struct RenderedWorld {
@@ -32,6 +36,8 @@ pub struct RenderedWorld {
     pub dirty: Vec<DirtyRegion>,
     /// Пересобрать всё (первый кадр, смена мира).
     pub rebuild_all: bool,
+    /// Фильтр видимости (режимы просмотра редактора). Смена фильтра требует `rebuild_all`.
+    pub filter: Option<ElementFilter>,
 }
 
 impl RenderedWorld {
@@ -40,6 +46,7 @@ impl RenderedWorld {
             world,
             dirty: Vec::new(),
             rebuild_all: true,
+            filter: None,
         }
     }
 }
@@ -99,9 +106,14 @@ fn rebuild_regions(
     let Some(rendered) = rendered.as_mut() else {
         return;
     };
+    // Команды удаления применяются в конце кадра, поэтому запрос видит уже удалённые сущности:
+    // помним, что удалили, чтобы не удалять дважды.
+    let mut gone: std::collections::HashSet<Entity> = std::collections::HashSet::new();
     if rendered.rebuild_all {
         for (e, _) in &existing {
-            commands.entity(e).despawn();
+            if gone.insert(e) {
+                commands.entity(e).despawn();
+            }
         }
         let floors: Vec<_> = rendered.world.floors().map(|f| f.id).collect();
         let mut all = Vec::new();
@@ -125,7 +137,7 @@ fn rebuild_regions(
         }
         // Старые меши региона удаляются, новые строятся из канонического мира.
         for (e, r) in &existing {
-            if r.chunk == region.chunk && r.floor == region.floor {
+            if r.chunk == region.chunk && r.floor == region.floor && gone.insert(e) {
                 commands.entity(e).despawn();
             }
         }
@@ -137,9 +149,12 @@ fn rebuild_regions(
             &mut materials,
             &mut cache,
         );
-        for (material_id, data) in
-            astrocore_geometry::build_chunk_meshes(&rendered.world, region.chunk, region.floor)
-        {
+        for (material_id, data) in astrocore_geometry::build_chunk_meshes_filtered(
+            &rendered.world,
+            region.chunk,
+            region.floor,
+            &|e| rendered.filter.as_ref().is_none_or(|f| f(e)),
+        ) {
             if data.is_empty() {
                 continue;
             }

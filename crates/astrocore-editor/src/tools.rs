@@ -38,7 +38,7 @@ pub enum ToolError {
 /// Верхняя граница размера одной операции (защита интерфейса от зависания).
 pub const MAX_TOOL_ELEMENTS: usize = 100_000;
 
-pub trait IdGen {
+pub trait IdGen: Send + Sync {
     fn next_id(&mut self) -> ObjectId;
 }
 

@@ -1,0 +1,33 @@
+[package]
+name = "astrocore-studio"
+description = "Astrocore Studio: окно редактора карт (оболочка над astrocore-editor)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-editor.workspace = true
+astrocore-geometry.workspace = true
+astrocore-math.workspace = true
+astrocore-network.workspace = true
+astrocore-render.workspace = true
+astrocore-sprites.workspace = true
+astrocore-world.workspace = true
+bevy = { workspace = true, features = ["3d_bevy_render", "default_app", "bevy_winit", "bevy_window", "x11", "png", "std", "multi_threaded"] }
+bevy_egui = { version = "=0.43.1", default-features = false, features = ["render", "default_fonts"] }
+
+[lib]
+name = "astrocore_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "astrocore-studio"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

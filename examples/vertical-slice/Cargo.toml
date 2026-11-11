@@ -4,6 +4,7 @@ description = "AC-VS1 (headless-часть): трёхэтажное здание
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 astrocore-core.workspace = true

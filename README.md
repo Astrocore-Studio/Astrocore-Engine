@@ -37,13 +37,14 @@
 | `astrocore-network` | Авторитарный сервер, клиент с предсказанием, интерес, TCP |
 | `astrocore-editor` | Ядро Studio: undo/redo, инструменты, валидатор, проекты, «играть отсюда» |
 | `astrocore-bevy` | Bevy-плагины серверной симуляции (без графики) |
+| `astrocore-studio` | Окно редактора карт (Bevy + egui) |
 | `astrocore-render` | Клиентский рендер: меши чанков, направленные спрайты, камеры |
 | `astrocore-server` | Headless-сервер (пакетный режим и сетевой `--listen`) |
 | `astrocore-client` | Клиент: `--demo`, `--connect`, `--screenshot` |
 | `astrocore-tools` | Валидатор карты, компилятор пакетов, демо-проект, бенчмарки |
 | `astrocore-vertical-slice` | Приёмочные сценарии AC-VS1 |
 
-**Ещё нет:** графической оболочки Studio (окна, панели, гизмо), загрузки GLB и рельефа в
+**Ещё нет:** гизмо и браузера ресурсов в Studio, загрузки GLB и рельефа в
 клиенте, UDP/шифрования, подключения Avian/Lightyear. Подробности — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ![Клиент, перспектива](docs/img/client-demo-perspective.png)
@@ -77,6 +78,10 @@ cargo run -p astrocore-client -- --demo
 ```
 
 ```bash
+cargo run -p astrocore-studio
+```
+
+```bash
 cargo run --release -p astrocore-tools -- bench
 ```
 
@@ -101,5 +106,4 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 
 ## Лицензия
 
-Лицензия репозитория **ещё не выбрана** (решение владельца проекта). Пока файла
-`LICENSE` нет, крейты помечены `publish = false`.
+Проприетарная, все права защищены — см. [`LICENSE`](LICENSE).

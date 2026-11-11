@@ -342,6 +342,17 @@ fn wall_box(edge: GridEdge, step: f32, thickness: f32, floor: &FloorDef) -> Aabb
 
 /// Собрать меши чанка на этаже. Порядок детерминирован (по `ObjectId`).
 pub fn build_chunk_meshes(world: &World, chunk: ChunkCoord, floor_id: FloorId) -> ChunkMeshes {
+    build_chunk_meshes_filtered(world, chunk, floor_id, &|_| true)
+}
+
+/// То же, но в меши попадают только элементы, для которых `keep` вернул `true`
+/// (режимы просмотра редактора: срез этажей, скрытые потолки).
+pub fn build_chunk_meshes_filtered(
+    world: &World,
+    chunk: ChunkCoord,
+    floor_id: FloorId,
+    keep: &dyn Fn(&StructureElement) -> bool,
+) -> ChunkMeshes {
     let mut out = ChunkMeshes::new();
     let Some(floor) = world.floor(floor_id) else {
         return out;
@@ -349,7 +360,7 @@ pub fn build_chunk_meshes(world: &World, chunk: ChunkCoord, floor_id: FloorId) -
     for e in world.elements_in_chunk(chunk, floor_id) {
         // Элемент на границе чанков принадлежит обоим, но геометрию эмитит только
         // чанк, в котором лежит «первая» ячейка элемента, чтобы грани не дублировались.
-        if owner_chunk(world, e) != chunk {
+        if owner_chunk(world, e) != chunk || !keep(e) {
             continue;
         }
         let step = world.config().grid_step_m;

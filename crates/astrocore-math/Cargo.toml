@@ -4,6 +4,7 @@ description = "Конвенция координат Astrocore (метры, Y-up
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license-file.workspace = true
 
 [dependencies]
 glam.workspace = true
