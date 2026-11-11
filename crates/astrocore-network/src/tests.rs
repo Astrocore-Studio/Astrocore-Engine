@@ -1583,6 +1583,49 @@ mod game_commands {
     }
 
     #[test]
+    fn a_module_can_slow_a_player_down_and_the_client_predicts_it() {
+        struct Slow;
+        impl GameModule for Slow {
+            fn id(&self) -> &str {
+                "test.slow"
+            }
+            fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+                if let HookEvent::Command { actor, kind, .. } = event
+                    && kind == "slow"
+                {
+                    ctx.set_speed(*actor, 0.5);
+                }
+            }
+        }
+        let mut host = ModuleHost::new();
+        host.register(Box::new(Slow)).unwrap();
+        host.finalize().unwrap();
+        let server = GameServer::new(test_world(), Harness::default_cfg(), Box::new(ByBuild))
+            .with_modules(host);
+        let mut h = Harness::with_server(server);
+        let (a, b) = (h.join("a"), h.join("b"));
+        let run = |h: &mut Harness, who| {
+            let p0 = h.client(who).position();
+            for _ in 0..8 {
+                h.input(who, 0, 1, 0.0);
+            }
+            (h.client(who).position() - p0).length()
+        };
+        let normal = run(&mut h, a);
+        let packet = h.client(b).command_packet("slow", vec![]).unwrap();
+        h.send(b, packet);
+        h.client_speed(b, 0.5);
+        let slowed = run(&mut h, b);
+        assert!(slowed < normal * 0.7, "{slowed} против {normal}");
+        let server_pos = h.client(b).position();
+        h.ticks(5);
+        assert!(
+            (h.client(b).position() - server_pos).length() < 0.01,
+            "сервер согласен с предсказанием"
+        );
+    }
+
+    #[test]
     fn modules_receive_a_tick_with_the_tick_duration_every_server_tick() {
         use std::sync::{Arc, Mutex};
         struct Clock(Arc<Mutex<Vec<(u32, f32)>>>);

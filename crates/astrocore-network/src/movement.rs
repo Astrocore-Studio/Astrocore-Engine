@@ -17,6 +17,8 @@ pub struct InputCmd {
     /// Полёт сквозь преграды без тяжести (призрак). Сервер решает сам; клиент включает у себя, когда
     /// знает, что он призрак, чтобы предсказание совпадало.
     pub noclip: bool,
+    /// Множитель скорости ходьбы (замедление от голода, усталости и т. п.); 1,0 — обычная.
+    pub speed: f32,
 }
 
 /// Желаемое направление в мировых осях. `yaw` — поворот вокруг +Y (радианы);
@@ -39,7 +41,12 @@ pub fn apply_input(
     input: &InputCmd,
     dt: f32,
 ) {
-    let wish = wish_direction(input.move_x, input.move_z, input.yaw) * MOVE_SPEED * dt;
+    let speed = if input.speed.is_finite() {
+        input.speed.clamp(0.0, 2.0)
+    } else {
+        1.0
+    };
+    let wish = wish_direction(input.move_x, input.move_z, input.yaw) * MOVE_SPEED * speed * dt;
     if input.noclip {
         state.pos += wish;
         state.vel_y = 0.0;

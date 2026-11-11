@@ -179,6 +179,8 @@ pub struct GameServer {
     frozen: BTreeSet<NetworkEntityId>,
     /// Призраки: летят сквозь преграды и не касаются предметов.
     ghosts: BTreeSet<NetworkEntityId>,
+    /// Множители скорости ходьбы, заданные модулями.
+    speeds: BTreeMap<NetworkEntityId, f32>,
     content: BTreeMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
     content_queue: BTreeMap<ConnId, VecDeque<([u8; 32], u32)>>,
     /// Последние значения реплицируемых данных: (сущность, вид) → (номер, байты).
@@ -210,6 +212,7 @@ impl GameServer {
             hook_depth: 0,
             frozen: BTreeSet::new(),
             ghosts: BTreeSet::new(),
+            speeds: BTreeMap::new(),
             content: BTreeMap::new(),
             content_queue: BTreeMap::new(),
             components: BTreeMap::new(),
@@ -633,6 +636,7 @@ impl GameServer {
                         conn,
                         InputCmd {
                             noclip: false,
+                            speed: 1.0,
                             seq,
                             move_x,
                             move_z,
@@ -1073,6 +1077,13 @@ impl GameServer {
                 self.frozen.remove(&net);
             }
         }
+        for (net, speed) in result.speeds {
+            if (speed - 1.0).abs() < 1e-4 {
+                self.speeds.remove(&net);
+            } else {
+                self.speeds.insert(net, speed);
+            }
+        }
         for (net, ghost) in result.ghosts {
             if ghost {
                 self.ghosts.insert(net);
@@ -1162,6 +1173,7 @@ impl GameServer {
                 cmd.move_z = 0;
             }
             cmd.noclip = self.ghosts.contains(&p.net);
+            cmd.speed = self.speeds.get(&p.net).copied().unwrap_or(1.0);
             let before = p.state.pos;
             apply_input(
                 &self.physics,

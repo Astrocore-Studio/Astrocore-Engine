@@ -62,6 +62,7 @@ pub struct HookContext<'a> {
     components: Vec<ComponentUpdate>,
     freezes: Vec<(NetworkEntityId, bool)>,
     ghosts: Vec<(NetworkEntityId, bool)>,
+    speeds: Vec<(NetworkEntityId, f32)>,
     teleports: Vec<(NetworkEntityId, astrocore_math::glam::Vec3)>,
     log: Vec<String>,
 }
@@ -112,6 +113,7 @@ impl<'a> HookContext<'a> {
             components: Vec::new(),
             freezes: Vec::new(),
             ghosts: Vec::new(),
+            speeds: Vec::new(),
             teleports: Vec::new(),
             log: Vec::new(),
         }
@@ -126,6 +128,11 @@ impl<'a> HookContext<'a> {
     /// Режим призрака: игрок летает сквозь стены (по плоскости, на своей высоте).
     pub fn set_ghost(&mut self, net: NetworkEntityId, ghost: bool) {
         self.ghosts.push((net, ghost));
+    }
+
+    /// Задать множитель скорости ходьбы игрока (замедление или ускорение).
+    pub fn set_speed(&mut self, net: NetworkEntityId, factor: f32) {
+        self.speeds.push((net, factor));
     }
 
     /// Поставить игрока в точку (ступни).
@@ -221,6 +228,7 @@ impl<'a> HookContext<'a> {
             components: self.components,
             freezes: self.freezes,
             ghosts: self.ghosts,
+            speeds: self.speeds,
             teleports: self.teleports,
             doors: self.door_requests,
             log: self.log,
@@ -247,6 +255,8 @@ pub struct HookOutput {
     pub freezes: Vec<(NetworkEntityId, bool)>,
     /// Включить (`true`) или выключить режим призрака: полёт сквозь преграды без тяжести.
     pub ghosts: Vec<(NetworkEntityId, bool)>,
+    /// Множитель скорости ходьбы игрока (1,0 — обычная); действует, пока модуль не изменит его.
+    pub speeds: Vec<(NetworkEntityId, f32)>,
     /// Переставить игрока в точку (ступни); клиент получает новую позицию сразу.
     pub teleports: Vec<(NetworkEntityId, astrocore_math::glam::Vec3)>,
     pub doors: Vec<DoorRequest>,
@@ -367,6 +377,7 @@ impl ModuleHost {
             out.components.append(&mut ctx.components);
             out.freezes.append(&mut ctx.freezes);
             out.ghosts.append(&mut ctx.ghosts);
+            out.speeds.append(&mut ctx.speeds);
             out.teleports.append(&mut ctx.teleports);
             out.doors.append(&mut ctx.door_requests);
             out.log.append(&mut ctx.log);

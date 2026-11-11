@@ -227,6 +227,13 @@ impl Harness {
         self.tick();
     }
 
+    /// Задать клиенту множитель скорости для предсказания.
+    pub fn client_speed(&mut self, id: ConnId, speed: f32) {
+        if let Some(c) = self.clients.get_mut(&id) {
+            c.set_speed(speed);
+        }
+    }
+
     /// Включить у клиента предсказание полёта призрака.
     pub fn client_noclip(&mut self, id: ConnId, on: bool) {
         if let Some(c) = self.clients.get_mut(&id) {

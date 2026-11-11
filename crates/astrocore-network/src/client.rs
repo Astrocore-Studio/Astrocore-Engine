@@ -92,6 +92,7 @@ pub struct ClientCore {
     tick_hz: u8,
     you: Option<NetworkEntityId>,
     noclip: bool,
+    speed: f32,
     replica: Option<World>,
     physics: BoxWorld,
     reassembler: Reassembler,
@@ -124,6 +125,7 @@ impl ClientCore {
             tick_hz: 20,
             you: None,
             noclip: false,
+            speed: 1.0,
             replica: None,
             physics: BoxWorld::default(),
             reassembler: Reassembler::new(),
@@ -235,6 +237,7 @@ impl ClientCore {
         self.seq += 1;
         let cmd = InputCmd {
             noclip: self.noclip,
+            speed: self.speed,
             seq: self.seq,
             move_x,
             move_z,
@@ -278,6 +281,11 @@ impl ClientCore {
 
     /// Предсказанная позиция (ступни).
     /// Лететь сквозь преграды (призрак): предсказание движения должно совпадать с серверным.
+    /// Множитель скорости ходьбы: предсказание должно совпадать с серверным.
+    pub fn set_speed(&mut self, speed: f32) {
+        self.speed = speed;
+    }
+
     pub fn set_noclip(&mut self, on: bool) {
         self.noclip = on;
     }
