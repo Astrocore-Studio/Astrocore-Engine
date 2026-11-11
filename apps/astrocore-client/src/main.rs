@@ -41,6 +41,7 @@ struct Args {
     assets: Option<PathBuf>,
     render_manifest: Option<PathBuf>,
     camera: Option<(f32, f32, f32)>,
+    debug_doors_open: bool,
     build: String,
     world_id: String,
     screenshot: Option<PathBuf>,
@@ -61,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
         assets: None,
         render_manifest: None,
         camera: None,
+        debug_doors_open: false,
         build: "client".into(),
         world_id: "world".into(),
         screenshot: None,
@@ -106,6 +108,7 @@ fn parse_args() -> Result<Args, String> {
                 };
                 a.camera = Some((yaw, pitch, distance));
             }
+            "--debug-doors-open" => a.debug_doors_open = true,
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
             "--world-id" => a.world_id = value("--world-id")?,
@@ -584,12 +587,18 @@ fn sync_terrain(
 }
 
 /// Передать рендеру серверное состояние дверей (открыта или закрыта).
-fn sync_door_states(net: NonSend<Net>, mut states: ResMut<astrocore_render::DoorStates>) {
+fn sync_door_states(
+    net: NonSend<Net>,
+    args: Res<Args>,
+    mut states: ResMut<astrocore_render::DoorStates>,
+) {
+    // Отладка внешнего вида: только на экране, серверное состояние не меняется.
+    let force_open = args.debug_doors_open;
     for id in net.core.door_ids() {
         if let (Some(element), Some(open)) = (net.core.door_element(id), net.core.door_open(id))
-            && states.0.get(&element) != Some(&open)
+            && states.0.get(&element) != Some(&(open || force_open))
         {
-            states.0.insert(element, open);
+            states.0.insert(element, open || force_open);
         }
     }
 }
