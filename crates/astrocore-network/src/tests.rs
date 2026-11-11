@@ -725,3 +725,24 @@ fn clients_cannot_decode_garbage_without_error() {
     assert!(c.on_packet(&[]).is_err());
     assert!(decode::<ServerMessage>(&[0xFF; 100]).is_err());
 }
+
+#[test]
+fn metrics_count_activity_and_ops_are_collected_for_persistence() {
+    let mut h = harness();
+    let a = h.join("edit-a");
+    h.input(a, 0, 1, WEST);
+    let p = h.client(a).edit_packet(wall_cmd(321_000, 3, 3)).unwrap();
+    h.send(a, p);
+    let bad = h.server.on_packet(a, &[9, 9]);
+    assert!(!bad.is_empty());
+    let m = h.server.metrics();
+    assert!(m.ticks >= 1 && m.packets_in >= 4 && m.messages_out > 0);
+    assert_eq!((m.edits_applied, m.inputs_applied), (1, 1));
+    assert!(m.rejected_packets >= 1);
+    let ops = h.server.take_applied_ops();
+    assert_eq!(ops.len(), 1);
+    assert!(
+        h.server.take_applied_ops().is_empty(),
+        "забираются один раз"
+    );
+}

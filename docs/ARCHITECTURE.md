@@ -14,50 +14,49 @@
 
 Пункты 2–3 проверяются автоматически: `scripts/check-headless.sh` (запускается в CI).
 
-## Крейты и направление зависимостей
+## Слои и направление зависимостей
 
 ```
-astrocore-math ─┐
-                ├─► astrocore-world ─┬─► astrocore-geometry
-astrocore-core ─┘                    ├─► astrocore-spatial
-                                     ├─► astrocore-navigation
-                                     ├─► astrocore-persistence
-                                     ├─► astrocore-protocol
-                                     └─► astrocore-bevy ─► astrocore-server
-
-astrocore-math ─► astrocore-sprites         (независим от мира)
+Фундамент      math ─ core
+Мир            world ─┬─ geometry ─ glb
+                      ├─ spatial ─ navigation (+ кэш тайлов)
+                      ├─ physics ─ terrain
+                      ├─ prefabs
+                      └─ runtime (двери, стриминг, модули, симуляции)
+Данные         assets ─ world-compiler,   persistence,   protocol
+Сеть           network (сервер, клиент, TCP) ◄── world, physics, runtime, spatial, protocol
+Редактор       editor ◄── world, prefabs, spatial, physics, network (для «играть отсюда»)
+Адаптеры       bevy (серверное расписание), render (клиентский рендер)
+Приложения     server, client, tools, vertical-slice
 ```
 
-«Чистые» доменные крейты (все, кроме `astrocore-bevy` и `astrocore-server`) не
-зависят от Bevy. Bevy используется только как адаптер ECS/расписания.
-
-Запрещённые связи (проверяются скриптом): `core → world/geometry/…`,
-`world → geometry/spatial/navigation/bevy/server/protocol/persistence`,
-`protocol → geometry/sprites/bevy`, `persistence → bevy/protocol`,
-`math → core/world`, а также любой графический стек в `server` и `bevy`.
+«Чистые» крейты (всё, кроме `astrocore-bevy`, `astrocore-render` и приложений) не зависят от
+Bevy. Сервер, редактор, инструменты и сеть не тянут wgpu/winit/рендер/звук. Запрещённые связи
+(`core → world`, `world → geometry/spatial/…`, `protocol → geometry/sprites/bevy`,
+`physics → network/bevy` и т. д.) проверяются скриптом.
 
 ## Жизненный цикл изменения мира
 
-1. Источник (редактор, сетевая команда, скрипт) формирует `WorldCommand`.
+1. Источник (редактор, сетевая команда, скрипт, модуль) формирует `WorldCommand`.
 2. `World::apply` валидирует команду целиком **до** мутации; при ошибке мир не меняется.
-3. Ревизия мира увеличивается; возвращается `WorldOp { seq, command }`, где
-   `seq` = ревизия после применения.
-4. Затронутые чанки×этажи помечаются dirty с флагами `GEOMETRY / COLLISION /
-   NAVIGATION / TOPOLOGY`; ревизии затронутых чанков обновляются.
-5. Потребители забирают `take_dirty()` и пересобирают производные данные.
-6. `WorldOp` записывается в журнал (`astrocore-persistence`) и рассылается клиентам
-   (`astrocore-protocol`); клиенты применяют через `apply_replicated` строго по порядку.
+3. Ревизия растёт; возвращается `WorldOp { seq, command }`.
+4. Затронутые чанки×этажи помечаются dirty с флагами `GEOMETRY / COLLISION / NAVIGATION / TOPOLOGY`.
+5. Потребители забирают регионы: рендер пересобирает меши, физика — коробки, навигация — тайлы.
+6. `WorldOp` пишется в журнал и рассылается клиентам; клиенты применяют по порядку и идемпотентно.
 
-## Расписание (astrocore-bevy)
+## Серверный игровой цикл (`GameServer::tick`)
 
-Фиксированный шаг (по умолчанию 20 Гц, настраивается), стадии:
+вход (одна команда на игрока) → движение (`apply_input` над `BoxWorld`) → подтверждение
+`InputAck` → репликация сущностей (зона интереса, видимость через порталы, бюджет).
+Двери, правки и хуки модулей обрабатываются по приходу пакетов.
 
-`Input → Commands → Simulation → WorldChanges → Replication → Presentation`
+## Расписание Bevy (astrocore-bevy)
 
-Порядок объявлен через `SimSet` и проверяется тестом. Частота тика отделена от
-частоты кадров (тест `fixed_step_is_independent_of_frame_rate`).
+`Input → Commands → Simulation → WorldChanges → Replication → Presentation` в фиксированном
+шаге (по умолчанию 20 Гц); порядок проверяется тестом.
 
 ## Идентичность
 
-`ObjectId` (UUID) — постоянный; `Entity` Bevy — только runtime, в файлы и сеть не
-попадает; связь хранит `ObjectIndex`. Подробнее — ADR-0004.
+`ObjectId` (UUID) — постоянный; `Entity` Bevy — только runtime и в файлы/сеть не попадает.
+Объекты префабов получают выводимые (UUID v5) идентификаторы из экземпляра и цепочки узлов.
+Подробнее — ADR-0004.

@@ -1,0 +1,38 @@
+[package]
+name = "astrocore-tools"
+description = "Командные инструменты Astrocore: валидатор карты, компилятор пакетов, демо-проект, бенчмарки"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "astrocore_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "astrocore-tools"
+path = "src/main.rs"
+
+[dependencies]
+astrocore-assets.workspace = true
+astrocore-core.workspace = true
+astrocore-editor.workspace = true
+astrocore-geometry.workspace = true
+astrocore-math.workspace = true
+astrocore-navigation.workspace = true
+astrocore-network.workspace = true
+astrocore-persistence.workspace = true
+astrocore-physics.workspace = true
+astrocore-protocol.workspace = true
+astrocore-spatial.workspace = true
+astrocore-vertical-slice = { path = "../../examples/vertical-slice" }
+astrocore-world.workspace = true
+astrocore-world-compiler.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

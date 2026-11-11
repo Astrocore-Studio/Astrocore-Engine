@@ -22,6 +22,7 @@ members = [
     "crates/astrocore-bevy",
     "apps/astrocore-server",
     "apps/astrocore-client",
+    "tools/astrocore-tools",
     "examples/vertical-slice",
 ]
 

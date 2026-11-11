@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 astrocore-bevy.workspace = true
 astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-network.workspace = true
 astrocore-persistence.workspace = true
 astrocore-world.workspace = true
 bevy.workspace = true
@@ -23,7 +25,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-astrocore-math.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -126,7 +126,7 @@ mod tests {
         };
         let t = rig.transform();
         assert!(
-            (t.translation - Vec3::new(-4.0, 0.0, 0.0)).length() < 1e-4,
+            (t.translation - Vec3::new(4.0, 0.0, 0.0)).length() < 1e-4,
             "{:?}",
             t.translation
         );

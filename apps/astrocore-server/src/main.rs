@@ -9,12 +9,16 @@ astrocore-server — headless-сервер Astrocore
 Использование:
   astrocore-server --data-dir <каталог> [--world-id <id>] [--tick-hz <гц>]
                    [--ticks <N>] [--script <команды.json>]
+                   [--listen <адрес:порт>] [--allow-edit] [--spawn x,y,z]
 
   --data-dir   каталог сохранений (снимок + журнал); создаётся при отсутствии
   --world-id   идентификатор нового мира (по умолчанию world)
   --tick-hz    частота фиксированного шага, Гц (по умолчанию 20)
   --ticks      выполнить N тиков и выйти (по умолчанию — работать до остановки)
   --script     JSON-массив WorldCommand для постановки в очередь при старте
+  --listen     принимать игроков по TCP на этом адресе (например 127.0.0.1:7777)
+  --allow-edit разрешить игрокам править структуру мира (разработка, пробная игра)
+  --spawn      точка появления игроков, метры: x,y,z
 ";
 
 fn parse_args() -> Result<ServerConfig, String> {
@@ -45,6 +49,23 @@ fn parse_args() -> Result<ServerConfig, String> {
                 )
             }
             "--script" => cfg.script = Some(PathBuf::from(value("--script")?)),
+            "--listen" => cfg.listen = Some(value("--listen")?),
+            "--allow-edit" => cfg.allow_edit = true,
+            "--spawn" => {
+                let v = value("--spawn")?;
+                let p: Vec<f32> = v
+                    .split(',')
+                    .map(|c| c.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|e| format!("--spawn: {e}"))?;
+                let [x, y, z] = p[..] else {
+                    return Err("--spawn: ожидается x,y,z".into());
+                };
+                if ![x, y, z].iter().all(|v| v.is_finite()) {
+                    return Err("--spawn: числа должны быть конечными".into());
+                }
+                cfg.spawn = Some([x, y, z]);
+            }
             "-h" | "--help" => return Err(String::new()),
             other => return Err(format!("неизвестный аргумент {other:?}")),
         }

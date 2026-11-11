@@ -425,6 +425,7 @@ dependencies = [
  "astrocore-bevy",
  "astrocore-core",
  "astrocore-math",
+ "astrocore-network",
  "astrocore-persistence",
  "astrocore-world",
  "bevy",
@@ -464,6 +465,29 @@ dependencies = [
  "astrocore-physics",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "astrocore-tools"
+version = "0.1.0"
+dependencies = [
+ "astrocore-assets",
+ "astrocore-core",
+ "astrocore-editor",
+ "astrocore-geometry",
+ "astrocore-math",
+ "astrocore-navigation",
+ "astrocore-network",
+ "astrocore-persistence",
+ "astrocore-physics",
+ "astrocore-protocol",
+ "astrocore-spatial",
+ "astrocore-vertical-slice",
+ "astrocore-world",
+ "astrocore-world-compiler",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

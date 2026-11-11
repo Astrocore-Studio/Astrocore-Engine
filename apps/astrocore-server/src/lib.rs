@@ -39,6 +39,12 @@ pub struct ServerConfig {
     pub max_ticks: Option<u64>,
     /// JSON-массив `WorldCommand`, который ставится в очередь при старте.
     pub script: Option<PathBuf>,
+    /// Адрес TCP-слушателя для игроков. `None` — режим без сети (пакетные задачи).
+    pub listen: Option<String>,
+    /// Разрешить подключённым игрокам править структуру мира (для пробной игры и разработки).
+    pub allow_edit: bool,
+    /// Точка появления игроков.
+    pub spawn: Option<[f32; 3]>,
 }
 
 impl ServerConfig {
@@ -49,6 +55,9 @@ impl ServerConfig {
             tick_hz: DEFAULT_TICK_HZ,
             max_ticks: None,
             script: None,
+            listen: None,
+            allow_edit: false,
+            spawn: None,
         }
     }
 }
@@ -90,7 +99,130 @@ pub fn load_or_create(store: &Store, world_id: &str) -> Result<(World, bool), Se
     Ok((world, false))
 }
 
+/// Сетевой сервер: настоящий игровой сервер (`GameServer`) на TCP с журналом и снимками.
+pub struct ListenServer {
+    tcp: astrocore_network::tcp::TcpServer,
+    store: Store,
+    ticks: u64,
+    ops_since_snapshot: usize,
+}
+
+impl ListenServer {
+    pub fn start(config: &ServerConfig) -> Result<Self, ServerError> {
+        use astrocore_network::server::{AllowAll, GameServer, ServerNetConfig};
+        let store = Store::open(&config.data_dir)?;
+        let (mut world, _) = load_or_create(&store, &config.world_id)?;
+        if let Some(path) = &config.script {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| ServerError::Script(e.to_string()))?;
+            let commands: Vec<WorldCommand> =
+                serde_json::from_str(&text).map_err(|e| ServerError::Script(e.to_string()))?;
+            for c in commands {
+                // Недопустимые команды скрипта не фатальны (как и в пакетном режиме).
+                if let Ok(op) = world.apply(c) {
+                    store.append(&op)?;
+                }
+            }
+        }
+        let mut net = ServerNetConfig {
+            tick_hz: config.tick_hz.round().clamp(1.0, 240.0) as u8,
+            ..ServerNetConfig::default()
+        };
+        if let Some(s) = config.spawn {
+            net.spawn = astrocore_math::glam::Vec3::from_array(s);
+        }
+        let core = GameServer::new(
+            world,
+            net,
+            Box::new(AllowAll {
+                can_edit: config.allow_edit,
+            }),
+        );
+        let addr = config.listen.as_deref().unwrap_or("127.0.0.1:0");
+        let tcp = astrocore_network::tcp::TcpServer::bind(addr, core)
+            .map_err(|e| ServerError::Script(format!("слушатель {addr}: {e}")))?;
+        Ok(Self {
+            tcp,
+            store,
+            ticks: 0,
+            ops_since_snapshot: 0,
+        })
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.tcp.local_addr()
+    }
+
+    pub fn core(&self) -> &astrocore_network::server::GameServer {
+        self.tcp.core()
+    }
+
+    /// Один шаг: сеть + тик + запись операций в журнал.
+    pub fn step(&mut self) -> Result<(), ServerError> {
+        self.tcp
+            .step()
+            .map_err(|e| ServerError::Script(e.to_string()))?;
+        self.ticks += 1;
+        for op in self.tcp.core_mut().take_applied_ops() {
+            self.store.append(&op)?;
+            self.ops_since_snapshot += 1;
+        }
+        if self.ops_since_snapshot >= SNAPSHOT_EVERY_OPS {
+            self.store.save_snapshot(self.tcp.core().world())?;
+            self.ops_since_snapshot = 0;
+        }
+        Ok(())
+    }
+
+    /// Работать с частотой тика до `max_ticks` (или бесконечно), затем сохранить мир.
+    pub fn run(&mut self, tick_hz: f64, max_ticks: Option<u64>) -> Result<RunReport, ServerError> {
+        let period = Duration::from_secs_f64(1.0 / tick_hz);
+        let mut next = std::time::Instant::now();
+        let mut done = 0u64;
+        let mut last_log = std::time::Instant::now();
+        while max_ticks.is_none_or(|m| done < m) {
+            self.step()?;
+            done += 1;
+            if last_log.elapsed() >= Duration::from_secs(30) {
+                let m = self.core().metrics();
+                eprintln!(
+                    "метрики: тиков {}, игроков {}, пакетов {}, правок {}, отказов {}",
+                    m.ticks,
+                    self.core().player_count(),
+                    m.packets_in,
+                    m.edits_applied,
+                    m.rejected_packets
+                );
+                last_log = std::time::Instant::now();
+            }
+            next += period;
+            match next.checked_duration_since(std::time::Instant::now()) {
+                Some(wait) => std::thread::sleep(wait),
+                None => next = std::time::Instant::now(),
+            }
+        }
+        self.finish()
+    }
+
+    /// Сохранить финальный снимок и вернуть отчёт.
+    pub fn finish(&mut self) -> Result<RunReport, ServerError> {
+        let world = self.tcp.core().world();
+        self.store.save_snapshot(world)?;
+        Ok(RunReport {
+            ticks: self.ticks,
+            revision: world.revision().0,
+            element_count: world.element_count(),
+            content_hash: world.content_hash(),
+            rejected: self.tcp.core().metrics().rejected_packets as usize,
+            recovered: false,
+        })
+    }
+}
+
 pub fn run(config: &ServerConfig) -> Result<RunReport, ServerError> {
+    if config.listen.is_some() {
+        return ListenServer::start(config)?.run(config.tick_hz, config.max_ticks);
+    }
     let store = Store::open(&config.data_dir)?;
     let (world, recovered) = load_or_create(&store, &config.world_id)?;
 
@@ -318,6 +450,59 @@ mod tests {
         assert!(matches!(run(&cfg), Err(ServerError::Script(_))));
         cfg.script = Some(dir.path().join("missing.json"));
         assert!(matches!(run(&cfg), Err(ServerError::Script(_))));
+    }
+
+    #[test]
+    fn network_server_serves_clients_persists_edits_and_restores_them() {
+        use astrocore_network::client::ClientCore;
+        use astrocore_network::tcp::TcpClient;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = ServerConfig::new(dir.path().join("data"));
+        cfg.world_id = "net-world".into();
+        cfg.listen = Some("127.0.0.1:0".into());
+        cfg.allow_edit = true;
+        let mut server = ListenServer::start(&cfg).unwrap();
+        let addr = server.local_addr().unwrap();
+
+        let mut tcp = TcpClient::connect(addr).unwrap();
+        let mut core = ClientCore::new("editor", "net-world", 0);
+        tcp.send(&core.hello_packet()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut sent = false;
+        while std::time::Instant::now() < deadline {
+            server.step().unwrap();
+            for p in tcp.poll() {
+                core.on_packet(&p).unwrap();
+            }
+            if core.is_ready() && !sent {
+                tcp.send(&core.edit_packet(wall(555, 2)).unwrap()).unwrap();
+                sent = true;
+            }
+            if sent
+                && core
+                    .world()
+                    .is_some_and(|w| w.element(ObjectId::from_u128(555)).is_some())
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            core.world()
+                .is_some_and(|w| w.element(ObjectId::from_u128(555)).is_some()),
+            "правка дошла до клиента"
+        );
+        let report = server.finish().unwrap();
+        assert_eq!(report.element_count, 1);
+        drop(server);
+
+        // Перезапуск без сети восстанавливает мир с правкой клиента.
+        let mut again = ServerConfig::new(dir.path().join("data"));
+        again.max_ticks = Some(1);
+        let restored = run(&again).unwrap();
+        assert!(restored.recovered);
+        assert_eq!(restored.content_hash, report.content_hash);
     }
 
     #[test]

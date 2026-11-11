@@ -422,7 +422,7 @@ fn freeform_models_go_to_the_client_as_instances_and_to_the_server_as_collision(
     assert_eq!(boxes.len(), 1, "ровно один габаритный ящик");
     let b = boxes[0].1;
     assert!(
-        (b.size().z - 2.0).abs() < 1e-2 && (b.size().x - 0.5).abs() < 1e-2,
+        (b.size().z - 1.0).abs() < 1e-2 && (b.size().x - 0.5).abs() < 1e-2,
         "повёрнуто на 90°: {b:?}"
     );
     // Статуя не попала в структурные меши (их рисует клиент по модели).

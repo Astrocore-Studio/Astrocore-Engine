@@ -14,25 +14,39 @@
 
 ## Что уже есть
 
-Реализована и проверена тестами **headless-основа** (фаза F0 и значимая часть F2–F4):
+Рабочая основа движка, проверенная тестами; клиент с рендером проверен скриншотами на
+программном Vulkan:
 
 | Крейт | Назначение |
 | --- | --- |
-| `astrocore-math` | Конвенция координат (метры, **Y-up**, правосторонняя), чанки, ячейки и рёбра сетки |
-| `astrocore-core` | Идентификаторы (`ObjectId`, `PrototypeId`, …), ревизии, версии схем |
-| `astrocore-world` | Канонический мир: структурные элементы, команды, ревизии, dirty-регионы, репликация операций |
-| `astrocore-geometry` | Меши стен и перекрытий, батчинг по материалам (без GPU) |
-| `astrocore-spatial` | Топология: комнаты, порталы с независимыми каналами, диагностика карты |
-| `astrocore-navigation` | Запросы пути по каноническому миру |
-| `astrocore-sprites` | Выбор направления billboard-спрайта по камере; чтение метаданных RSI |
-| `astrocore-persistence` | Снимок + журнал с CRC, атомарная запись, восстановление, миграции |
-| `astrocore-protocol` | Версионированный бинарный протокол с проверкой недоверенного ввода |
-| `astrocore-bevy` | Bevy-плагины: расписание, headless-симуляция, связь мира с ECS |
-| `astrocore-server` | Headless-сервер (без окна, GPU и звука) |
-| `astrocore-vertical-slice` | Приёмочные проверки AC-VS1 (headless-часть) |
+| `astrocore-math` | Конвенция координат (метры, **Y-up**, правосторонняя), чанки, ячейки, рёбра, преобразования сетки |
+| `astrocore-core` | Идентификаторы, ревизии, версии схем |
+| `astrocore-world` | Канонический мир: стены, проёмы, перекрытия, лестницы, пандусы, свободные модели; команды, ревизии, dirty-регионы |
+| `astrocore-geometry` | Меши и коллизионные коробки, сварка углов, импорт GLB |
+| `astrocore-spatial` | Топология: комнаты, порталы с независимыми каналами, диагностика |
+| `astrocore-navigation` | Пути по этажам и лестницам, кэш тайлов с инкрементальным обновлением |
+| `astrocore-physics` | Коллизия мира, запросы луча, триггеры, контроллер персонажа (ступени, двери, рельеф) |
+| `astrocore-terrain` | Карта высот, кисти, фундаменты, дороги, вода, меши |
+| `astrocore-sprites` | Выбор направления спрайта по камере; чтение метаданных RSI |
+| `astrocore-prefabs` | Префабы: вложенность, наследование, переопределения, обновление экземпляров |
+| `astrocore-assets` | Манифест ассетов: хеши, лицензии, безопасные пути |
+| `astrocore-world-compiler` | Клиентский и серверный пакеты, инкрементальная детерминированная сборка |
+| `astrocore-runtime` | Двери, стриминг чанков, уровни активности, API игровых модулей, инфраструктура симуляций |
+| `astrocore-persistence` | Снимок + журнал, восстановление, миграции |
+| `astrocore-protocol` | Версионированный бинарный протокол |
+| `astrocore-network` | Авторитарный сервер, клиент с предсказанием, интерес, TCP |
+| `astrocore-editor` | Ядро Studio: undo/redo, инструменты, валидатор, проекты, «играть отсюда» |
+| `astrocore-bevy` | Bevy-плагины серверной симуляции (без графики) |
+| `astrocore-render` | Клиентский рендер: меши чанков, направленные спрайты, камеры |
+| `astrocore-server` | Headless-сервер (пакетный режим и сетевой `--listen`) |
+| `astrocore-client` | Клиент: `--demo`, `--connect`, `--screenshot` |
+| `astrocore-tools` | Валидатор карты, компилятор пакетов, демо-проект, бенчмарки |
+| `astrocore-vertical-slice` | Приёмочные сценарии AC-VS1 |
 
-**Ещё нет:** клиент с окном и рендером, физика (Avian), сетевой транспорт (Lightyear),
-Astrocore Studio. Подробности и причины — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
+**Ещё нет:** графической оболочки Studio (окна, панели, гизмо), загрузки GLB и рельефа в
+клиенте, UDP/шифрования, подключения Avian/Lightyear. Подробности — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
+
+![Клиент, перспектива](docs/img/client-demo-perspective.png)
 
 ## Быстрый старт
 
@@ -51,7 +65,19 @@ cargo run -p astrocore-vertical-slice
 ```
 
 ```bash
-cargo run -p astrocore-server -- --data-dir ./data --ticks 100
+cargo run -p astrocore-server -- --data-dir ./data --listen 127.0.0.1:7777 --allow-edit
+```
+
+```bash
+cargo run -p astrocore-client -- --connect 127.0.0.1:7777 --world-id world
+```
+
+```bash
+cargo run -p astrocore-client -- --demo
+```
+
+```bash
+cargo run --release -p astrocore-tools -- bench
 ```
 
 Перед отправкой изменений (правило 4 раздела 26 дизайн-документа):
@@ -70,6 +96,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 - [`docs/EDITOR.md`](docs/EDITOR.md) — Astrocore Studio (проект)
 - [`docs/ASSETS.md`](docs/ASSETS.md) — ассеты, RSI, лицензии
 - [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) — тесты и приёмка
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — измерения
 - [`docs/ADR`](docs/ADR) — архитектурные решения
 
 ## Лицензия

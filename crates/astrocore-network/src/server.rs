@@ -26,7 +26,7 @@ use astrocore_runtime::doors::{
 };
 use astrocore_runtime::modules::{HookEvent, ModuleHost};
 use astrocore_spatial::{Channel, Topology};
-use astrocore_world::{FloorId, World, WorldCommand, WorldError};
+use astrocore_world::{FloorId, World, WorldCommand, WorldError, WorldOp};
 
 use crate::movement::{InputCmd, apply_input};
 use crate::snapshot;
@@ -126,7 +126,21 @@ struct Player {
     moved_tick: u32,
 }
 
+/// Счётчики наблюдаемости (раздел 21): экспортируются в лог/метрики хозяином процесса.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerMetrics {
+    pub ticks: u64,
+    pub packets_in: u64,
+    pub messages_out: u64,
+    pub rejected_packets: u64,
+    pub edits_applied: u64,
+    pub inputs_applied: u64,
+    pub door_toggles: u64,
+}
+
 pub struct GameServer {
+    metrics: ServerMetrics,
+    applied_ops: Vec<WorldOp>,
     world: World,
     physics: BoxWorld,
     doors: DoorRegistry,
@@ -146,6 +160,8 @@ pub struct GameServer {
 impl GameServer {
     pub fn new(world: World, cfg: ServerNetConfig, auth: Box<dyn Authenticator>) -> Self {
         let mut s = Self {
+            metrics: ServerMetrics::default(),
+            applied_ops: Vec::new(),
             physics: BoxWorld::from_world(&world),
             doors: DoorRegistry::new(),
             door_net: BTreeMap::new(),
@@ -175,6 +191,15 @@ impl GameServer {
 
     pub fn doors(&self) -> &DoorRegistry {
         &self.doors
+    }
+
+    pub fn metrics(&self) -> ServerMetrics {
+        self.metrics
+    }
+
+    /// Операции, применённые к миру с прошлого вызова (для журнала сохранений).
+    pub fn take_applied_ops(&mut self) -> Vec<WorldOp> {
+        std::mem::take(&mut self.applied_ops)
     }
 
     pub fn tick_number(&self) -> u32 {
@@ -266,6 +291,25 @@ impl GameServer {
     // ---- входящие пакеты ----------------------------------------------------
 
     pub fn on_packet(&mut self, conn: ConnId, packet: &[u8]) -> Vec<Out> {
+        self.metrics.packets_in += 1;
+        let out = self.handle_packet(conn, packet);
+        self.metrics.messages_out += out.len() as u64;
+        self.metrics.rejected_packets += out
+            .iter()
+            .filter(|o| {
+                matches!(
+                    o,
+                    Out::Send {
+                        msg: ServerMessage::Reject { .. },
+                        ..
+                    }
+                )
+            })
+            .count() as u64;
+        out
+    }
+
+    fn handle_packet(&mut self, conn: ConnId, packet: &[u8]) -> Vec<Out> {
         let mut out = Vec::new();
         // Лимит частоты применяется ко всем соединениям, включая ещё не вошедшие.
         if !self.take_token(conn) {
@@ -500,6 +544,7 @@ impl GameServer {
         };
         match self.doors.interact(&self.world, &req) {
             Ok(event) => {
+                self.metrics.door_toggles += 1;
                 let open = matches!(event, DoorEvent::Opened(_));
                 let doors = &self.doors;
                 self.physics.sync_doors(&self.world, |id| doors.is_open(id));
@@ -553,6 +598,8 @@ impl GameServer {
         }
         match self.world.apply_checked(command, Revision(base_revision)) {
             Ok(op) => {
+                self.metrics.edits_applied += 1;
+                self.applied_ops.push(op.clone());
                 self.after_world_change();
                 self.broadcast(out, ServerMessage::WorldOp(op));
                 let new_doors: Vec<(ObjectId, NetworkEntityId)> =
@@ -587,6 +634,7 @@ impl GameServer {
     /// Серверная правка мира без проверки прав (разрушение, скрипты, игровые модули).
     pub fn apply_world_command(&mut self, command: WorldCommand) -> Result<Vec<Out>, WorldError> {
         let op = self.world.apply(command)?;
+        self.applied_ops.push(op.clone());
         self.after_world_change();
         let mut out = Vec::new();
         self.broadcast(&mut out, ServerMessage::WorldOp(op));
@@ -601,6 +649,7 @@ impl GameServer {
         for cmd in result.commands {
             // Модуль не имеет прямого доступа к миру: его команды проходят обычную валидацию.
             if let Ok(op) = self.world.apply(cmd) {
+                self.applied_ops.push(op.clone());
                 self.after_world_change();
                 self.broadcast(out, ServerMessage::WorldOp(op));
             }
@@ -618,6 +667,7 @@ impl GameServer {
 
     pub fn tick(&mut self) -> Vec<Out> {
         self.tick += 1;
+        self.metrics.ticks += 1;
         let mut out = Vec::new();
         let dt = 1.0 / f32::from(self.cfg.tick_hz);
 
@@ -652,6 +702,7 @@ impl GameServer {
             apply_input(&self.physics, &mut p.state, &shape, &cmd, dt);
             p.last_seq = cmd.seq;
             p.yaw = cmd.yaw;
+            self.metrics.inputs_applied += 1;
             out.push(Out::Send {
                 to: conn,
                 msg: ServerMessage::InputAck {
@@ -665,6 +716,7 @@ impl GameServer {
         }
 
         self.replicate_entities(&mut out);
+        self.metrics.messages_out += out.len() as u64;
         out
     }
 

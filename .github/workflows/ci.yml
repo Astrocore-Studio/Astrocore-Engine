@@ -36,3 +36,24 @@ jobs:
         run: |
           cargo build -p astrocore-server
           ./target/debug/astrocore-server --data-dir "$RUNNER_TEMP/astrocore-smoke" --ticks 20
+          cargo build -p astrocore-tools
+          ./target/debug/astrocore-tools demo-project "$RUNNER_TEMP/demo.acproj"
+          ./target/debug/astrocore-tools validate "$RUNNER_TEMP/demo.acproj"
+          ./target/debug/astrocore-tools compile "$RUNNER_TEMP/demo.acproj" --out "$RUNNER_TEMP/pkg" --game ci
+          ./target/debug/astrocore-tools verify "$RUNNER_TEMP/pkg" --game ci
+
+  render-smoke:
+    name: рендер клиента на программном Vulkan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Системные пакеты
+        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0 libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: Скриншот демо-сцены
+        run: ./scripts/render-smoke.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: render-smoke
+          path: target/render-smoke.png

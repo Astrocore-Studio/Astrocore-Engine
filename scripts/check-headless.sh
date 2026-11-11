@@ -13,7 +13,7 @@ deps() { cargo tree -p "$1" -e normal --prefix none --no-dedupe 2>/dev/null | aw
 
 # 1. Сервер и bevy-профиль без графики/окон/звука.
 forbidden_runtime='^(wgpu|winit|bevy_render|bevy_window|bevy_winit|bevy_audio|bevy_pbr|bevy_core_pipeline|bevy_sprite|bevy_ui|bevy_gizmos|egui|bevy_egui|cpal|rodio)(-[a-z0-9_]+)?$'
-for pkg in astrocore-server astrocore-bevy; do
+for pkg in astrocore-server astrocore-bevy astrocore-tools astrocore-editor astrocore-network; do
   bad=$(deps "$pkg" | grep -E "$forbidden_runtime" || true)
   if [[ -n "$bad" ]]; then
     echo "ОШИБКА: $pkg тянет графические/оконные зависимости:"; echo "$bad"; fail=1
@@ -26,7 +26,7 @@ done
 pure=(astrocore-math astrocore-core astrocore-world astrocore-geometry astrocore-spatial
       astrocore-navigation astrocore-sprites astrocore-persistence astrocore-protocol
       astrocore-prefabs astrocore-runtime astrocore-assets astrocore-world-compiler
-      astrocore-physics astrocore-network astrocore-editor)
+      astrocore-physics astrocore-network astrocore-editor astrocore-terrain astrocore-tools)
 for pkg in "${pure[@]}"; do
   if deps "$pkg" | grep -qE '^bevy(_[a-z0-9_]+)?$'; then
     echo "ОШИБКА: $pkg зависит от Bevy"; fail=1
