@@ -23,6 +23,7 @@ use bevy::window::WindowResolution;
 const USAGE: &str = "\
 astrocore-client — клиент Astrocore
 
+  astrocore-client ... [--interact-command вид]  клавиша E: игровая команда с ближайшим объектом
   astrocore-client ... [--render-manifest файл.json]  текстуры и спрайты предметов
   astrocore-client --demo [--ortho] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
@@ -42,6 +43,7 @@ struct Args {
     render_manifest: Option<PathBuf>,
     camera: Option<(f32, f32, f32)>,
     debug_doors_open: bool,
+    interact_command: Option<String>,
     build: String,
     world_id: String,
     screenshot: Option<PathBuf>,
@@ -63,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
         render_manifest: None,
         camera: None,
         debug_doors_open: false,
+        interact_command: None,
         build: "client".into(),
         world_id: "world".into(),
         screenshot: None,
@@ -108,6 +111,7 @@ fn parse_args() -> Result<Args, String> {
                 };
                 a.camera = Some((yaw, pitch, distance));
             }
+            "--interact-command" => a.interact_command = Some(value("--interact-command")?),
             "--debug-doors-open" => a.debug_doors_open = true,
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
             "--build" => a.build = value("--build")?,
@@ -315,7 +319,14 @@ fn main() {
         })
         .add_systems(
             Update,
-            (net_poll, sync_door_states, sync_remote_players, door_key).chain(),
+            (
+                net_poll,
+                sync_door_states,
+                sync_remote_players,
+                door_key,
+                interact_key,
+            )
+                .chain(),
         )
         .add_systems(FixedUpdate, send_input);
     } else {
@@ -600,6 +611,60 @@ fn sync_door_states(
         {
             states.0.insert(element, open || force_open);
         }
+    }
+}
+
+/// E: игровая команда взаимодействия с ближайшей целью. Вид команды задаёт игра
+/// (`--interact-command`), данные — идентификатор объекта мира (16 байт, big-endian): предмет
+/// на земле (авторский объект) или дверь (структурный элемент).
+fn interact_key(keys: Res<ButtonInput<KeyCode>>, args: Res<Args>, mut net: NonSendMut<Net>) {
+    let Some(kind) = args.interact_command.as_deref() else {
+        return;
+    };
+    if !keys.just_pressed(KeyCode::KeyE) {
+        return;
+    }
+    let net = &mut *net;
+    let Some(world) = net.core.world() else {
+        return;
+    };
+    let me = net.core.position();
+    let chest = MVec3::new(me.x, me.y + 1.0, me.z);
+    let mut best: Option<(f32, astrocore_core::ObjectId)> = None;
+    let mut consider = |id: astrocore_core::ObjectId, at: MVec3| {
+        let d = at.distance(chest);
+        if d <= 3.0 && best.is_none_or(|(b, _)| d < b) {
+            best = Some((d, id));
+        }
+    };
+    for o in world.authored() {
+        if matches!(o.kind, astrocore_world::AuthoredKind::Placement { .. }) {
+            consider(o.id, (o.min() + o.max()) * 0.5);
+        }
+    }
+    let step = world.config().grid_step_m;
+    for door in net.core.door_ids() {
+        let Some(id) = net.core.door_element(door) else {
+            continue;
+        };
+        let Some(e) = world.element(id) else { continue };
+        let (Some(floor), astrocore_world::Placement::Edge(edge)) =
+            (world.floor(e.floor), e.placement)
+        else {
+            continue;
+        };
+        let (a, b) = edge.endpoints(step, floor.base_y);
+        consider(
+            id,
+            MVec3::new((a.x + b.x) * 0.5, floor.base_y + 1.0, (a.z + b.z) * 0.5),
+        );
+    }
+    if let Some((_, id)) = best
+        && let Some(packet) = net
+            .core
+            .command_packet(kind, id.as_uuid().as_u128().to_be_bytes().to_vec())
+    {
+        net.transport.send(true, &packet);
     }
 }
 
