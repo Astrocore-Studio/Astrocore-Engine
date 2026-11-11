@@ -18,6 +18,8 @@ astrocore-protocol.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+astrocore-physics.workspace = true
+astrocore-network.workspace = true
 
 [lints]
 workspace = true

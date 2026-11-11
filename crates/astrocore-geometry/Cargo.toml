@@ -10,6 +10,8 @@ astrocore-core.workspace = true
 astrocore-math.workspace = true
 astrocore-world.workspace = true
 serde.workspace = true
+gltf.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

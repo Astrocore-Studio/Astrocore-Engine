@@ -1149,3 +1149,79 @@ fn playtest_runs_the_real_server_on_a_copy_of_the_map() {
         .is_none()
     );
 }
+
+#[test]
+fn copying_freeform_objects_transforms_position_and_yaw() {
+    use astrocore_world::FreePlacement;
+    let mut s = session(1);
+    let mut ids = SequentialIds(1000);
+    let statue = WorldCommand::PlaceElement(astrocore_world::StructureElement {
+        id: ObjectId::from_u128(1),
+        kind: StructureKind::Freeform,
+        placement: Placement::Free(FreePlacement::from_position(
+            [3.25, 0.0, 1.5],
+            1.0,
+            0.0,
+            [0.5, 1.0, 0.5],
+        )),
+        floor: FloorId(0),
+        material: PrototypeId::new("t:statue").unwrap(),
+        thickness: 0.1,
+    });
+    s.execute("статуя", vec![statue]).unwrap();
+    let sel: BTreeSet<ObjectId> = [ObjectId::from_u128(1)].into();
+    // Четверть оборота по часовой + сдвиг: взгляд «на север» (yaw 0) становится взглядом «на восток» (270°).
+    let t = GridTransform {
+        mirror_x: false,
+        quarter_turns: 1,
+        dx: 10,
+        dz: 0,
+    };
+    s.execute(
+        "копия",
+        tools::copy_selection(s.world(), &mut ids, &sel, t, 0).unwrap(),
+    )
+    .unwrap();
+    let copy = s
+        .world()
+        .elements()
+        .find(|e| e.id != ObjectId::from_u128(1))
+        .unwrap();
+    let Placement::Free(f) = copy.placement else {
+        panic!()
+    };
+    let pos = f.position(1.0);
+    // (3.25, 1.5) → вращение (−z, x) = (−1.5, 3.25) → +dx = (8.5, 3.25).
+    assert!(
+        (pos[0] - 8.5).abs() < 2e-3 && (pos[2] - 3.25).abs() < 2e-3,
+        "{pos:?}"
+    );
+    assert_eq!(f.yaw_cdeg, 27000);
+    assert_eq!(
+        f.half_mm,
+        [500, 1000, 500],
+        "габариты в осях модели не меняются"
+    );
+    // Отражение: положение зеркалится, поворот меняет знак.
+    let mirror = GridTransform {
+        mirror_x: true,
+        quarter_turns: 0,
+        dx: 0,
+        dz: 20,
+    };
+    s.execute(
+        "зеркало",
+        tools::copy_selection(s.world(), &mut ids, &sel, mirror, 0).unwrap(),
+    )
+    .unwrap();
+    let m = s
+        .world()
+        .elements()
+        .filter(|e| matches!(e.placement, Placement::Free(_)))
+        .last()
+        .unwrap();
+    let Placement::Free(mf) = m.placement else {
+        panic!()
+    };
+    assert!((mf.position(1.0)[0] + 3.25).abs() < 2e-3, "x → −x");
+}

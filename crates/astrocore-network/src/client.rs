@@ -83,6 +83,8 @@ pub struct ClientCore {
     pending: VecDeque<InputCmd>,
     history: VecDeque<(u32, CharacterState)>,
     remotes: BTreeMap<NetworkEntityId, VecDeque<(u32, Vec3, f32)>>,
+    render_dirty: Vec<astrocore_world::DirtyRegion>,
+    snapshot_serial: u32,
 }
 
 impl ClientCore {
@@ -105,6 +107,8 @@ impl ClientCore {
             pending: VecDeque::new(),
             history: VecDeque::new(),
             remotes: BTreeMap::new(),
+            render_dirty: Vec::new(),
+            snapshot_serial: 0,
         }
     }
 
@@ -183,6 +187,16 @@ impl ClientCore {
         self.state.pos
     }
 
+    /// Регионы мира, изменившиеся с прошлого вызова (для пересборки мешей рендером).
+    pub fn take_render_dirty(&mut self) -> Vec<astrocore_world::DirtyRegion> {
+        std::mem::take(&mut self.render_dirty)
+    }
+
+    /// Растёт при каждом применении полного снимка: рендер обязан пересобрать всё.
+    pub fn snapshot_serial(&self) -> u32 {
+        self.snapshot_serial
+    }
+
     pub fn is_ready(&self) -> bool {
         self.you.is_some() && self.replica.is_some()
     }
@@ -195,6 +209,20 @@ impl ClientCore {
         self.doors.get(&net).map(|d| d.1)
     }
 
+    /// Проём мира, соответствующий двери с данным сетевым идентификатором.
+    pub fn door_element(&self, net: NetworkEntityId) -> Option<ObjectId> {
+        self.doors.get(&net).map(|d| d.0)
+    }
+
+    /// Серверный тик последнего полученного состояния любой удалённой сущности.
+    pub fn latest_remote_tick(&self) -> Option<u32> {
+        self.remotes
+            .values()
+            .filter_map(|h| h.back().map(|s| s.0))
+            .max()
+    }
+
+    /// Последний направленный угол удалённой сущности нужен рендеру для выбора кадра спрайта.
     /// Сетевые идентификаторы известных дверей.
     pub fn door_ids(&self) -> Vec<NetworkEntityId> {
         self.doors.keys().copied().collect()
@@ -243,6 +271,8 @@ impl ClientCore {
                     let world = World::from_state(state)?;
                     let revision = world.revision().0;
                     self.replica = Some(world);
+                    self.snapshot_serial += 1;
+                    self.render_dirty.clear();
                     self.rebuild_physics();
                     events.push(ClientEvent::SnapshotApplied { revision });
                     let buffered = std::mem::take(&mut self.buffered_ops);
@@ -300,6 +330,7 @@ impl ClientCore {
             ReplicaOutcome::Applied => {
                 let dirty = world.take_dirty();
                 self.physics.rebuild_regions(world, &dirty);
+                self.render_dirty.extend(dirty);
                 self.sync_physics_doors();
                 events.push(ClientEvent::WorldChanged { seq: op.seq });
             }

@@ -593,3 +593,136 @@ fn empty_floors_can_be_removed_and_nonempty_cannot() {
         Err(WorldError::FloorNotEmpty(_))
     ));
 }
+
+mod freeform {
+    use astrocore_math::glam::Vec3;
+
+    use super::*;
+
+    fn statue(id: u128, pos: [f32; 3], yaw: f32) -> StructureElement {
+        StructureElement {
+            id: ObjectId::from_u128(id),
+            kind: StructureKind::Freeform,
+            placement: Placement::Free(FreePlacement::from_position(
+                pos,
+                1.0,
+                yaw,
+                [0.5, 1.0, 0.25],
+            )),
+            floor: FloorId(0),
+            material: PrototypeId::new("test:statue").unwrap(),
+            thickness: 0.1,
+        }
+    }
+
+    #[test]
+    fn position_roundtrips_to_a_millimetre_and_negative_coordinates_work() {
+        for pos in [[3.25, 0.5, 7.75], [-0.4, 1.0, -12.3], [100.001, 2.0, 0.0]] {
+            let f = FreePlacement::from_position(pos, 1.0, 45.0, [0.5, 1.0, 0.5]);
+            let back = f.position(1.0);
+            for k in 0..3 {
+                assert!((back[k] - pos[k]).abs() < 0.0011, "{pos:?} → {back:?}");
+            }
+            assert!(
+                f.x_mm < 1000 && f.z_mm < 1000,
+                "смещение внутри якорной ячейки"
+            );
+        }
+        let f = FreePlacement::from_position([-0.4, 0.0, -0.4], 1.0, 0.0, [0.1; 3]);
+        assert_eq!(f.cell, GridCell::new(-1, -1));
+    }
+
+    #[test]
+    fn aabb_follows_yaw() {
+        let at = |yaw| {
+            FreePlacement::from_position([5.0, 1.0, 5.0], 1.0, yaw, [1.0, 0.5, 0.25]).aabb(1.0)
+        };
+        let (min, max) = at(0.0);
+        assert!((max[0] - min[0] - 2.0).abs() < 1e-3 && (max[2] - min[2] - 0.5).abs() < 1e-3);
+        let (min, max) = at(90.0);
+        assert!(
+            (max[0] - min[0] - 0.5).abs() < 1e-3 && (max[2] - min[2] - 2.0).abs() < 1e-3,
+            "повёрнутый ящик «лёг» по другой оси"
+        );
+        assert!(
+            (max[1] - min[1] - 1.0).abs() < 1e-5 && (min[1] - 1.0).abs() < 1e-5,
+            "высота: от ног вверх"
+        );
+    }
+
+    #[test]
+    fn freeforms_do_not_occupy_slots_and_follow_the_usual_lifecycle() {
+        let mut w = world();
+        w.take_dirty();
+        w.apply(WorldCommand::PlaceElement(statue(1, [3.5, 0.0, 3.5], 0.0)))
+            .unwrap();
+        w.apply(WorldCommand::PlaceElement(statue(2, [3.5, 0.0, 3.5], 30.0)))
+            .unwrap(); // то же место — можно
+        assert_eq!(w.element_count(), 2);
+        let dirty = w.take_dirty();
+        assert!(
+            dirty.iter().all(|d| d.flags.contains(DirtyFlags::GEOMETRY)
+                && d.flags.contains(DirtyFlags::COLLISION))
+        );
+        assert!(
+            !dirty.iter().any(|d| d.flags.contains(DirtyFlags::TOPOLOGY)),
+            "модель не меняет топологию"
+        );
+        assert_eq!(
+            w.elements_in_chunk(ChunkCoord::new(0, 0), FloorId(0))
+                .count(),
+            2
+        );
+        let restored = World::from_state(w.to_state()).unwrap();
+        assert_eq!(restored.content_hash(), w.content_hash());
+        w.apply(WorldCommand::RemoveElement {
+            id: ObjectId::from_u128(1),
+        })
+        .unwrap();
+        assert_eq!(w.element_count(), 1);
+    }
+
+    #[test]
+    fn invalid_freeforms_are_rejected() {
+        let mut w = world();
+        let mut e = statue(1, [3.5, 0.0, 3.5], 0.0);
+        if let Placement::Free(f) = &mut e.placement {
+            f.x_mm = 1500; // за пределами якорной ячейки
+        }
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(e)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        let mut e = statue(2, [3.5, 0.0, 3.5], 0.0);
+        if let Placement::Free(f) = &mut e.placement {
+            f.half_mm = [0, 10, 10];
+        }
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(e)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        let mut e = statue(3, [3.5, 0.0, 3.5], 0.0);
+        if let Placement::Free(f) = &mut e.placement {
+            f.half_mm = [200_000, 10, 10];
+        }
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(e)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        // Свободная модель на ребре или стена со свободным размещением — неверное сочетание.
+        let mut e = statue(4, [3.5, 0.0, 3.5], 0.0);
+        e.placement = Placement::Edge(GridEdge::along_x(0, 0));
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(e)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        let mut e = statue(5, [3.5, 0.0, 3.5], 0.0);
+        e.kind = StructureKind::Wall;
+        assert!(matches!(
+            w.apply(WorldCommand::PlaceElement(e)),
+            Err(WorldError::InvalidPlacement(_))
+        ));
+        assert_eq!(w.element_count(), 0);
+        let _ = Vec3::ZERO;
+    }
+}

@@ -24,7 +24,7 @@ use astrocore_core::{ObjectId, PrototypeId, Revision};
 use astrocore_geometry::{MeshData, build_chunk_meshes, collision_boxes};
 use astrocore_math::{Aabb, ChunkCoord, GridCell};
 use astrocore_spatial::{Portal, RoomKind, Topology};
-use astrocore_world::{FloorId, VerticalLink, World, WorldState};
+use astrocore_world::{FloorId, Placement, StructureKind, VerticalLink, World, WorldState};
 use serde::{Deserialize, Serialize};
 
 pub const COMPILER_VERSION: u32 = 1;
@@ -40,11 +40,23 @@ pub enum CompileError {
 }
 
 /// Меши чанка на этаже, по материалам.
+/// Свободно размещённая модель: клиент загружает её по идентификатору.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreeformInstance {
+    pub id: ObjectId,
+    pub model: PrototypeId,
+    pub position: [f32; 3],
+    pub yaw_rad: f32,
+    /// Полуразмеры габаритного ящика (X, высота, Z), метры.
+    pub half: [f32; 3],
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientChunk {
     pub chunk: ChunkCoord,
     pub floor: FloorId,
     pub meshes: Vec<(PrototypeId, MeshData)>,
+    pub freeforms: Vec<FreeformInstance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,6 +65,8 @@ pub struct ClientPayload {
     pub chunks: Vec<ClientChunk>,
     /// Материалы, на которые ссылаются меши (для загрузки текстур клиентом).
     pub materials: Vec<PrototypeId>,
+    /// Модели, на которые ссылаются свободные объекты (для загрузки GLB клиентом).
+    pub models: Vec<PrototypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,6 +157,7 @@ pub fn compile_incremental(
     let mut client_chunks = Vec::new();
     let mut collision = Vec::new();
     let mut materials: BTreeSet<PrototypeId> = BTreeSet::new();
+    let mut models: BTreeSet<PrototypeId> = BTreeSet::new();
     let mut live = BTreeSet::new();
 
     let floor_ids: Vec<FloorId> = world.floors().map(|f| f.id).collect();
@@ -178,10 +193,27 @@ pub fn compile_incremental(
                                 .map(|b| (e.id, b)),
                         );
                     }
+                    let step = world.config().grid_step_m;
+                    let freeforms: Vec<FreeformInstance> = world
+                        .elements_in_chunk(chunk, floor)
+                        .filter_map(|e| match (e.kind, e.placement) {
+                            (StructureKind::Freeform, Placement::Free(f)) => {
+                                Some(FreeformInstance {
+                                    id: e.id,
+                                    model: e.material.clone(),
+                                    position: f.position(step),
+                                    yaw_rad: f.yaw_rad(),
+                                    half: f.half_mm.map(|h| h as f32 / 1000.0),
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect();
                     let c = ClientChunk {
                         chunk,
                         floor,
                         meshes,
+                        freeforms,
                     };
                     let k = CollisionChunk {
                         chunk,
@@ -195,7 +227,8 @@ pub fn compile_incremental(
                 }
             };
             materials.extend(entry.0.meshes.iter().map(|(m, _)| m.clone()));
-            if !entry.0.meshes.is_empty() {
+            models.extend(entry.0.freeforms.iter().map(|f| f.model.clone()));
+            if !entry.0.meshes.is_empty() || !entry.0.freeforms.is_empty() {
                 client_chunks.push(entry.0);
             }
             if !entry.1.boxes.is_empty() {
@@ -238,6 +271,7 @@ pub fn compile_incremental(
         world_hash,
         chunks: client_chunks,
         materials: materials.into_iter().collect(),
+        models: models.into_iter().collect(),
     };
     let server = ServerPayload {
         world: world.to_state(),

@@ -29,9 +29,12 @@ fn closed_door(s: &Slice) -> PathOptions {
 #[test]
 fn building_has_expected_structure_and_straddles_chunks() {
     let s = Slice::build().unwrap();
-    // На этаж: 24 стены (одна заменена дверью) + 36 перекрытий; + 3 определения этажей.
-    assert_eq!(s.world.element_count(), 3 * (24 + 36));
-    assert_eq!(s.world.revision().0, 3 + 3 * (24 + 36) + 2);
+    // На этаж: 24 стены (одна заменена дверью) + 36 перекрытий; площадка у входа (24 клетки);
+    // две лестницы; 8 клеток перекрытий над маршами убраны; одна свободная модель (статуя).
+    assert_eq!(s.world.element_count(), 3 * (24 + 36) + 24 + 2 - 8 + 1);
+    assert_eq!(s.world.element_count(), 199);
+    // Ревизии: 3 этажа + все размещения + замена стены дверью + площадка + пробивки + лестницы + статуя.
+    assert_eq!(s.world.revision().0, 220);
     // Здание пересекает границы чанков и по X (x = 32), и по Z (северная стена лежит на z = 0).
     assert_eq!(
         s.world.populated_chunks(FloorId(0)),
@@ -60,9 +63,15 @@ fn meshes_cover_each_floor_in_its_own_height_range() {
                 tris += mesh.triangle_count();
             }
         }
-        // 23 стены + 36 перекрытий, по 12 треугольников; дверь геометрии не даёт (ровно на 1-м этаже).
-        let walls = if f == 0 { 23 } else { 24 };
-        assert_eq!(tris, (walls + 36) * 12, "этаж {f}");
+        // По 12 треугольников на коробку. Дверь геометрии не даёт; статуя — свободная модель,
+        // её рисует клиент по идентификатору, в структурные меши она не входит.
+        let stair_steps = astrocore_geometry::stair_step_count(FLOOR_HEIGHT_M);
+        let boxes = match f {
+            0 => 23 + 36 + 24 + stair_steps, // стены, пол, площадка, лестница на 2-й этаж
+            1 => 24 + 32 + stair_steps,      // пол без проёма, лестница на 3-й этаж
+            _ => 24 + 32,
+        };
+        assert_eq!(tris, boxes * 12, "этаж {f}");
     }
 }
 
@@ -319,4 +328,132 @@ fn invalid_edits_do_not_corrupt_the_world() {
         .is_err()
     );
     assert_eq!(s.world.content_hash(), before);
+}
+
+/// Пройти `seconds` секунд в направлении `dir` (метры в секунду — скорость ходьбы клиента).
+fn walk(
+    bw: &astrocore_physics::BoxWorld,
+    st: &mut astrocore_physics::CharacterState,
+    dir: Vec3,
+    seconds: f32,
+) {
+    let shape = astrocore_physics::CharacterShape::default();
+    let dt = 1.0 / 20.0;
+    for _ in 0..(seconds / dt).round() as usize {
+        astrocore_physics::move_character(bw, st, &shape, dir * 4.0 * dt, dt);
+    }
+}
+
+#[test]
+fn a_character_walks_up_both_staircases_to_the_top_floor() {
+    // AC-VS1 п. 2: непрерывные лестницы и корректные коллизии.
+    let s = Slice::build().unwrap();
+    let bw = astrocore_physics::BoxWorld::from_world(&s.world);
+    let mut c = astrocore_physics::CharacterState::at(Vec3::new(30.2, 0.4, 3.5));
+    walk(&bw, &mut c, Vec3::X, 1.5); // первая лестница: 1 → 2 этаж
+    assert!((c.pos.y - 4.2).abs() < 0.06, "на втором этаже: {:?}", c.pos);
+    assert!(c.pos.x > 33.9, "{:?}", c.pos);
+    // Вторая лестница стоит в ряду z = 4 и растёт к +X, поэтому подойти к её началу надо
+    // в обход высокого конца: по ряду z = 5 на запад, затем на север, в начало марша.
+    walk(&bw, &mut c, Vec3::Z, 0.5);
+    walk(&bw, &mut c, Vec3::NEG_X, 1.3);
+    walk(&bw, &mut c, Vec3::NEG_Z, 0.25);
+    walk(&bw, &mut c, Vec3::X, 1.6); // вторая лестница: 2 → 3 этаж
+    assert!(
+        (c.pos.y - 8.2).abs() < 0.06,
+        "на третьем этаже: {:?}",
+        c.pos
+    );
+    assert!(c.grounded);
+    // Стены на третьем этаже не пропускают наружу.
+    walk(&bw, &mut c, Vec3::X, 2.0);
+    assert!(c.pos.x < MAX_X as f32, "{:?}", c.pos);
+}
+
+#[test]
+fn two_clients_use_the_door_and_see_the_breach_through_the_real_server_core() {
+    // AC-VS1 п. 3–5: два клиента, серверная дверь, разрушение стены доходит до обоих.
+    use astrocore_network::client::ClientEvent;
+    use astrocore_network::server::ServerNetConfig;
+    use astrocore_network::testkit::Harness;
+
+    let s = Slice::build().unwrap();
+    let cfg = ServerNetConfig {
+        spawn: Vec3::new(31.5, 1.0, -1.5),
+        ..ServerNetConfig::default()
+    };
+    let mut h = Harness::with_world(s.world.clone(), cfg);
+    let a = h.join("a");
+    let b = h.join("b");
+    assert_eq!(
+        h.client(a).world().unwrap().content_hash(),
+        h.client(b).world().unwrap().content_hash()
+    );
+    let door = h.client(a).door_ids()[0];
+    // Закрытая дверь не пускает.
+    for _ in 0..30 {
+        h.input(a, 0, -1, 0.0); // «назад» при yaw 0 — это +Z, к двери
+    }
+    assert!(
+        h.server.player_position(a).unwrap().z < 0.0,
+        "закрытая дверь держит игрока"
+    );
+    // Рядом с дверью — открываем; оба клиента видят.
+    h.send(a, h.client(a).interact_packet(door));
+    assert!(h.server.doors().is_open(s.door));
+    assert_eq!(h.client(b).door_open(door), Some(true));
+    for _ in 0..30 {
+        h.input(a, 0, -1, 0.0);
+    }
+    assert!(
+        h.server.player_position(a).unwrap().z > 0.5,
+        "вошёл в здание"
+    );
+    // Разрушение стены на сервере: оба клиента получают операцию, коллизия обновляется.
+    h.take_events(a);
+    h.take_events(b);
+    let id = h
+        .server
+        .world()
+        .edge_element(FloorId(0), BREACH_EDGE)
+        .unwrap()
+        .id;
+    let outs = h
+        .server
+        .apply_world_command(astrocore_world::WorldCommand::RemoveElement { id })
+        .unwrap();
+    h.deliver(outs);
+    for who in [a, b] {
+        assert!(
+            h.client(who)
+                .world()
+                .unwrap()
+                .edge_element(FloorId(0), BREACH_EDGE)
+                .is_none()
+        );
+        assert!(
+            h.take_events(who)
+                .iter()
+                .any(|e| matches!(e, ClientEvent::WorldChanged { .. }))
+        );
+    }
+    assert_eq!(
+        h.client(a).world().unwrap().content_hash(),
+        h.server.world().content_hash()
+    );
+    // Через пролом (x = 35, z ≈ 2) теперь можно выйти из здания: идём на +X вдоль z = 2.5.
+    for _ in 0..50 {
+        h.input(a, 0, 1, std::f32::consts::PI); // +Z, к ряду пролома
+        if h.server.player_position(a).unwrap().z >= 2.5 {
+            break;
+        }
+    }
+    for _ in 0..80 {
+        h.input(a, 1, 0, 0.0); // вправо = +X
+    }
+    assert!(
+        h.server.player_position(a).unwrap().x > MAX_X as f32 + 0.3,
+        "вышел через пролом: {:?}",
+        h.server.player_position(a)
+    );
 }

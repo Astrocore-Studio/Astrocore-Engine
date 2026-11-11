@@ -381,3 +381,50 @@ fn damaged_and_hostile_packages_are_rejected_without_panic() {
         let _ = decode_package::<ServerPayload>(PackageKind::Server, &p);
     }
 }
+
+#[test]
+fn freeform_models_go_to_the_client_as_instances_and_to_the_server_as_collision() {
+    use astrocore_world::FreePlacement;
+    let mut w = build_world();
+    w.apply(WorldCommand::PlaceElement(StructureElement {
+        id: ObjectId::from_u128(777),
+        kind: StructureKind::Freeform,
+        placement: Placement::Free(FreePlacement::from_position(
+            [32.5, 0.2, 2.5],
+            1.0,
+            90.0,
+            [0.5, 1.0, 0.25],
+        )),
+        floor: FloorId(0),
+        material: pid("t:statue"),
+        thickness: 0.1,
+    }))
+    .unwrap();
+    let m = manifest(true);
+    let map = compile(&CompileInput {
+        require_materials_in_manifest: false,
+        ..input(&w, &m)
+    })
+    .unwrap();
+    let (client, _): (ClientPayload, _) = decode_package(PackageKind::Client, &map.client).unwrap();
+    let (server, _): (ServerPayload, _) = decode_package(PackageKind::Server, &map.server).unwrap();
+    assert_eq!(client.models, vec![pid("t:statue")]);
+    let inst: Vec<_> = client.chunks.iter().flat_map(|c| &c.freeforms).collect();
+    assert_eq!(inst.len(), 1);
+    assert!((inst[0].yaw_rad - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    assert!((inst[0].position[0] - 32.5).abs() < 2e-3);
+    let boxes: Vec<_> = server
+        .collision
+        .iter()
+        .flat_map(|c| &c.boxes)
+        .filter(|(id, _)| id.as_uuid() == ObjectId::from_u128(777).as_uuid())
+        .collect();
+    assert_eq!(boxes.len(), 1, "ровно один габаритный ящик");
+    let b = boxes[0].1;
+    assert!(
+        (b.size().z - 2.0).abs() < 1e-2 && (b.size().x - 0.5).abs() < 1e-2,
+        "повёрнуто на 90°: {b:?}"
+    );
+    // Статуя не попала в структурные меши (их рисует клиент по модели).
+    assert!(!client.materials.contains(&pid("t:statue")));
+}

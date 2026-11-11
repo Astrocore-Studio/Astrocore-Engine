@@ -408,3 +408,38 @@ fn ray_aabb_edge_cases() {
     // Луч от коробки — промах.
     assert!(ray_aabb(Vec3::new(2.0, 0.5, 0.5), Vec3::X, &b).is_none());
 }
+
+#[test]
+fn freeform_objects_block_characters_with_their_bounding_box() {
+    use astrocore_world::FreePlacement;
+    let mut w = arena();
+    w.apply(WorldCommand::PlaceElement(StructureElement {
+        id: ObjectId::from_u128(4242),
+        kind: StructureKind::Freeform,
+        placement: Placement::Free(FreePlacement::from_position(
+            [4.0, FLOOR_TOP, 2.5],
+            1.0,
+            0.0,
+            [0.4, 1.0, 0.4],
+        )),
+        floor: FloorId(0),
+        material: PrototypeId::new("t:statue").unwrap(),
+        thickness: 0.1,
+    }))
+    .unwrap();
+    let bw = BoxWorld::from_world(&w);
+    let shape = CharacterShape::default();
+    let mut s = CharacterState::at(Vec3::new(1.5, 0.3, 2.5));
+    walk(&bw, &mut s, &shape, Vec3::X, 2.0);
+    assert!(
+        s.pos.x < 4.0 - 0.4,
+        "статуя остановила игрока: x={}",
+        s.pos.x
+    );
+    assert_eq!(
+        bw.raycast(Vec3::new(1.0, 1.0, 2.5), Vec3::X, 10.0)
+            .unwrap()
+            .id,
+        ObjectId::from_u128(4242)
+    );
+}

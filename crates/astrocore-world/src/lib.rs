@@ -15,8 +15,8 @@ mod error;
 mod state;
 
 pub use element::{
-    FloorDef, FloorId, MAX_RUN_LENGTH, OpeningKind, Placement, Slot, SlotKey, StructureElement,
-    StructureKind,
+    FloorDef, FloorId, FreePlacement, MAX_FREE_HALF_MM, MAX_RUN_LENGTH, OpeningKind, Placement,
+    Slot, SlotKey, StructureElement, StructureKind,
 };
 pub use error::WorldError;
 pub use state::{WORLD_SCHEMA_VERSION, WorldState};

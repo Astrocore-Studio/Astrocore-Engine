@@ -294,6 +294,22 @@ impl GridTransform {
         }
     }
 
+    /// Преобразование непрерывной точки в плоскости X/Z (метры). Согласовано с [`GridTransform::vertex`].
+    pub fn point(self, (x, z): (f32, f32)) -> (f32, f32) {
+        let (mut x, mut z) = (if self.mirror_x { -x } else { x }, z);
+        for _ in 0..(self.quarter_turns % 4) {
+            (x, z) = (-z, x);
+        }
+        (x + self.dx as f32, z + self.dz as f32)
+    }
+
+    /// Поворот объекта (сотые доли градуса вокруг +Y, против часовой стрелки сверху)
+    /// после преобразования: отражение меняет знак, каждая четверть оборота «по часовой» вычитает 90°.
+    pub fn yaw_cdeg(self, yaw_cdeg: i32) -> i32 {
+        let y = if self.mirror_x { -yaw_cdeg } else { yaw_cdeg };
+        (y - 9000 * i32::from(self.quarter_turns % 4)).rem_euclid(36000)
+    }
+
     pub fn facing(self, f: Facing) -> Facing {
         let mut f = if self.mirror_x {
             match f {
@@ -509,6 +525,41 @@ mod tests {
         for i in 0..len {
             assert_eq!(s2.step(d2, i), t.cell(start.step(dir, i)), "i={i}");
         }
+    }
+
+    #[test]
+    fn continuous_points_and_yaw_follow_the_grid_transform() {
+        // Точка в середине ячейки преобразуется так же, как её ячейка.
+        let t = GridTransform {
+            mirror_x: true,
+            quarter_turns: 3,
+            dx: 4,
+            dz: -2,
+        };
+        for (cx, cz) in [(0, 0), (3, -2), (-5, 7)] {
+            let (px, pz) = t.point((cx as f32 + 0.5, cz as f32 + 0.5));
+            let cell = t.cell(GridCell::new(cx, cz));
+            assert_eq!(
+                (px.floor() as i32, pz.floor() as i32),
+                (cell.x, cell.z),
+                "({cx},{cz})"
+            );
+        }
+        // «Вперёд» (−Z, yaw 0) после четверти оборота по часовой — на восток, а это yaw −90° ≡ 270°.
+        let r = GridTransform::rotate(1);
+        assert_eq!(r.yaw_cdeg(0), 27000);
+        assert_eq!(Facing::North.as_vec3(), FORWARD);
+        assert_eq!(r.facing(Facing::North), Facing::East);
+        // Отражение переворачивает сторону поворота; 4 четверти — тождество.
+        assert_eq!(
+            GridTransform {
+                mirror_x: true,
+                ..GridTransform::IDENTITY
+            }
+            .yaw_cdeg(3000),
+            33000
+        );
+        assert_eq!(GridTransform::rotate(4).yaw_cdeg(1234), 1234);
     }
 
     #[test]

@@ -13,12 +13,14 @@ members = [
     "crates/astrocore-physics",
     "crates/astrocore-network",
     "crates/astrocore-editor",
+    "crates/astrocore-render",
     "crates/astrocore-assets",
     "crates/astrocore-world-compiler",
     "crates/astrocore-persistence",
     "crates/astrocore-protocol",
     "crates/astrocore-bevy",
     "apps/astrocore-server",
+    "apps/astrocore-client",
     "examples/vertical-slice",
 ]
 
@@ -41,6 +43,7 @@ astrocore-runtime = { path = "crates/astrocore-runtime" }
 astrocore-physics = { path = "crates/astrocore-physics" }
 astrocore-network = { path = "crates/astrocore-network" }
 astrocore-editor = { path = "crates/astrocore-editor" }
+astrocore-render = { path = "crates/astrocore-render" }
 astrocore-assets = { path = "crates/astrocore-assets" }
 astrocore-world-compiler = { path = "crates/astrocore-world-compiler" }
 astrocore-persistence = { path = "crates/astrocore-persistence" }
@@ -56,6 +59,7 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 thiserror = "2"
 postcard = { version = "1", features = ["use-std"] }
 crc32fast = "1"
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 tempfile = "3"
 sha2 = "0.10"
 

@@ -360,13 +360,24 @@ pub fn delete(
     }
 }
 
-fn transform_placement(p: Placement, t: GridTransform) -> Placement {
+fn transform_placement(p: Placement, t: GridTransform, step: f32) -> Placement {
     match p {
         Placement::Edge(e) => Placement::Edge(t.edge(e)),
         Placement::Cell(c) => Placement::Cell(t.cell(c)),
         Placement::Run { start, dir, length } => {
             let (start, dir) = t.run(start, dir);
             Placement::Run { start, dir, length }
+        }
+        Placement::Free(f) => {
+            let pos = f.position(step);
+            let (x, z) = t.point((pos[0] / step, pos[2] / step));
+            let moved = [x * step, pos[1], z * step];
+            let half = f.half_mm.map(|h| h as f32 / 1000.0);
+            // Полуразмеры задаются в осях модели, поэтому при повороте не меняются.
+            let mut out = astrocore_world::FreePlacement::from_position(moved, step, 0.0, half);
+            out.yaw_cdeg = t.yaw_cdeg(f.yaw_cdeg);
+            out.y_mm = f.y_mm;
+            Placement::Free(out)
         }
     }
 }
@@ -462,7 +473,7 @@ fn images_of(
         out.push(StructureElement {
             id: new_id(e),
             kind,
-            placement: transform_placement(e.placement, t),
+            placement: transform_placement(e.placement, t, world.config().grid_step_m),
             floor,
             ..e.clone()
         });

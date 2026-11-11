@@ -134,6 +134,8 @@ impl MeshData {
 }
 
 /// Меши одного чанка на одном этаже, сгруппированные по материалу (батчинг по материалам).
+pub mod glb;
+
 pub type ChunkMeshes = BTreeMap<PrototypeId, MeshData>;
 
 /// Габариты элемента в мировых координатах.
@@ -162,6 +164,10 @@ pub fn element_bounds(world: &World, floor: &FloorDef, e: &StructureElement) -> 
                 Vec3::new(min.x, floor.base_y, min.z),
                 Vec3::new(max.x, top.base_y, max.z),
             ))
+        }
+        (StructureKind::Freeform, Placement::Free(f)) => {
+            let (min, max) = f.aabb(step);
+            Some(Aabb::new(Vec3::from_array(min), Vec3::from_array(max)))
         }
         // Проём геометрии не порождает.
         _ => None,
@@ -360,6 +366,8 @@ pub fn build_chunk_meshes(world: &World, chunk: ChunkCoord, floor_id: FloorId) -
                     push_ramp(mesh, step, floor.base_y, top.base_y, start, dir, length);
                 }
             }
+            // Свободные модели рисует клиент по идентификатору модели; в структурные меши они не входят.
+            (StructureKind::Freeform, _) => {}
             _ => {
                 if let Some(b) = element_bounds(world, floor, e) {
                     out.entry(e.material.clone())

@@ -1,0 +1,19 @@
+[package]
+name = "astrocore-client"
+description = "Клиент Astrocore: окно, 3D-мир, направленные спрайты, подключение к серверу"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+astrocore-core.workspace = true
+astrocore-math.workspace = true
+astrocore-network.workspace = true
+astrocore-render.workspace = true
+astrocore-sprites.workspace = true
+astrocore-vertical-slice = { path = "../../examples/vertical-slice" }
+astrocore-world.workspace = true
+bevy = { workspace = true, features = ["3d_bevy_render", "default_app", "bevy_winit", "bevy_window", "x11", "png", "std", "multi_threaded"] }
+
+[lints]
+workspace = true
