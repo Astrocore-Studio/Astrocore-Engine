@@ -26,6 +26,7 @@ use astrocore_runtime::doors::{
 };
 use astrocore_runtime::modules::{HookEvent, ModuleHost};
 use astrocore_spatial::{Channel, Topology};
+use astrocore_terrain::{Terrain, TerrainEdit, TerrainOp};
 use astrocore_world::{FloorId, World, WorldCommand, WorldError, WorldOp};
 
 use crate::movement::{InputCmd, apply_input};
@@ -139,6 +140,8 @@ pub struct ServerMetrics {
 }
 
 pub struct GameServer {
+    terrain: Option<Terrain>,
+    applied_terrain_ops: Vec<TerrainOp>,
     metrics: ServerMetrics,
     applied_ops: Vec<WorldOp>,
     world: World,
@@ -160,6 +163,8 @@ pub struct GameServer {
 impl GameServer {
     pub fn new(world: World, cfg: ServerNetConfig, auth: Box<dyn Authenticator>) -> Self {
         let mut s = Self {
+            terrain: None,
+            applied_terrain_ops: Vec::new(),
             metrics: ServerMetrics::default(),
             applied_ops: Vec::new(),
             physics: BoxWorld::from_world(&world),
@@ -178,6 +183,33 @@ impl GameServer {
         };
         s.sync_doors();
         s
+    }
+
+    /// Рельеф мира: игроки стоят на земле, правки реплицируются.
+    pub fn with_terrain(mut self, terrain: Terrain) -> Self {
+        self.terrain = Some(terrain);
+        self
+    }
+
+    pub fn terrain(&self) -> Option<&Terrain> {
+        self.terrain.as_ref()
+    }
+
+    /// Операции над рельефом с прошлого вызова (для журнала сохранений).
+    pub fn take_applied_terrain_ops(&mut self) -> Vec<TerrainOp> {
+        std::mem::take(&mut self.applied_terrain_ops)
+    }
+
+    /// Серверная правка рельефа без проверки прав (скрипты, игровые модули).
+    pub fn apply_terrain_edit(&mut self, edit: &TerrainEdit) -> Result<Vec<Out>, String> {
+        let terrain = self.terrain.as_mut().ok_or("рельефа нет")?;
+        let op = terrain.apply(edit).map_err(|e| e.to_string())?;
+        self.applied_terrain_ops.push(op.clone());
+        let mut out = Vec::new();
+        if let Ok(data) = postcard::to_stdvec(&op.edit) {
+            self.broadcast(&mut out, ServerMessage::TerrainOp { seq: op.seq, data });
+        }
+        Ok(out)
     }
 
     pub fn with_modules(mut self, host: ModuleHost) -> Self {
@@ -379,6 +411,7 @@ impl GameServer {
                         command,
                     } => self.on_edit(conn, base_revision, command, &mut out),
                     ClientMessage::RequestSnapshot => self.send_snapshot(conn, &mut out),
+                    ClientMessage::EditTerrain { base_revision, data } => self.on_edit_terrain(conn, base_revision, &data, &mut out),
                 }
             }
         }
@@ -490,6 +523,12 @@ impl GameServer {
                 msg: reject(RejectReason::InvalidCommand, &e.to_string()),
             }),
         }
+        if let Some(t) = &self.terrain {
+            match snapshot::split_terrain(&t.to_state()) {
+                Ok(parts) => out.extend(parts.into_iter().map(|msg| Out::Send { to: conn, msg })),
+                Err(e) => out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e.to_string()) }),
+            }
+        }
         for (element, net) in &self.door_net {
             out.push(Out::Send {
                 to: conn,
@@ -578,6 +617,34 @@ impl GameServer {
                     msg: reject(reason, &e.to_string()),
                 });
             }
+        }
+    }
+
+    fn on_edit_terrain(&mut self, conn: ConnId, base_revision: u64, data: &[u8], out: &mut Vec<Out>) {
+        if !self.players[&conn].identity.can_edit {
+            out.push(Out::Send { to: conn, msg: reject(RejectReason::NotAuthorized, "правка рельефа запрещена") });
+            self.strike(conn, out);
+            return;
+        }
+        let Some(terrain) = self.terrain.as_ref() else {
+            out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, "в мире нет рельефа") });
+            return;
+        };
+        if terrain.revision() != base_revision {
+            out.push(Out::Send { to: conn, msg: reject(RejectReason::StaleRevision, "устаревшая ревизия рельефа") });
+            return;
+        }
+        let edit: TerrainEdit = match postcard::from_bytes(data) {
+            Ok(e) => e,
+            Err(e) => {
+                out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e.to_string()) });
+                self.strike(conn, out);
+                return;
+            }
+        };
+        match self.apply_terrain_edit(&edit) {
+            Ok(outs) => out.extend(outs),
+            Err(e) => out.push(Out::Send { to: conn, msg: reject(RejectReason::InvalidCommand, &e) }),
         }
     }
 
@@ -699,7 +766,14 @@ impl GameServer {
                 continue;
             };
             let before = p.state.pos;
-            apply_input(&self.physics, &mut p.state, &shape, &cmd, dt);
+            apply_input(
+                &self.physics,
+                self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+                &mut p.state,
+                &shape,
+                &cmd,
+                dt,
+            );
             p.last_seq = cmd.seq;
             p.yaw = cmd.yaw;
             self.metrics.inputs_applied += 1;

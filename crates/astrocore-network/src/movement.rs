@@ -2,7 +2,7 @@
 //! что предсказание клиента совпадает с серверным результатом.
 
 use astrocore_math::glam::Vec3;
-use astrocore_physics::{BoxWorld, CharacterShape, CharacterState, move_character};
+use astrocore_physics::{BoxWorld, CharacterShape, CharacterState, GroundProvider, move_character, move_character_on_ground};
 
 /// Скорость ходьбы, м/с.
 pub const MOVE_SPEED: f32 = 4.0;
@@ -26,16 +26,21 @@ pub fn wish_direction(move_x: i8, move_z: i8, yaw: f32) -> Vec3 {
     v.normalize_or_zero()
 }
 
-/// Применить команду ввода за `dt` секунд.
+/// Применить команду ввода за `dt` секунд. С рельефом (`ground`) персонаж стоит на земле;
+/// сервер и клиент обязаны передавать одинаковый рельеф — иначе предсказание разойдётся.
 pub fn apply_input(
     bw: &BoxWorld,
+    ground: Option<&dyn GroundProvider>,
     state: &mut CharacterState,
     shape: &CharacterShape,
     input: &InputCmd,
     dt: f32,
 ) {
     let wish = wish_direction(input.move_x, input.move_z, input.yaw) * MOVE_SPEED * dt;
-    move_character(bw, state, shape, wish, dt);
+    match ground {
+        Some(g) => move_character_on_ground(bw, g, state, shape, wish, dt),
+        None => move_character(bw, state, shape, wish, dt),
+    }
 }
 
 #[cfg(test)]

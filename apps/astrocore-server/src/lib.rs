@@ -105,6 +105,30 @@ pub fn load_or_create(store: &Store, world_id: &str) -> Result<(World, bool), Se
     Ok((world, false))
 }
 
+const TERRAIN_FILE: &str = "terrain.json";
+
+/// Рельеф из каталога данных (`terrain.json`), если он есть.
+pub fn load_terrain(dir: &std::path::Path) -> Result<Option<astrocore_terrain::Terrain>, ServerError> {
+    let path = dir.join(TERRAIN_FILE);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let state: astrocore_terrain::TerrainState =
+                serde_json::from_slice(&bytes).map_err(|e| ServerError::Script(format!("terrain.json: {e}")))?;
+            astrocore_terrain::Terrain::from_state(state).map(Some).map_err(|e| ServerError::Script(format!("terrain.json: {e}")))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ServerError::Script(e.to_string())),
+    }
+}
+
+/// Атомарно записать рельеф (временный файл + переименование).
+pub fn save_terrain(dir: &std::path::Path, terrain: &astrocore_terrain::Terrain) -> Result<(), ServerError> {
+    let bytes = serde_json::to_vec(&terrain.to_state()).map_err(|e| ServerError::Script(e.to_string()))?;
+    let tmp = dir.join("terrain.json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| ServerError::Script(e.to_string()))?;
+    std::fs::rename(tmp, dir.join(TERRAIN_FILE)).map_err(|e| ServerError::Script(e.to_string()))
+}
+
 /// Сетевой сервер: настоящий игровой сервер (`GameServer`) на TCP с журналом и снимками.
 pub struct ListenServer {
     tcp: astrocore_network::tcp::TcpServer,
@@ -137,13 +161,16 @@ impl ListenServer {
         if let Some(s) = config.spawn {
             net.spawn = astrocore_math::glam::Vec3::from_array(s);
         }
-        let core = GameServer::new(
+        let mut core = GameServer::new(
             world,
             net,
             Box::new(AllowAll {
                 can_edit: config.allow_edit,
             }),
         );
+        if let Some(t) = load_terrain(&config.data_dir)? {
+            core = core.with_terrain(t);
+        }
         let addr = config.listen.as_deref().unwrap_or("127.0.0.1:0");
         let tcp = astrocore_network::tcp::TcpServer::bind(addr, core)
             .map_err(|e| ServerError::Script(format!("слушатель {addr}: {e}")))?;
@@ -172,6 +199,11 @@ impl ListenServer {
         for op in self.tcp.core_mut().take_applied_ops() {
             self.store.append(&op)?;
             self.ops_since_snapshot += 1;
+        }
+        if !self.tcp.core_mut().take_applied_terrain_ops().is_empty()
+            && let Some(t) = self.tcp.core().terrain()
+        {
+            save_terrain(self.store.dir(), t)?;
         }
         if self.ops_since_snapshot >= SNAPSHOT_EVERY_OPS {
             self.store.save_snapshot(self.tcp.core().world())?;
@@ -265,13 +297,16 @@ impl UdpListenServer {
         if let Some(s) = config.spawn {
             net.spawn = astrocore_math::glam::Vec3::from_array(s);
         }
-        let core = GameServer::new(
+        let mut core = GameServer::new(
             world,
             net,
             Box::new(AllowAll {
                 can_edit: config.allow_edit,
             }),
         );
+        if let Some(t) = load_terrain(&config.data_dir)? {
+            core = core.with_terrain(t);
+        }
         let addr = config.listen_udp.as_deref().unwrap_or("127.0.0.1:0");
         let socket = astrocore_network::udp::SystemSocket::bind(addr)
             .map_err(|e| ServerError::Script(format!("UDP {addr}: {e}")))?;
@@ -307,6 +342,11 @@ impl UdpListenServer {
         for op in self.udp.core_mut().take_applied_ops() {
             self.store.append(&op)?;
             self.ops_since_snapshot += 1;
+        }
+        if !self.udp.core_mut().take_applied_terrain_ops().is_empty()
+            && let Some(t) = self.udp.core().terrain()
+        {
+            save_terrain(self.store.dir(), t)?;
         }
         if self.ops_since_snapshot >= SNAPSHOT_EVERY_OPS {
             self.store.save_snapshot(self.udp.core().world())?;
@@ -700,6 +740,56 @@ mod tests {
         let mut no_key = ServerConfig::new(dir.path().join("data2"));
         no_key.listen_udp = Some("127.0.0.1:0".into());
         assert!(matches!(run(&no_key), Err(ServerError::Script(_))));
+    }
+
+    #[test]
+    fn terrain_is_loaded_served_edited_and_saved_by_the_network_server() {
+        use astrocore_math::glam::Vec2;
+        use astrocore_network::client::ClientCore;
+        use astrocore_network::tcp::TcpClient;
+
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let mut t = astrocore_terrain::Terrain::new(1.0, 16, 0.0).unwrap();
+        let e = t.brush_raise(Vec2::new(8.0, 8.0), 5.0, 2.0);
+        t.apply(&e).unwrap();
+        save_terrain(&data, &t).unwrap();
+
+        let mut cfg = ServerConfig::new(&data);
+        cfg.world_id = "tw".into();
+        cfg.listen = Some("127.0.0.1:0".into());
+        cfg.allow_edit = true;
+        let mut server = ListenServer::start(&cfg).unwrap();
+        let mut tcp = TcpClient::connect(server.local_addr().unwrap()).unwrap();
+        let mut core = ClientCore::new("editor", "tw", 0);
+        tcp.send(&core.hello_packet()).unwrap();
+        let start = std::time::Instant::now();
+        let mut sent = false;
+        while start.elapsed() < Duration::from_secs(10) {
+            server.step().unwrap();
+            for p in tcp.poll() {
+                core.on_packet(&p).unwrap();
+            }
+            if core.terrain().is_some() && !sent {
+                assert!((core.terrain().unwrap().sample(8.0, 8.0) - 2.0).abs() < 1e-3, "рельеф загружен из файла");
+                let edit = core.terrain().unwrap().brush_raise(Vec2::new(20.0, 20.0), 4.0, 3.0);
+                tcp.send(&core.edit_terrain_packet(&edit).unwrap()).unwrap();
+                sent = true;
+            }
+            if sent && core.terrain().is_some_and(|t| t.sample(20.0, 20.0) > 2.5) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(core.terrain().is_some_and(|t| t.sample(20.0, 20.0) > 2.5), "правка рельефа вернулась клиенту");
+        server.finish().unwrap();
+        drop(server);
+        let saved = load_terrain(&data).unwrap().unwrap();
+        assert!(saved.sample(20.0, 20.0) > 2.5, "правка сохранена на диск");
+        assert!(load_terrain(dir.path()).unwrap().is_none());
+        std::fs::write(data.join("terrain.json"), "{ нет").unwrap();
+        assert!(matches!(load_terrain(&data), Err(ServerError::Script(_))));
     }
 
     #[test]

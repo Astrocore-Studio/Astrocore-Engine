@@ -49,6 +49,8 @@ pub enum ClientMessage {
     },
     /// Клиент потерял состояние и просит базовый snapshot.
     RequestSnapshot,
+    /// Правка рельефа (postcard-байты `TerrainEdit`); сервер проверяет права и ревизию рельефа.
+    EditTerrain { base_revision: u64, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +69,10 @@ pub enum ServerMessage {
     },
     /// Подтверждённая операция над миром — применять строго по порядку `seq`.
     WorldOp(WorldOp),
+    /// Часть снимка рельефа (postcard-байты `TerrainState`, разбитые на куски).
+    TerrainSnapshotPart { index: u16, total: u16, data: Vec<u8> },
+    /// Подтверждённая правка рельефа (postcard-байты `TerrainEdit`), `seq` — ревизия после неё.
+    TerrainOp { seq: u64, data: Vec<u8> },
     /// Подтверждение ввода и авторитетная позиция после его применения.
     InputAck { seq: u32, pos: [f32; 3] },
     /// Состояние видимой сущности (игрока). `tick` — серверный тик.
@@ -94,6 +100,8 @@ pub enum ServerMessage {
 pub const MAX_SNAPSHOT_PART_BYTES: usize = 48 * 1024;
 /// Максимальное число кусков снимка (≈ 192 МиБ).
 pub const MAX_SNAPSHOT_PARTS: u16 = 4096;
+/// Максимальный размер правки рельефа в сообщении, байты.
+pub const MAX_TERRAIN_EDIT_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
@@ -155,7 +163,10 @@ impl Validate for ClientMessage {
                     return Err(ProtocolError::Invalid("yaw"));
                 }
             }
-            ClientMessage::Interact { .. } | ClientMessage::RequestSnapshot => {}
+            ClientMessage::EditTerrain { data, .. } if data.len() > MAX_TERRAIN_EDIT_BYTES => {
+                return Err(ProtocolError::Invalid("terrain edit size"));
+            }
+            ClientMessage::Interact { .. } | ClientMessage::RequestSnapshot | ClientMessage::EditTerrain { .. } => {}
             ClientMessage::Edit { .. } => {}
         }
         Ok(())
@@ -169,7 +180,8 @@ impl Validate for ServerMessage {
             ServerMessage::Reject { detail, .. } if detail.len() > MAX_REASON_LEN => {
                 Err(ProtocolError::Invalid("reject detail"))
             }
-            ServerMessage::SnapshotPart { index, total, data } => {
+            ServerMessage::SnapshotPart { index, total, data }
+            | ServerMessage::TerrainSnapshotPart { index, total, data } => {
                 if *total == 0 || *total > MAX_SNAPSHOT_PARTS || index >= total {
                     Err(ProtocolError::Invalid("snapshot index/total"))
                 } else if data.len() > MAX_SNAPSHOT_PART_BYTES {
@@ -177,6 +189,9 @@ impl Validate for ServerMessage {
                 } else {
                     Ok(())
                 }
+            }
+            ServerMessage::TerrainOp { data, .. } if data.len() > MAX_TERRAIN_EDIT_BYTES => {
+                Err(ProtocolError::Invalid("terrain op size"))
             }
             ServerMessage::InputAck { pos, .. } if !finite(pos) => {
                 Err(ProtocolError::Invalid("pos"))
@@ -374,6 +389,22 @@ mod tests {
             decode::<ClientMessage>(&raw),
             Err(ProtocolError::Invalid("yaw"))
         );
+    }
+
+    #[test]
+    fn terrain_messages_roundtrip_and_respect_limits() {
+        for m in [
+            ServerMessage::TerrainSnapshotPart { index: 0, total: 2, data: vec![1, 2, 3] },
+            ServerMessage::TerrainOp { seq: 5, data: vec![9; 100] },
+        ] {
+            assert_eq!(decode::<ServerMessage>(&encode(&m).unwrap()).unwrap(), m);
+        }
+        let c = ClientMessage::EditTerrain { base_revision: 3, data: vec![7; 50] };
+        assert_eq!(decode::<ClientMessage>(&encode(&c).unwrap()).unwrap(), c);
+        assert!(encode(&ClientMessage::EditTerrain { base_revision: 0, data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1] }).is_err());
+        assert!(encode(&ServerMessage::TerrainOp { seq: 0, data: vec![0; MAX_TERRAIN_EDIT_BYTES + 1] }).is_err());
+        assert!(encode(&ServerMessage::TerrainSnapshotPart { index: 3, total: 2, data: vec![] }).is_err());
+        assert!(encode(&ServerMessage::TerrainSnapshotPart { index: 0, total: 1, data: vec![0; MAX_SNAPSHOT_PART_BYTES + 1] }).is_err());
     }
 
     #[test]

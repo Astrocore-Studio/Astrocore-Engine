@@ -746,3 +746,113 @@ fn metrics_count_activity_and_ops_are_collected_for_persistence() {
         "забираются один раз"
     );
 }
+
+mod terrain {
+    use astrocore_math::glam::Vec2;
+    use astrocore_terrain::{Terrain, TerrainEdit};
+    use astrocore_world::{FloorDef, World, WorldConfig};
+
+    use super::*;
+
+    /// Мир без построек и холм высотой 3 м вокруг (30, 0).
+    fn hill_harness() -> Harness {
+        let mut w = World::new("hills", WorldConfig::default()).unwrap();
+        w.apply(WorldCommand::DefineFloor(FloorDef { id: FloorId(0), name: "g".into(), base_y: 0.0, height: 3.0 })).unwrap();
+        let mut t = Terrain::new(1.0, 16, 0.0).unwrap();
+        let e = t.brush_raise(Vec2::new(30.0, 0.0), 14.0, 3.0);
+        t.apply(&e).unwrap();
+        let cfg = crate::server::ServerNetConfig { spawn: Vec3::new(14.0, 2.0, 0.0), ..Default::default() };
+        Harness::with_server(crate::server::GameServer::new(w, cfg, Box::new(crate::testkit::ByBuild)).with_terrain(t))
+    }
+
+    #[test]
+    fn terrain_arrives_with_the_snapshot_and_prediction_on_hills_matches_the_server() {
+        let mut h = hill_harness();
+        let a = h.join("a");
+        let c = h.client(a);
+        assert_eq!(c.terrain().unwrap().content_hash(), h.server.terrain().unwrap().content_hash());
+        assert_eq!(c.terrain_serial(), 1);
+        h.take_events(a);
+        // Подъём на холм: сервер и клиент считают движение по одной и той же земле.
+        for _ in 0..80 {
+            h.input(a, 0, 1, EAST);
+        }
+        h.ticks(2);
+        let server = h.server.player_position(a).unwrap();
+        let ground = h.server.terrain().unwrap().sample(server.x, server.z);
+        assert!(server.x > 28.0 && server.y > 2.4, "поднялся на холм: {server}");
+        assert!((server.y - ground).abs() < 0.05, "стоит на земле: {server} / {ground}");
+        assert!(!h.take_events(a).iter().any(|e| matches!(e, ClientEvent::Corrected { .. })));
+        assert!((h.client(a).position() - server).length() < 1e-3);
+    }
+
+    #[test]
+    fn terrain_edits_need_rights_a_fresh_revision_and_valid_data() {
+        let mut h = hill_harness();
+        let player = h.join("player");
+        let editor = h.join("edit-1");
+        let rev = h.client(editor).terrain().unwrap().revision();
+        let edit = h.server.terrain().unwrap().brush_raise(Vec2::new(5.0, 5.0), 4.0, 2.0);
+
+        h.send(player, h.client(player).edit_terrain_packet(&edit).unwrap());
+        assert!(rejects(&h.take_events(player), RejectReason::NotAuthorized));
+        assert_eq!(h.server.terrain().unwrap().revision(), rev);
+
+        h.send(editor, h.client(editor).edit_terrain_packet(&edit).unwrap());
+        for who in [player, editor] {
+            assert_eq!(h.client(who).terrain().unwrap().content_hash(), h.server.terrain().unwrap().content_hash(), "{who:?}");
+            assert!(h.client(who).terrain().unwrap().sample(5.0, 5.0) > 1.5);
+        }
+        assert_eq!(h.server.take_applied_terrain_ops().len(), 1);
+
+        // Правка, собранная для старой ревизии: клиент `player` уже на новой, делаем устаревший пакет вручную.
+        let stale = encode(&ClientMessage::EditTerrain { base_revision: rev, data: postcard::to_stdvec(&edit).unwrap() }).unwrap();
+        h.send(editor, stale);
+        assert!(rejects(&h.take_events(editor), RejectReason::StaleRevision));
+        // Мусор вместо правки.
+        let fresh = h.server.terrain().unwrap().revision();
+        h.send(editor, encode(&ClientMessage::EditTerrain { base_revision: fresh, data: vec![0xFF; 20] }).unwrap());
+        assert!(rejects(&h.take_events(editor), RejectReason::InvalidCommand));
+        // Правка, не соответствующая состоянию (чужие прежние высоты).
+        let bad = TerrainEdit { changes: vec![(0, 0, 123.0, 1.0)] };
+        h.send(editor, encode(&ClientMessage::EditTerrain { base_revision: fresh, data: postcard::to_stdvec(&bad).unwrap() }).unwrap());
+        assert!(rejects(&h.take_events(editor), RejectReason::InvalidCommand));
+        assert_eq!(h.server.terrain().unwrap().revision(), fresh, "рельеф не тронут");
+    }
+
+    #[test]
+    fn a_lost_terrain_op_triggers_a_resync() {
+        let mut h = hill_harness();
+        let a = h.join("edit-a");
+        h.take_events(a);
+        let mut seen = 0;
+        h.drop_filter = Some(Box::new(move |_, m| {
+            if matches!(m, ServerMessage::TerrainOp { .. }) {
+                seen += 1;
+                seen == 1
+            } else {
+                false
+            }
+        }));
+        for x in [1.0f32, 9.0] {
+            let e = h.server.terrain().unwrap().brush_raise(Vec2::new(x, 20.0), 3.0, 1.0);
+            let outs = h.server.apply_terrain_edit(&e).unwrap();
+            h.deliver(outs);
+        }
+        assert!(h.take_events(a).iter().any(|e| matches!(e, ClientEvent::ResyncRequested)));
+        assert!(h.client(a).terrain().is_none());
+        h.drop_filter = None;
+        h.send(a, h.client(a).snapshot_request_packet());
+        assert_eq!(h.client(a).terrain().unwrap().content_hash(), h.server.terrain().unwrap().content_hash());
+    }
+
+    #[test]
+    fn worlds_without_terrain_reject_terrain_edits() {
+        let mut h = harness();
+        let a = h.join("edit-a");
+        h.send(a, encode(&ClientMessage::EditTerrain { base_revision: 0, data: vec![] }).unwrap());
+        assert!(rejects(&h.take_events(a), RejectReason::InvalidCommand));
+        assert!(h.client(a).terrain().is_none());
+        assert!(h.server.apply_terrain_edit(&TerrainEdit::default()).is_err());
+    }
+}

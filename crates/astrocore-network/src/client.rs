@@ -14,6 +14,7 @@ use astrocore_physics::{BoxWorld, CharacterShape, CharacterState};
 use astrocore_protocol::{
     ClientMessage, ProtocolError, RejectReason, ServerMessage, decode, encode,
 };
+use astrocore_terrain::{Terrain, TerrainEdit, TerrainOp};
 use astrocore_world::{ReplicaOutcome, World, WorldCommand, WorldError, WorldOp};
 
 use crate::movement::{InputCmd, apply_input};
@@ -44,6 +45,8 @@ pub enum ClientEvent {
     },
     EntityUpdated(NetworkEntityId),
     EntityRemoved(NetworkEntityId),
+    /// Рельеф получен целиком или изменился.
+    TerrainChanged,
     Rejected {
         reason: RejectReason,
         detail: String,
@@ -85,6 +88,10 @@ pub struct ClientCore {
     remotes: BTreeMap<NetworkEntityId, VecDeque<(u32, Vec3, f32)>>,
     render_dirty: Vec<astrocore_world::DirtyRegion>,
     snapshot_serial: u32,
+    terrain: Option<Terrain>,
+    terrain_reasm: Reassembler,
+    terrain_dirty: Vec<astrocore_math::ChunkCoord>,
+    terrain_serial: u32,
 }
 
 impl ClientCore {
@@ -109,6 +116,10 @@ impl ClientCore {
             remotes: BTreeMap::new(),
             render_dirty: Vec::new(),
             snapshot_serial: 0,
+            terrain: None,
+            terrain_reasm: Reassembler::new(),
+            terrain_dirty: Vec::new(),
+            terrain_serial: 0,
         }
     }
 
@@ -136,6 +147,27 @@ impl ClientCore {
         .ok()
     }
 
+    /// Правка рельефа (нужны права редактора).
+    pub fn edit_terrain_packet(&self, edit: &TerrainEdit) -> Option<Vec<u8>> {
+        let base = self.terrain.as_ref()?.revision();
+        let data = postcard::to_stdvec(edit).ok()?;
+        encode(&ClientMessage::EditTerrain { base_revision: base, data }).ok()
+    }
+
+    pub fn terrain(&self) -> Option<&Terrain> {
+        self.terrain.as_ref()
+    }
+
+    /// Чанки рельефа, изменившиеся с прошлого вызова.
+    pub fn take_terrain_dirty(&mut self) -> Vec<astrocore_math::ChunkCoord> {
+        std::mem::take(&mut self.terrain_dirty)
+    }
+
+    /// Растёт при каждом применении полного снимка рельефа: рендер обязан пересобрать всё.
+    pub fn terrain_serial(&self) -> u32 {
+        self.terrain_serial
+    }
+
     pub fn snapshot_request_packet(&self) -> Vec<u8> {
         encode(&ClientMessage::RequestSnapshot).expect("валидно")
     }
@@ -156,7 +188,14 @@ impl ClientCore {
             yaw,
         };
         let dt = self.dt();
-        apply_input(&self.physics, &mut self.state, &self.shape, &cmd, dt);
+        apply_input(
+            &self.physics,
+            self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+            &mut self.state,
+            &self.shape,
+            &cmd,
+            dt,
+        );
         self.pending.push_back(cmd);
         self.history.push_back((cmd.seq, self.state));
         encode(&ClientMessage::Input {
@@ -293,6 +332,35 @@ impl ClientCore {
                     self.apply_op(&op, &mut events);
                 }
             }
+            ServerMessage::TerrainSnapshotPart { index, total, data } => {
+                if let Some(state) = self.terrain_reasm.push_decoded(index, total, data)? {
+                    let mut t = Terrain::from_state(state).map_err(|_| ClientError::Unexpected("повреждённый снимок рельефа"))?;
+                    t.take_dirty();
+                    self.terrain = Some(t);
+                    self.terrain_serial += 1;
+                    self.terrain_dirty.clear();
+                    events.push(ClientEvent::TerrainChanged);
+                }
+            }
+            ServerMessage::TerrainOp { seq, data } => {
+                let edit: Result<TerrainEdit, _> = postcard::from_bytes(&data);
+                match (self.terrain.as_mut(), edit) {
+                    (Some(t), Ok(edit)) => match t.apply_replicated(&TerrainOp { seq, edit }) {
+                        Ok(true) => {
+                            self.terrain_dirty.extend(t.take_dirty());
+                            events.push(ClientEvent::TerrainChanged);
+                        }
+                        Ok(false) => {}
+                        Err(_) => {
+                            self.terrain = None; // сомнительное состояние — ждём новый снимок
+                            self.terrain_reasm.reset();
+                            events.push(ClientEvent::ResyncRequested);
+                        }
+                    },
+                    (None, _) => events.push(ClientEvent::ResyncRequested),
+                    (_, Err(_)) => return Err(ClientError::Unexpected("повреждённая правка рельефа")),
+                }
+            }
             ServerMessage::InputAck { seq, pos } => {
                 self.reconcile(seq, Vec3::from_array(pos), &mut events)
             }
@@ -395,7 +463,14 @@ impl ClientCore {
         let dt = self.dt();
         self.history.clear();
         for cmd in self.pending.iter().copied().collect::<Vec<_>>() {
-            apply_input(&self.physics, &mut base, &self.shape, &cmd, dt);
+            apply_input(
+                &self.physics,
+                self.terrain.as_ref().map(|t| t as &dyn astrocore_physics::GroundProvider),
+                &mut base,
+                &self.shape,
+                &cmd,
+                dt,
+            );
             self.history.push_back((cmd.seq, base));
         }
         self.state = base;
