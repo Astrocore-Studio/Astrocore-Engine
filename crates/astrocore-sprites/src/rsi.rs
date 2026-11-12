@@ -103,7 +103,9 @@ impl RsiMeta {
         }
         let raw: RawMeta =
             serde_json::from_slice(bytes).map_err(|e| RsiError::Json(e.to_string()))?;
-        if raw.version != 1 {
+        // SS14 помечает часть наборов (например, conveyor.rsi) версией 2; состав файлов и разметка
+        // кадров в них те же, что в версии 1.
+        if !matches!(raw.version, 1 | 2) {
             return Err(RsiError::UnsupportedVersion(raw.version));
         }
         let (x, y) = (raw.size.x, raw.size.y);
@@ -232,8 +234,8 @@ mod tests {
         let bad = |s: &str| RsiMeta::parse(s.as_bytes());
         assert!(matches!(bad("not json"), Err(RsiError::Json(_))));
         assert!(matches!(
-            bad(r#"{"version":2,"size":{"x":1,"y":1}}"#),
-            Err(RsiError::UnsupportedVersion(2))
+            bad(r#"{"version":3,"size":{"x":1,"y":1}}"#),
+            Err(RsiError::UnsupportedVersion(3))
         ));
         assert!(matches!(
             bad(r#"{"version":1,"size":{"x":0,"y":32}}"#),
