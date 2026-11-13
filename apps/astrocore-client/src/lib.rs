@@ -280,82 +280,23 @@ pub fn build_app(args: Args) -> App {
     .add_systems(Update, (look_input, drive_camera).chain());
 
     if args.connect.is_some() || args.connect_udp.is_some() || args.connect_lightyear.is_some() {
-        let mut transport = if let Some(addr) = args.connect_lightyear.clone() {
-            let server: std::net::SocketAddr = match addr.parse() {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("--connect-lightyear: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let id = std::process::id() as u64 ^ 0x4153_0000;
-            match astrocore_lightyear::LyClient::connect(
-                server,
-                id,
-                args.ly_key.unwrap_or_default(),
-                60,
-            ) {
-                Ok(c) => Transport::Lightyear(Box::new(c)),
-                Err(e) => {
-                    eprintln!("не удалось начать соединение Lightyear: {e}");
-                    std::process::exit(1);
-                }
-            }
-        } else if let Some(addr) = args.connect.clone() {
-            match TcpClient::connect(&addr) {
-                Ok(t) => Transport::Tcp(t),
-                Err(e) => {
-                    eprintln!("не удалось подключиться к {addr}: {e}");
-                    std::process::exit(1);
-                }
-            }
-        } else {
-            let addr = args.connect_udp.clone().unwrap_or_default();
-            let server: std::net::SocketAddr = match addr.parse() {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("--connect-udp: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let socket = match SystemSocket::bind("0.0.0.0:0") {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("не удалось открыть сокет: {e}");
-                    std::process::exit(1);
-                }
-            };
-            match UdpClient::connect(socket, server, args.server_key.unwrap_or_default()) {
-                Ok(u) => Transport::Udp(Box::new(u)),
-                Err(e) => {
-                    eprintln!("не удалось начать соединение: {e}");
-                    std::process::exit(1);
-                }
-            }
-        };
-        let core = ClientCore::new(&args.build, &args.world_id, 0);
-        transport.send(true, &core.hello_packet());
         if let Some(dir) = args.assets.clone() {
             app.insert_resource(ModelLibrary::new(dir));
         }
-        app.insert_non_send(Net {
-            transport,
-            core,
-            started: std::time::Instant::now(),
-        })
-        .add_systems(
-            Update,
-            (
-                net_poll,
-                sync_door_states,
-                sync_remote_players,
-                sync_local_body,
-                door_key,
-                interact_key,
+        app.add_systems(PostStartup, connect_network)
+            .add_systems(
+                Update,
+                (
+                    net_poll,
+                    sync_door_states,
+                    sync_remote_players,
+                    sync_local_body,
+                    door_key,
+                    interact_key,
+                )
+                    .chain(),
             )
-                .chain(),
-        )
-        .add_systems(FixedUpdate, send_input);
+            .add_systems(FixedUpdate, send_input);
     } else {
         app.add_systems(Startup, setup_demo_world.after(setup));
     }
@@ -367,6 +308,72 @@ pub fn build_app(args: Args) -> App {
         app.add_systems(Update, screenshot_and_exit);
     }
     app
+}
+
+// Connect only after startup assets have loaded. Creating a netcode token in
+// build_app lets a cold graphics/asset initialization consume its lifetime.
+fn connect_network(world: &mut World) {
+    let args = world.resource::<Args>().clone();
+    let mut transport = if let Some(addr) = args.connect_lightyear.clone() {
+        let server: std::net::SocketAddr = match addr.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("--connect-lightyear: {e}");
+                std::process::exit(1);
+            }
+        };
+        let id = std::process::id() as u64 ^ 0x4153_0000;
+        match astrocore_lightyear::LyClient::connect(
+            server,
+            id,
+            args.ly_key.unwrap_or_default(),
+            60,
+        ) {
+            Ok(c) => Transport::Lightyear(Box::new(c)),
+            Err(e) => {
+                eprintln!("не удалось начать соединение Lightyear: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(addr) = args.connect.clone() {
+        match TcpClient::connect(&addr) {
+            Ok(t) => Transport::Tcp(t),
+            Err(e) => {
+                eprintln!("не удалось подключиться к {addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        let addr = args.connect_udp.clone().unwrap_or_default();
+        let server: std::net::SocketAddr = match addr.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("--connect-udp: {e}");
+                std::process::exit(1);
+            }
+        };
+        let socket = match SystemSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("не удалось открыть сокет: {e}");
+                std::process::exit(1);
+            }
+        };
+        match UdpClient::connect(socket, server, args.server_key.unwrap_or_default()) {
+            Ok(u) => Transport::Udp(Box::new(u)),
+            Err(e) => {
+                eprintln!("не удалось начать соединение: {e}");
+                std::process::exit(1);
+            }
+        }
+    };
+    let core = ClientCore::new(&args.build, &args.world_id, 0);
+    transport.send(true, &core.hello_packet());
+    world.insert_non_send(Net {
+        transport,
+        core,
+        started: std::time::Instant::now(),
+    });
 }
 
 /// Текстуры материалов и спрайты предметов из манифеста рендера (`--render-manifest`).
