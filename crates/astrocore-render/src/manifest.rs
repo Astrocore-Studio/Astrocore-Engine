@@ -41,6 +41,9 @@ pub struct SpriteEntry {
     /// Лист из `[столбцов, строк]` ячеек (направления и кадры анимации): берётся первая ячейка.
     #[serde(default)]
     pub grid: Option<[u32; 2]>,
+    /// Кадров анимации на направление (для `box4`; ячейки листа идут направление за направлением).
+    #[serde(default = "one_frame")]
+    pub frames: u32,
     /// Ориентированный лежащий спрайт (конвейер, труба): поворот по `rot` карты, а не случайный.
     #[serde(default)]
     pub oriented: bool,
@@ -58,6 +61,13 @@ pub enum SpriteLayout {
     /// Стоячий спрайт, выдавленный в объём: каждый непрозрачный пиксель — столбик глубиной
     /// `thickness`, спереди и сзади рисунок, по бокам цвет крайних пикселей. Повёрнут по `rot`.
     Voxel,
+    /// Брус из четырёх видов RSI: лицо — «юг», спина — «север», бока — «восток» и «запад»
+    /// (лист `grid` в порядке S, N, E, W; у анимации берётся первый кадр каждого направления).
+    Box4,
+}
+
+fn one_frame() -> u32 {
+    1
 }
 
 fn default_thickness() -> f32 {
@@ -126,6 +136,9 @@ pub struct PlacementSprite {
     pub layout: SpriteLayout,
     pub thickness: f32,
     pub oriented: bool,
+    /// Лист `[столбцов, строк]` и кадров на направление (для `box4`).
+    pub grid: [u32; 2],
+    pub frames: u32,
 }
 
 /// Спрайты размещений по идентификатору прототипа.
@@ -219,7 +232,9 @@ impl RenderManifest {
             let pid =
                 PrototypeId::new(id.as_str()).map_err(|e| ManifestError::Parse(e.to_string()))?;
             let mut img = load_png(&safe_join(base, &e.image)?, false)?;
-            if let Some([cols, rows]) = e.grid {
+            if let Some([cols, rows]) = e.grid
+                && e.layout != SpriteLayout::Box4
+            {
                 img = first_cell(img, cols, rows);
             }
             if !(e.size[0] > 0.0
@@ -237,6 +252,8 @@ impl RenderManifest {
                     layout: e.layout,
                     thickness: e.thickness.clamp(0.001, 0.5),
                     oriented: e.oriented,
+                    grid: e.grid.unwrap_or([1, 1]),
+                    frames: e.frames.max(1),
                 },
             );
         }
@@ -352,7 +369,7 @@ fn sync_placements(
     for (id, (feet, sprite)) in want {
         if have.contains_key(&id) {
             let mut t = Transform::from_translation(feet);
-            if sprite.layout == SpriteLayout::Voxel {
+            if matches!(sprite.layout, SpriteLayout::Voxel | SpriteLayout::Box4) {
                 t.rotation = Quat::from_rotation_y(
                     f32::from(rot.get(&id).copied().unwrap_or(0)) * std::f32::consts::FRAC_PI_2,
                 );
@@ -360,7 +377,7 @@ fn sync_placements(
             commands.entity(have[&id]).insert(t);
             continue;
         }
-        if sprite.layout == SpriteLayout::Voxel
+        if matches!(sprite.layout, SpriteLayout::Voxel | SpriteLayout::Box4)
             && let Some(mesh) = voxel_meshes.get(sprite, &images, &mut meshes)
         {
             let material = voxel_material(sprite, &mut materials);
@@ -430,7 +447,11 @@ impl VoxelMeshes {
         let img = images.get(&sprite.image)?;
         let data = img.data.as_ref()?;
         let (w, h) = (img.width() as usize, img.height() as usize);
-        let mesh = voxel_mesh(data, w, h, sprite.size, sprite.thickness)?;
+        let mesh = if sprite.layout == SpriteLayout::Box4 {
+            box4_mesh(data, w, h, sprite.grid, sprite.frames, sprite.size)?
+        } else {
+            voxel_mesh(data, w, h, sprite.size, sprite.thickness)?
+        };
         let handle = meshes.add(mesh);
         self.0.insert(sprite.image.id(), handle.clone());
         Some(handle)
@@ -444,7 +465,11 @@ fn voxel_material(
     materials.add(StandardMaterial {
         base_color_texture: Some(sprite.image.clone()),
         reflectance: 0.05,
-        alpha_mode: AlphaMode::Opaque,
+        alpha_mode: if sprite.layout == SpriteLayout::Box4 {
+            AlphaMode::Mask(0.5)
+        } else {
+            AlphaMode::Opaque
+        },
         cull_mode: Some(bevy::render::render_resource::Face::Back),
         ..default()
     })
@@ -546,6 +571,160 @@ pub fn voxel_mesh(rgba: &[u8], w: usize, h: usize, size: Vec2, depth: f32) -> Op
     Some(mesh)
 }
 
+/// Объём из четырёх видов RSI (визуальная оболочка). Лист (`grid` = столбцов × строк) хранит ячейки
+/// в порядке направлений S, N, E, W (у анимации — по `frames` ячеек на направление, берётся первая).
+/// Воксель заполнен, если непрозрачны и «юг» (ширина × высота), и «восток» (глубина × высота): так
+/// скошенный экран консоли вырезается по профилю. Цвет граней берётся из своего вида: лицо (+Z) — «юг»,
+/// спина (−Z) — «север», −X — «восток» (собственная правая сторона объекта), +X — «запад», верх — из «юга».
+/// Основание в начале координат, лицо к +Z, размер ячейки в метрах — `size`.
+pub fn box4_mesh(
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+    grid: [u32; 2],
+    frames: u32,
+    size: Vec2,
+) -> Option<Mesh> {
+    let (cols, rows) = (grid[0] as usize, grid[1] as usize);
+    if cols == 0 || rows == 0 || w % cols != 0 || h % rows != 0 || rgba.len() < w * h * 4 {
+        return None;
+    }
+    let (cw, ch) = (w / cols, h / rows);
+    let frames = frames.max(1) as usize;
+    if cols * rows < 4 * frames || cw == 0 || ch == 0 || cw > 128 || ch > 128 {
+        return None;
+    }
+    // Начало ячейки направления `d` на листе, пиксели.
+    let origin = |d: usize| -> (usize, usize) {
+        let cell = d * frames;
+        ((cell % cols) * cw, (cell / cols) * ch)
+    };
+    let opaque = |d: usize, x: usize, y: usize| -> bool {
+        if x >= cw || y >= ch {
+            return false;
+        }
+        let (ox, oy) = origin(d);
+        rgba[((oy + y) * w + ox + x) * 4 + 3] >= 128
+    };
+    // Рамка непрозрачных пикселей ячейки (в координатах ячейки): (x0, y0, x1, y1), правая/нижняя исключены.
+    let bbox = |d: usize| -> Option<(usize, usize, usize, usize)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        for y in 0..ch {
+            for x in 0..cw {
+                if opaque(d, x, y) {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        (x1 > x0).then_some((x0, y0, x1, y1))
+    };
+    let south = bbox(0)?;
+    let east = bbox(2).unwrap_or(south);
+    let (nx, ny, nz) = (south.2 - south.0, south.3 - south.1, east.2 - east.0);
+    let (pw, ph) = (size.x / cw as f32, size.y / ch as f32);
+    // Воксель (x, y, z): x слева направо в «юге», y сверху вниз, z от спины (0) к лицу (nz − 1).
+    let solid = |x: i64, y: i64, z: i64| -> bool {
+        if x < 0 || y < 0 || z < 0 || x >= nx as i64 || y >= ny as i64 || z >= nz as i64 {
+            return false;
+        }
+        let (xs, ys) = (south.0 + x as usize, south.1 + y as usize);
+        let ze = east.0 + z as usize;
+        opaque(0, xs, ys) && opaque(2, ze, ys)
+    };
+    // Центр пикселя ячейки `d` в координатах листа.
+    let uv = |d: usize, x: usize, y: usize| -> [f32; 2] {
+        let (ox, oy) = origin(d);
+        [
+            (ox + x.min(cw - 1)) as f32 / w as f32 + 0.5 / w as f32,
+            (oy + y.min(ch - 1)) as f32 / h as f32 + 0.5 / h as f32,
+        ]
+    };
+    let x_off = -(nx as f32) * pw * 0.5;
+    let z_off = -(nz as f32) * pw * 0.5;
+    let top_y = ny as f32 * ph;
+    let mut pos: Vec<[f32; 3]> = Vec::new();
+    let mut nor: Vec<[f32; 3]> = Vec::new();
+    let mut tex: Vec<[f32; 2]> = Vec::new();
+    let mut idx: Vec<u32> = Vec::new();
+    let mut quad = |p: [[f32; 3]; 4], n: [f32; 3], t: [f32; 2]| {
+        let base = pos.len() as u32;
+        pos.extend(p);
+        nor.extend([n; 4]);
+        tex.extend([t; 4]);
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+    let mut any = false;
+    for y in 0..ny as i64 {
+        for x in 0..nx as i64 {
+            for z in 0..nz as i64 {
+                if !solid(x, y, z) {
+                    continue;
+                }
+                any = true;
+                let (x0, x1) = (x_off + x as f32 * pw, x_off + (x + 1) as f32 * pw);
+                let (y1, y0) = (top_y - y as f32 * ph, top_y - (y + 1) as f32 * ph);
+                let (z0, z1) = (z_off + z as f32 * pw, z_off + (z + 1) as f32 * pw);
+                let (xs, ys) = (south.0 + x as usize, south.1 + y as usize);
+                if !solid(x, y, z + 1) {
+                    quad(
+                        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+                        [0.0, 0.0, 1.0],
+                        uv(0, xs, ys),
+                    );
+                }
+                if !solid(x, y, z - 1) {
+                    // Спина: зеркало по X в ячейке «севера».
+                    let xn = south.0 + (nx - 1 - x as usize);
+                    quad(
+                        [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]],
+                        [0.0, 0.0, -1.0],
+                        uv(1, xn, ys),
+                    );
+                }
+                if !solid(x - 1, y, z) {
+                    // −X: «восток», слева направо от спины к лицу.
+                    quad(
+                        [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
+                        [-1.0, 0.0, 0.0],
+                        uv(2, east.0 + z as usize, ys),
+                    );
+                }
+                if !solid(x + 1, y, z) {
+                    // +X: «запад», слева направо от лица к спине.
+                    let zw = east.0 + (nz - 1 - z as usize);
+                    quad(
+                        [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]],
+                        [1.0, 0.0, 0.0],
+                        uv(3, zw, ys),
+                    );
+                }
+                if !solid(x, y - 1, z) {
+                    quad(
+                        [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
+                        [0.0, 1.0, 0.0],
+                        uv(0, xs, ys),
+                    );
+                }
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut mesh = Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, tex);
+    mesh.insert_indices(bevy::mesh::Indices::U32(idx));
+    Some(mesh)
+}
+
 /// Сколько слоёв в стопке лежащего спрайта.
 const FLAT_LAYERS: usize = 6;
 
@@ -599,6 +778,50 @@ fn spawn_flat(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_box_is_carved_by_the_side_profile() {
+        // Лист 2×2 по 4×4: «юг» — полный квадрат; «восток» — клин: верхняя строка 1 пиксель, нижние 4.
+        let (w, h) = (8usize, 8usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        let mut put = |x: usize, y: usize| {
+            let i = (y * w + x) * 4;
+            rgba[i..i + 4].copy_from_slice(&[200, 100, 50, 255]);
+        };
+        for y in 0..4 {
+            for x in 0..4 {
+                put(x, y); // юг
+                put(4 + x, y); // север
+            }
+        }
+        for y in 0..4 {
+            // Восток — ячейка (0, 1): клин, чем выше строка, тем уже.
+            for x in 0..(1 + y) {
+                put(x, 4 + y);
+            }
+        }
+        let mesh = super::box4_mesh(&rgba, w, h, [2, 2], 1, Vec2::new(1.0, 1.0)).expect("объём");
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .and_then(|a| a.as_float3())
+            .unwrap()
+            .to_vec();
+        // Глубина — 4 пикселя по 0,25 м: от −0,5 до 0,5 по Z.
+        let (min_z, max_z) = positions
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[2]), b.max(p[2])));
+        assert!(
+            (min_z + 0.5).abs() < 1e-4 && (max_z - 0.5).abs() < 1e-4,
+            "{min_z} {max_z}"
+        );
+        // У верхней строки клина один воксель в глубину: грани лица уходят к спине.
+        let top_front = positions
+            .iter()
+            .filter(|p| (p[1] - 1.0).abs() < 1e-4)
+            .map(|p| p[2])
+            .fold(f32::MIN, f32::max);
+        assert!(top_front < 0.0, "верх клина узкий: {top_front}");
+    }
+
     #[test]
     fn the_first_cell_of_a_sheet_is_cut_out() {
         // Лист 2×1: левая ячейка красная, правая синяя.
