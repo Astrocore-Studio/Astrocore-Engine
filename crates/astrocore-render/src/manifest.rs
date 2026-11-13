@@ -49,6 +49,9 @@ pub enum SpriteLayout {
     Billboard,
     /// Спрайт лежит на полу плашмя и имеет толщину.
     Flat,
+    /// Стоячий спрайт, выдавленный в объём: каждый непрозрачный пиксель — столбик глубиной
+    /// `thickness`, спереди и сзади рисунок, по бокам цвет крайних пикселей. Повёрнут по `rot`.
+    Voxel,
 }
 
 fn default_thickness() -> f32 {
@@ -260,8 +263,10 @@ fn sync_placements(
     sprites: Res<PlacementSprites>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    images: Res<Assets<Image>>,
     existing: Query<(Entity, &PlacementBillboard)>,
     mut seen: Local<Option<(u64, usize)>>,
+    mut voxel_meshes: Local<VoxelMeshes>,
 ) {
     let Some(rendered) = rendered else { return };
     let key = (rendered.world.revision().0, sprites.0.len());
@@ -269,6 +274,14 @@ fn sync_placements(
         return;
     }
     *seen = Some(key);
+    let rot: HashMap<ObjectId, u8> = rendered
+        .world
+        .authored()
+        .filter_map(|o| {
+            let q = o.metadata.get("rot")?.parse::<u8>().ok()?;
+            Some((o.id, q % 4))
+        })
+        .collect();
     let want: HashMap<ObjectId, (Vec3, &PlacementSprite)> = rendered
         .world
         .authored()
@@ -294,9 +307,31 @@ fn sync_placements(
     }
     for (id, (feet, sprite)) in want {
         if have.contains_key(&id) {
-            commands
-                .entity(have[&id])
-                .insert(Transform::from_translation(feet));
+            let mut t = Transform::from_translation(feet);
+            if sprite.layout == SpriteLayout::Voxel {
+                t.rotation = Quat::from_rotation_y(
+                    f32::from(rot.get(&id).copied().unwrap_or(0)) * std::f32::consts::FRAC_PI_2,
+                );
+            }
+            commands.entity(have[&id]).insert(t);
+            continue;
+        }
+        if sprite.layout == SpriteLayout::Voxel
+            && let Some(mesh) = voxel_meshes.get(sprite, &images, &mut meshes)
+        {
+            let material = voxel_material(sprite, &mut materials);
+            let quarters = rot.get(&id).copied().unwrap_or(0);
+            let e = commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(material),
+                    Transform::from_translation(feet).with_rotation(Quat::from_rotation_y(
+                        f32::from(quarters) * std::f32::consts::FRAC_PI_2,
+                    )),
+                    PlacementBillboard(id),
+                ))
+                .id();
+            let _ = e;
             continue;
         }
         if sprite.layout == SpriteLayout::Flat {
@@ -320,6 +355,139 @@ fn sync_placements(
         );
         commands.entity(e).insert(PlacementBillboard(id));
     }
+}
+
+/// Сетки вокселей по картинке: одна на спрайт, а не на каждый предмет.
+#[derive(Default)]
+pub struct VoxelMeshes(HashMap<AssetId<Image>, Handle<Mesh>>);
+
+impl VoxelMeshes {
+    fn get(
+        &mut self,
+        sprite: &PlacementSprite,
+        images: &Assets<Image>,
+        meshes: &mut Assets<Mesh>,
+    ) -> Option<Handle<Mesh>> {
+        if let Some(h) = self.0.get(&sprite.image.id()) {
+            return Some(h.clone());
+        }
+        let img = images.get(&sprite.image)?;
+        let data = img.data.as_ref()?;
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let mesh = voxel_mesh(data, w, h, sprite.size, sprite.thickness)?;
+        let handle = meshes.add(mesh);
+        self.0.insert(sprite.image.id(), handle.clone());
+        Some(handle)
+    }
+}
+
+fn voxel_material(
+    sprite: &PlacementSprite,
+    materials: &mut Assets<StandardMaterial>,
+) -> Handle<StandardMaterial> {
+    materials.add(StandardMaterial {
+        base_color_texture: Some(sprite.image.clone()),
+        reflectance: 0.05,
+        alpha_mode: AlphaMode::Opaque,
+        cull_mode: Some(bevy::render::render_resource::Face::Back),
+        ..default()
+    })
+}
+
+/// Объёмная модель из RGBA-картинки: основание в начале координат, лицо к +Z, ширина `size.x`,
+/// высота `size.y`, глубина `depth` (по половине в обе стороны от плоскости XY). Грани рисуются
+/// только там, где соседний пиксель прозрачен; цвет грани — цвет её пикселя (UV в центр пикселя).
+/// `None`, если в картинке нет непрозрачных пикселей или она слишком велика.
+pub fn voxel_mesh(rgba: &[u8], w: usize, h: usize, size: Vec2, depth: f32) -> Option<Mesh> {
+    if w == 0 || h == 0 || w > 256 || h > 256 || rgba.len() < w * h * 4 {
+        return None;
+    }
+    let solid = |x: i64, y: i64| -> bool {
+        x >= 0
+            && y >= 0
+            && (x as usize) < w
+            && (y as usize) < h
+            && rgba[(y as usize * w + x as usize) * 4 + 3] >= 128
+    };
+    let (pw, ph) = (size.x / w as f32, size.y / h as f32);
+    let hd = depth * 0.5;
+    let mut pos: Vec<[f32; 3]> = Vec::new();
+    let mut nor: Vec<[f32; 3]> = Vec::new();
+    let mut uv: Vec<[f32; 2]> = Vec::new();
+    let mut idx: Vec<u32> = Vec::new();
+    let mut quad = |p: [[f32; 3]; 4], n: [f32; 3], t: [f32; 2]| {
+        let base = pos.len() as u32;
+        pos.extend(p);
+        nor.extend([n; 4]);
+        uv.extend([t; 4]);
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+    let mut any = false;
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            if !solid(x, y) {
+                continue;
+            }
+            any = true;
+            let t = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+            let x0 = -size.x * 0.5 + x as f32 * pw;
+            let x1 = x0 + pw;
+            // Строка 0 картинки — верх спрайта.
+            let y1 = size.y - y as f32 * ph;
+            let y0 = y1 - ph;
+            // Лицо (+Z) и спина (−Z).
+            quad(
+                [[x0, y0, hd], [x1, y0, hd], [x1, y1, hd], [x0, y1, hd]],
+                [0.0, 0.0, 1.0],
+                t,
+            );
+            quad(
+                [[x1, y0, -hd], [x0, y0, -hd], [x0, y1, -hd], [x1, y1, -hd]],
+                [0.0, 0.0, -1.0],
+                t,
+            );
+            if !solid(x - 1, y) {
+                quad(
+                    [[x0, y0, -hd], [x0, y0, hd], [x0, y1, hd], [x0, y1, -hd]],
+                    [-1.0, 0.0, 0.0],
+                    t,
+                );
+            }
+            if !solid(x + 1, y) {
+                quad(
+                    [[x1, y0, hd], [x1, y0, -hd], [x1, y1, -hd], [x1, y1, hd]],
+                    [1.0, 0.0, 0.0],
+                    t,
+                );
+            }
+            if !solid(x, y - 1) {
+                quad(
+                    [[x0, y1, hd], [x1, y1, hd], [x1, y1, -hd], [x0, y1, -hd]],
+                    [0.0, 1.0, 0.0],
+                    t,
+                );
+            }
+            if !solid(x, y + 1) {
+                quad(
+                    [[x0, y0, -hd], [x1, y0, -hd], [x1, y0, hd], [x0, y0, hd]],
+                    [0.0, -1.0, 0.0],
+                    t,
+                );
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut mesh = Mesh::new(
+        bevy::render::render_resource::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    mesh.insert_indices(bevy::mesh::Indices::U32(idx));
+    Some(mesh)
 }
 
 /// Сколько слоёв в стопке лежащего спрайта.
@@ -370,6 +538,25 @@ fn spawn_flat(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_sprite_becomes_a_voxel_slab_with_side_faces_only_on_the_outline() {
+        // 2×2 картинка: три непрозрачных пикселя, правый нижний прозрачен.
+        let mut rgba = vec![0u8; 2 * 2 * 4];
+        for (i, a) in [255u8, 255, 255, 0].iter().enumerate() {
+            rgba[i * 4] = 200;
+            rgba[i * 4 + 3] = *a;
+        }
+        let mesh = super::voxel_mesh(&rgba, 2, 2, Vec2::new(1.0, 1.0), 0.2).expect("сетка");
+        // Лицо и спина у 3 пикселей (6 граней) + боковые: у верхнего левого — лево, верх;
+        // у верхнего правого — право, верх, низ; у нижнего левого — лево, низ, право.
+        let n = mesh.count_vertices();
+        assert_eq!(n, 4 * (6 + 2 + 3 + 3));
+        assert!(
+            super::voxel_mesh(&[0; 16], 2, 2, Vec2::ONE, 0.2).is_none(),
+            "пустая картинка"
+        );
+    }
+
     use super::*;
 
     #[test]
