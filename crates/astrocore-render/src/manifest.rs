@@ -38,6 +38,12 @@ pub struct SpriteEntry {
     /// Толщина лежащего спрайта, м (слои спрайта, уложенные стопкой); по умолчанию 3 см.
     #[serde(default = "default_thickness")]
     pub thickness: f32,
+    /// Лист из `[столбцов, строк]` ячеек (направления и кадры анимации): берётся первая ячейка.
+    #[serde(default)]
+    pub grid: Option<[u32; 2]>,
+    /// Ориентированный лежащий спрайт (конвейер, труба): поворот по `rot` карты, а не случайный.
+    #[serde(default)]
+    pub oriented: bool,
 }
 
 /// Вид размещения в мире.
@@ -119,6 +125,7 @@ pub struct PlacementSprite {
     pub size: Vec2,
     pub layout: SpriteLayout,
     pub thickness: f32,
+    pub oriented: bool,
 }
 
 /// Спрайты размещений по идентификатору прототипа.
@@ -211,7 +218,10 @@ impl RenderManifest {
         for (id, e) in &self.sprites {
             let pid =
                 PrototypeId::new(id.as_str()).map_err(|e| ManifestError::Parse(e.to_string()))?;
-            let img = load_png(&safe_join(base, &e.image)?, false)?;
+            let mut img = load_png(&safe_join(base, &e.image)?, false)?;
+            if let Some([cols, rows]) = e.grid {
+                img = first_cell(img, cols, rows);
+            }
             if !(e.size[0] > 0.0
                 && e.size[1] > 0.0
                 && e.size[0].is_finite()
@@ -226,12 +236,46 @@ impl RenderManifest {
                     size: Vec2::new(e.size[0], e.size[1]),
                     layout: e.layout,
                     thickness: e.thickness.clamp(0.001, 0.5),
+                    oriented: e.oriented,
                 },
             );
         }
         let doors = crate::doors::install_doors(&self.doors, base, images)?;
         Ok((textures, sprites, doors))
     }
+}
+
+/// Первая ячейка листа (`cols × rows`): направление «юг», первый кадр анимации.
+fn first_cell(image: Image, cols: u32, rows: u32) -> Image {
+    let (w, h) = (image.width(), image.height());
+    if (cols <= 1 && rows <= 1) || cols == 0 || rows == 0 || w % cols != 0 || h % rows != 0 {
+        return image;
+    }
+    let Some(data) = image.data.as_ref() else {
+        return image;
+    };
+    let (cw, ch) = ((w / cols) as usize, (h / rows) as usize);
+    let stride = w as usize * 4;
+    if data.len() < stride * h as usize {
+        return image;
+    }
+    let mut out = Vec::with_capacity(cw * ch * 4);
+    for y in 0..ch {
+        out.extend_from_slice(&data[y * stride..y * stride + cw * 4]);
+    }
+    let mut cropped = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: cw as u32,
+            height: ch as u32,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        out,
+        image.texture_descriptor.format,
+        RenderAssetUsages::default(),
+    );
+    cropped.sampler = image.sampler.clone();
+    cropped
 }
 
 /// Маркер билборда размещения.
@@ -335,7 +379,19 @@ fn sync_placements(
             continue;
         }
         if sprite.layout == SpriteLayout::Flat {
-            let e = spawn_flat(&mut commands, &mut meshes, &mut materials, id, feet, sprite);
+            let e = spawn_flat(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                id,
+                feet,
+                sprite,
+                if sprite.oriented {
+                    Some(rot.get(&id).copied().unwrap_or(0))
+                } else {
+                    None
+                },
+            );
             commands.entity(e).insert(PlacementBillboard(id));
             continue;
         }
@@ -503,9 +559,14 @@ fn spawn_flat(
     id: ObjectId,
     feet: Vec3,
     sprite: &PlacementSprite,
+    rot: Option<u8>,
 ) -> Entity {
     let quad = meshes.add(Rectangle::new(sprite.size.x, sprite.size.y));
-    let yaw = (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0;
+    // Повёрнутые на карте вещи (конвейеры, трубы) лежат по `rot`, остальные — как попало.
+    let yaw = match rot {
+        Some(q) => f32::from(q) * std::f32::consts::FRAC_PI_2,
+        None => (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0,
+    };
     let step = sprite.thickness / FLAT_LAYERS as f32;
     commands
         .spawn((
@@ -538,6 +599,34 @@ fn spawn_flat(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_first_cell_of_a_sheet_is_cut_out() {
+        // Лист 2×1: левая ячейка красная, правая синяя.
+        let mut data = Vec::new();
+        for _ in 0..2 {
+            data.extend_from_slice(&[255, 0, 0, 255, 0, 0, 255, 255]);
+        }
+        let img = Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            data.iter()
+                .copied()
+                .collect::<Vec<u8>>()
+                .chunks(8)
+                .flat_map(|c| c.to_vec())
+                .collect(),
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        let cut = super::first_cell(img, 2, 1);
+        assert_eq!((cut.width(), cut.height()), (1, 2));
+        assert_eq!(&cut.data.as_ref().unwrap()[..4], &[255, 0, 0, 255]);
+    }
+
     #[test]
     fn a_sprite_becomes_a_voxel_slab_with_side_faces_only_on_the_outline() {
         // 2×2 картинка: три непрозрачных пикселя, правый нижний прозрачен.
