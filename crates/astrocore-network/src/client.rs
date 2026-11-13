@@ -52,6 +52,8 @@ pub enum ClientEvent {
     },
     /// Рельеф получен целиком или изменился.
     TerrainChanged,
+    /// Сервер начал новый раунд: состояние сброшено, нужно отправить `Hello` заново.
+    RoundRestarted,
     Rejected {
         reason: RejectReason,
         detail: String,
@@ -146,6 +148,24 @@ impl ClientCore {
             terrain_dirty: Vec::new(),
             terrain_serial: 0,
         }
+    }
+
+    /// Новый раунд на сервере: всё, что пришло от прежнего, забыть. Содержимое по хешу остаётся.
+    fn restart(&mut self) {
+        self.you = None;
+        self.replica = None;
+        self.known_world_hash = 0;
+        self.physics = BoxWorld::default();
+        self.reassembler.reset();
+        self.buffered_ops.clear();
+        self.doors.clear();
+        self.components.clear();
+        self.state = CharacterState::at(Vec3::ZERO);
+        self.seq = 0;
+        self.pending.clear();
+        self.history.clear();
+        self.remotes.clear();
+        self.snapshot_serial += 1;
     }
 
     // ---- исходящие пакеты -----------------------------------------------------
@@ -515,6 +535,10 @@ impl ClientCore {
                 self.doors.insert(net, (element, open));
                 self.sync_physics_doors();
                 events.push(ClientEvent::DoorChanged { net, open });
+            }
+            ServerMessage::RoundRestart => {
+                self.restart();
+                events.push(ClientEvent::RoundRestarted);
             }
             ServerMessage::Reject { reason, detail } => {
                 events.push(ClientEvent::Rejected { reason, detail })

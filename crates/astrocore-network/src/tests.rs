@@ -1877,3 +1877,16 @@ mod game_commands {
         assert_eq!(h.server.player_count(), 1, "игрок не отключён");
     }
 }
+
+#[test]
+fn a_round_restart_clears_the_client_and_asks_it_to_join_again() {
+    let mut core = crate::client::ClientCore::new("x", "testkit", 12345);
+    let events = core
+        .on_packet(&encode(&ServerMessage::RoundRestart).unwrap())
+        .unwrap();
+    assert!(matches!(events[..], [ClientEvent::RoundRestarted]));
+    assert_eq!(core.net_id(), None);
+    // Хеш локальной карты сброшен: новый сервер пришлёт её целиком.
+    let hello: ClientMessage = decode(&core.hello_packet()).unwrap();
+    assert!(matches!(hello, ClientMessage::Hello { world_hash: 0, .. }));
+}

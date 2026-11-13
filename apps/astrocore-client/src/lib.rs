@@ -577,6 +577,10 @@ fn net_poll(
                 ClientEvent::Rejected { reason, detail } => {
                     eprintln!("сервер отклонил: {reason:?}: {detail}")
                 }
+                ClientEvent::RoundRestarted => {
+                    println!("новый раунд: входим заново");
+                    net.transport.send(true, &net.core.hello_packet());
+                }
                 ClientEvent::Joined { you } => println!("вошли в игру: {you:?}"),
                 _ => {}
             }

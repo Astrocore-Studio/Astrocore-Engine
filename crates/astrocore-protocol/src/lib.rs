@@ -102,6 +102,8 @@ pub enum ServerMessage {
     },
     /// Содержимого с таким хешем у сервера нет.
     ContentMissing { hash: [u8; 32] },
+    /// Сервер начал новый раунд с нуля: клиент сбрасывает состояние и входит заново (`Hello`).
+    RoundRestart,
     Reject {
         reason: RejectReason,
         detail: String,

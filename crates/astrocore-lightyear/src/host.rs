@@ -44,6 +44,19 @@ impl LyGameHost {
         &mut self.game
     }
 
+    /// Новый раунд: прежняя игра отбрасывается, подключённые клиенты получают `RoundRestart` и
+    /// входят в новую игру заново (`Hello`), не переподключаясь.
+    pub fn replace_game(&mut self, game: GameServer) {
+        self.game = game;
+        for c in self.known.clone() {
+            let outs = self.game.connect(conn(c));
+            self.route(outs);
+            if let Some(bytes) = encode_out(&ServerMessage::RoundRestart) {
+                self.ly.send(c, true, bytes);
+            }
+        }
+    }
+
     fn route(&mut self, outs: Vec<Out>) {
         let mut queue = outs;
         while let Some(out) = queue.pop() {
