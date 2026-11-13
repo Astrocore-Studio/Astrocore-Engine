@@ -116,7 +116,7 @@ fn walls_block_movement_and_character_slides_along_them() {
         0.5,
     );
     assert!(s.pos.z > z0 + 0.5, "скользим вдоль стены");
-    assert!(s.pos.x < 5.7);
+    assert!(s.pos.x < 6.0 - 0.1 - shape.radius + 0.05);
 }
 
 #[test]

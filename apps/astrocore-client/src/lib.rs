@@ -474,7 +474,7 @@ fn setup_demo_world(
             &mut materials,
             &sheet.0,
             feet,
-            Vec2::new(0.9, 1.8),
+            Vec2::new(0.5, 1.0),
             facing,
             DirectionSet::Four,
         );
@@ -540,7 +540,7 @@ fn drive_camera(look: Res<Look>, net: Option<NonSend<Net>>, mut rigs: Query<&mut
         rig.pitch = look.pitch;
         if let Some(net) = net.as_ref() {
             let p = net.core.position();
-            rig.target = Vec3::new(p.x, p.y + 1.6, p.z);
+            rig.target = Vec3::new(p.x, p.y + 0.9, p.z);
             rig.distance = if look.first_person {
                 0.0
             } else {
@@ -780,7 +780,7 @@ fn sync_remote_players(
 ) {
     let (sheet, size) = match (&player, &sheet) {
         (Some(p), _) => (p.sheet.clone(), p.size),
-        (None, Some(s)) => (s.0.clone(), Vec2::new(0.9, 1.8)),
+        (None, Some(s)) => (s.0.clone(), Vec2::new(0.5, 1.0)),
         _ => return,
     };
     let ids = net.core.remote_entities();

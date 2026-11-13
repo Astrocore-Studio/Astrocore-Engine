@@ -14,9 +14,9 @@ pub struct CharacterShape {
 impl Default for CharacterShape {
     fn default() -> Self {
         Self {
-            radius: 0.3,
-            height: 1.8,
-            step_height: 0.35,
+            radius: 0.17,
+            height: 1.0,
+            step_height: 0.2,
         }
     }
 }
