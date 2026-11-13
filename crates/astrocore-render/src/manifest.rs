@@ -395,6 +395,28 @@ fn sync_placements(
             let _ = e;
             continue;
         }
+        // Лежащие предметы — настоящий объём в пару пикселей (`thickness`), лицом вверх; пока
+        // картинка не загружена или слишком велика, ниже остаются слои-пластины.
+        if sprite.layout == SpriteLayout::Flat
+            && let Some(mesh) = voxel_meshes.get(sprite, &images, &mut meshes)
+        {
+            let material = voxel_material(sprite, &mut materials);
+            let yaw = match sprite.oriented.then(|| rot.get(&id).copied().unwrap_or(0)) {
+                Some(q) => f32::from(q) * std::f32::consts::FRAC_PI_2,
+                None => (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0,
+            };
+            let spin = Quat::from_rotation_y(yaw);
+            // Модель стоит на «пластине» XY лицом к +Z: кладём лицом вверх, низ рисунка к −Z.
+            let offset = Vec3::new(0.0, sprite.thickness * 0.5 + 0.004, sprite.size.y * 0.5);
+            commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                Transform::from_translation(feet + spin * offset)
+                    .with_rotation(spin * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                PlacementBillboard(id),
+            ));
+            continue;
+        }
         if sprite.layout == SpriteLayout::Flat {
             let e = spawn_flat(
                 &mut commands,
