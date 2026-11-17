@@ -11,7 +11,7 @@ use bevy::image::{
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use crate::billboard::{SheetAnimation, SpriteSheet, spawn_billboard_with};
+use crate::billboard::SheetAnimation;
 use crate::{MaterialCache, RenderedWorld};
 
 /// Предел размера файла манифеста и картинки: данные недоверенные.
@@ -54,13 +54,13 @@ pub struct SpriteEntry {
     pub oriented: bool,
 }
 
-/// Вид размещения в мире. Все спрайты плоские, как в Daggerfall: либо стоят лицом к камере,
-/// либо лежат на полу.
+/// Вид размещения в мире. Все спрайты плоские, как в Daggerfall: либо стоят, либо лежат на
+/// полу, и у всех есть объём в несколько пикселей.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpriteLayout {
-    /// Вертикальный спрайт, повёрнутый к камере. Старые названия `voxel` и `box4` (объёмные
-    /// стоячие модели) читаются как билборд.
+    /// Стоячий спрайт: стоит вертикально, повёрнут по `rot` карты, объём в пару пикселей
+    /// (`thickness`). Старые названия `voxel` и `box4` читаются так же.
     #[default]
     #[serde(alias = "voxel", alias = "box4")]
     Billboard,
@@ -437,59 +437,42 @@ fn sync_placements(
             PlacementAt(feet),
         );
         let animation = sprite.animation.clone();
-        // Лежащий неанимированный предмет — объём в пару пикселей (`thickness`), лицом вверх.
-        if sprite.layout == SpriteLayout::Flat
-            && animation.is_none()
+        let upright = sprite.layout == SpriteLayout::Billboard;
+        // Спрайты плоские, но с объёмом в пару пикселей (`thickness`): неанимированный — выдавлен
+        // по пикселям, анимированный — стопка пластин. Лежащий лицом вверх, стоячий — по `rot`.
+        if animation.is_none()
             && let Some(mesh) = voxel_meshes.get(sprite, &images, &mut meshes)
         {
             let material = voxel_material(sprite, &mut materials);
-            let yaw = match sprite.oriented.then(|| rot.get(&id).copied().unwrap_or(0)) {
-                Some(q) => f32::from(q) * std::f32::consts::FRAC_PI_2,
-                None => (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0,
-            };
-            let spin = Quat::from_rotation_y(yaw);
-            // Модель стоит на «пластине» XY лицом к +Z: кладём лицом вверх, низ рисунка к −Z.
-            let offset = Vec3::new(0.0, sprite.thickness * 0.5 + 0.004, sprite.size.y * 0.5);
-            commands.spawn((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
+            let transform = if upright {
+                let q = rot.get(&id).copied().unwrap_or(0);
+                Transform::from_translation(feet).with_rotation(Quat::from_rotation_y(
+                    f32::from(q) * std::f32::consts::FRAC_PI_2,
+                ))
+            } else {
+                let yaw = match sprite.oriented.then(|| rot.get(&id).copied().unwrap_or(0)) {
+                    Some(q) => f32::from(q) * std::f32::consts::FRAC_PI_2,
+                    None => (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0,
+                };
+                let spin = Quat::from_rotation_y(yaw);
+                // Модель стоит на «пластине» XY лицом к +Z: кладём лицом вверх, низ рисунка к −Z.
+                let offset = Vec3::new(0.0, sprite.thickness * 0.5 + 0.004, sprite.size.y * 0.5);
                 Transform::from_translation(feet + spin * offset)
-                    .with_rotation(spin * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-                marks,
-            ));
+                    .with_rotation(spin * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+            };
+            commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform, marks));
             continue;
         }
-        if sprite.layout == SpriteLayout::Flat {
-            let e = spawn_flat(
-                &mut commands,
-                &mut meshes,
-                &mut materials,
-                id,
-                feet,
-                sprite,
-                if sprite.oriented {
-                    Some(rot.get(&id).copied().unwrap_or(0))
-                } else {
-                    None
-                },
-            );
-            commands.entity(e).insert(marks);
-            continue;
-        }
-        let sheet = SpriteSheet {
-            image: sprite.image.clone(),
-            columns: 1,
-        };
-        let e = spawn_billboard_with(
+        let rot_of = || rot.get(&id).copied().unwrap_or(0);
+        let e = spawn_flat(
             &mut commands,
             &mut meshes,
             &mut materials,
-            &sheet,
+            id,
             feet,
-            sprite.size,
-            Vec3::Z,
-            astrocore_sprites::DirectionSet::Four,
-            animation,
+            sprite,
+            (upright || sprite.oriented).then(rot_of),
+            upright,
         );
         commands.entity(e).insert(marks);
     }
@@ -646,6 +629,7 @@ fn spawn_flat(
     feet: Vec3,
     sprite: &PlacementSprite,
     rot: Option<u8>,
+    upright: bool,
 ) -> Entity {
     let quad = meshes.add(Rectangle::new(sprite.size.x, sprite.size.y));
     // Повёрнутые на карте вещи (конвейеры, трубы) лежат по `rot`, остальные — как попало.
@@ -656,7 +640,7 @@ fn spawn_flat(
     let step = sprite.thickness / FLAT_LAYERS as f32;
     commands
         .spawn((
-            Transform::from_translation(feet + Vec3::Y * 0.004)
+            Transform::from_translation(feet + if upright { Vec3::ZERO } else { Vec3::Y * 0.004 })
                 .with_rotation(Quat::from_rotation_y(yaw)),
             Visibility::default(),
         ))
@@ -675,8 +659,17 @@ fn spawn_flat(
                 let mut layer = p.spawn((
                     Mesh3d(quad.clone()),
                     MeshMaterial3d(material),
-                    Transform::from_xyz(0.0, step * i as f32, 0.0)
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                    if upright {
+                        // Стоит: стопка пластин вдоль глубины, центр квадрата на полвысоты.
+                        Transform::from_xyz(
+                            0.0,
+                            sprite.size.y * 0.5,
+                            step * i as f32 - sprite.thickness * 0.5,
+                        )
+                    } else {
+                        Transform::from_xyz(0.0, step * i as f32, 0.0)
+                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    },
                 ));
                 if let Some(a) = &sprite.animation {
                     layer.insert(a.clone());
