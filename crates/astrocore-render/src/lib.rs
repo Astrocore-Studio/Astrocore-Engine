@@ -64,6 +64,7 @@ pub struct MaterialCache {
     pub emissive: EmissiveMaterials,
     /// Текстуры материалов (из манифеста рендера).
     pub textures: HashMap<PrototypeId, Handle<Image>>,
+    pub texture_alpha: HashMap<PrototypeId, AlphaMode>,
 }
 
 impl MaterialCache {
@@ -88,6 +89,7 @@ impl MaterialCache {
                         material_color(id)
                     },
                     base_color_texture: texture,
+                    alpha_mode: self.texture_alpha.get(id).copied().unwrap_or_default(),
                     perceptual_roughness: 0.9,
                     emissive: self.emissive.linear(id).unwrap_or(LinearRgba::BLACK),
                     ..default()

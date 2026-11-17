@@ -299,6 +299,9 @@ fn first_cell(image: Image, cols: u32, rows: u32) -> Image {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementBillboard(pub ObjectId);
 
+#[derive(Component)]
+struct PlacementAppearance(PrototypeId);
+
 pub struct PlacementSpritesPlugin;
 
 impl Plugin for PlacementSpritesPlugin {
@@ -310,9 +313,40 @@ impl Plugin for PlacementSpritesPlugin {
 }
 
 /// Передать текстуры кэшу материалов (до первой отрисовки региона).
-fn apply_material_textures(textures: Res<MaterialTextures>, mut cache: ResMut<MaterialCache>) {
+fn apply_material_textures(
+    textures: Res<MaterialTextures>,
+    images: Res<Assets<Image>>,
+    mut cache: ResMut<MaterialCache>,
+) {
     if textures.is_changed() {
         cache.textures = textures.0.clone();
+        cache.texture_alpha = textures
+            .0
+            .iter()
+            .filter_map(|(id, handle)| {
+                use bevy::render::render_resource::TextureFormat;
+                let image = images.get(handle)?;
+                if !matches!(
+                    image.texture_descriptor.format,
+                    TextureFormat::Rgba8Unorm
+                        | TextureFormat::Rgba8UnormSrgb
+                        | TextureFormat::Bgra8Unorm
+                        | TextureFormat::Bgra8UnormSrgb
+                ) {
+                    return None;
+                }
+                let data = image.data.as_ref()?;
+                let mut transparent = false;
+                for pixel in data.chunks_exact(4) {
+                    match pixel[3] {
+                        255 => {}
+                        0 => transparent = true,
+                        _ => return Some((id.clone(), AlphaMode::Blend)),
+                    }
+                }
+                transparent.then(|| (id.clone(), AlphaMode::Mask(0.5)))
+            })
+            .collect();
         cache.clear();
     }
 }
@@ -325,7 +359,7 @@ fn sync_placements(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     images: Res<Assets<Image>>,
-    existing: Query<(Entity, &PlacementBillboard)>,
+    existing: Query<(Entity, &PlacementBillboard, &PlacementAppearance)>,
     mut seen: Local<Option<(u64, usize)>>,
     mut voxel_meshes: Local<VoxelMeshes>,
 ) {
@@ -343,30 +377,40 @@ fn sync_placements(
             Some((o.id, q % 4))
         })
         .collect();
-    let want: HashMap<ObjectId, (Vec3, &PlacementSprite)> = rendered
+    let want: HashMap<_, _> = rendered
         .world
         .authored()
         .filter_map(|o| {
             let AuthoredKind::Placement { prototype } = &o.kind else {
                 return None;
             };
-            let s = sprites.0.get(prototype)?;
+            let (sprite_id, sprite) = o
+                .metadata
+                .get("render_sprite")
+                .and_then(|s| PrototypeId::new(s.as_str()).ok())
+                .as_ref()
+                .and_then(|id| sprites.0.get_key_value(id))
+                .or_else(|| sprites.0.get_key_value(prototype))?;
             let (lo, hi) = (o.min(), o.max());
             Some((
                 o.id,
-                (Vec3::new((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5), s),
+                (
+                    Vec3::new((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5),
+                    sprite_id,
+                    sprite,
+                ),
             ))
         })
         .collect();
     let mut have: HashMap<ObjectId, Entity> = HashMap::new();
-    for (e, b) in &existing {
-        if want.contains_key(&b.0) && !have.contains_key(&b.0) {
+    for (e, b, active) in &existing {
+        if want.get(&b.0).is_some_and(|(_, id, _)| **id == active.0) && !have.contains_key(&b.0) {
             have.insert(b.0, e);
         } else {
             commands.entity(e).despawn();
         }
     }
-    for (id, (feet, sprite)) in want {
+    for (id, (feet, sprite_id, sprite)) in want {
         if have.contains_key(&id) {
             let mut t = Transform::from_translation(feet);
             if matches!(sprite.layout, SpriteLayout::Voxel | SpriteLayout::Box4) {
@@ -390,6 +434,7 @@ fn sync_placements(
                         f32::from(quarters) * std::f32::consts::FRAC_PI_2,
                     )),
                     PlacementBillboard(id),
+                    PlacementAppearance(sprite_id.clone()),
                 ))
                 .id();
             let _ = e;
@@ -414,6 +459,7 @@ fn sync_placements(
                 Transform::from_translation(feet + spin * offset)
                     .with_rotation(spin * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 PlacementBillboard(id),
+                PlacementAppearance(sprite_id.clone()),
             ));
             continue;
         }
@@ -431,7 +477,10 @@ fn sync_placements(
                     None
                 },
             );
-            commands.entity(e).insert(PlacementBillboard(id));
+            commands.entity(e).insert((
+                PlacementBillboard(id),
+                PlacementAppearance(sprite_id.clone()),
+            ));
             continue;
         }
         let sheet = SpriteSheet {
@@ -448,7 +497,10 @@ fn sync_placements(
             Vec3::Z,
             astrocore_sprites::DirectionSet::Four,
         );
-        commands.entity(e).insert(PlacementBillboard(id));
+        commands.entity(e).insert((
+            PlacementBillboard(id),
+            PlacementAppearance(sprite_id.clone()),
+        ));
     }
 }
 
