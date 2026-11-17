@@ -15,7 +15,9 @@ use astrocore_core::PrototypeId;
 use astrocore_world::{DirtyRegion, World};
 use bevy::prelude::*;
 
-pub use billboard::{BillboardPlugin, BillboardQuad, DirectionalSprite, SpriteSheet};
+pub use billboard::{
+    BillboardPlugin, BillboardQuad, DirectionalSprite, SheetAnimation, SpriteSheet,
+};
 pub use camera::{CameraMode, CameraRig, CameraRigPlugin};
 pub use diagnostics::{RenderDiagnosticsPlugin, RenderStats, RenderStatsConfig};
 pub use doors::{DoorAnim, DoorPanel, DoorSprites, DoorSpritesPlugin, DoorStates, Phase};

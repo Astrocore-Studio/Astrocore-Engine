@@ -23,6 +23,75 @@ pub struct DirectionalSprite {
     columns: u32,
 }
 
+/// Анимация по листу RSI: ячейки идут направление за направлением, внутри направления — кадры.
+/// Рисуется первое направление; кадры сменяются по `delays` по кругу (`AutoAnimated` и `Loop`
+/// в RobustToolbox по умолчанию).
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct SheetAnimation {
+    pub cols: u32,
+    pub rows: u32,
+    pub delays: Vec<f32>,
+}
+
+impl SheetAnimation {
+    /// Анимация, если кадров больше одного, задержки заданы для каждого, положительны и лист
+    /// вмещает все кадры; иначе `None` — спрайт статичен.
+    pub fn new(cols: u32, rows: u32, frames: u32, delays: &[f32]) -> Option<Self> {
+        let ok = frames > 1
+            && delays.len() == frames as usize
+            && delays.iter().all(|d| d.is_finite() && *d > 0.0)
+            && cols >= 1
+            && rows >= 1
+            && cols * rows >= frames;
+        ok.then(|| Self {
+            cols,
+            rows,
+            delays: delays.to_vec(),
+        })
+    }
+
+    /// Номер кадра в момент `t` секунд: по кругу, с задержкой каждого кадра.
+    pub fn frame_at(&self, t: f32) -> usize {
+        let cycle: f32 = self.delays.iter().sum();
+        let mut left = t.rem_euclid(cycle);
+        for (i, d) in self.delays.iter().enumerate() {
+            if left < *d {
+                return i;
+            }
+            left -= d;
+        }
+        self.delays.len() - 1
+    }
+
+    /// Преобразование UV: окно ячейки кадра `frame` на листе.
+    pub fn uv(&self, frame: usize) -> bevy::math::Affine2 {
+        let (cols, rows) = (self.cols as usize, self.rows as usize);
+        let (cx, cy) = ((frame % cols) as f32, (frame / cols) as f32);
+        bevy::math::Affine2::from_scale_angle_translation(
+            Vec2::new(1.0 / cols as f32, 1.0 / rows as f32),
+            0.0,
+            Vec2::new(cx / cols as f32, cy / rows as f32),
+        )
+    }
+}
+
+/// Сменить кадр у всех анимированных спрайтов (общие часы, все экземпляры в такт).
+pub fn animate_sheets(
+    time: Res<Time>,
+    query: Query<(&MeshMaterial3d<StandardMaterial>, &SheetAnimation)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let t = time.elapsed_secs();
+    for (handle, anim) in &query {
+        let uv = anim.uv(anim.frame_at(t));
+        if let Some(mut mat) = materials.get_mut(&handle.0)
+            && mat.uv_transform != uv
+        {
+            mat.uv_transform = uv;
+        }
+    }
+}
+
 /// Позиция ног — `Transform.translation`; квадрат смещён вверх на половину высоты дочерней сущностью.
 #[derive(Component)]
 pub struct BillboardQuad;
@@ -81,6 +150,24 @@ pub fn spawn_billboard(
     facing: Vec3,
     set: DirectionSet,
 ) -> Entity {
+    spawn_billboard_with(
+        commands, meshes, materials, sheet, feet, size, facing, set, None,
+    )
+}
+
+/// То же, но с анимацией по листу кадров: направление не выбирается, рисуется кадр по времени.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_billboard_with(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    sheet: &SpriteSheet,
+    feet: Vec3,
+    size: Vec2,
+    facing: Vec3,
+    set: DirectionSet,
+    animation: Option<SheetAnimation>,
+) -> Entity {
     let material = materials.add(StandardMaterial {
         base_color_texture: Some(sheet.image.clone()),
         unlit: true,
@@ -101,11 +188,14 @@ pub fn spawn_billboard(
             },
         ))
         .with_children(|p| {
-            p.spawn((
+            let mut quad = p.spawn((
                 Mesh3d(meshes.add(quad_mesh(size.x, size.y))),
                 MeshMaterial3d(material),
                 BillboardQuad,
             ));
+            if let Some(a) = animation {
+                quad.insert(a);
+            }
         })
         .id()
 }
@@ -148,6 +238,7 @@ type QuadFilter = Or<(With<BillboardQuad>, With<SpriteLayer>)>;
 type QuadData = (
     &'static MeshMaterial3d<StandardMaterial>,
     Option<&'static SpriteLayer>,
+    Option<&'static SheetAnimation>,
 );
 
 fn update_billboards(
@@ -178,7 +269,8 @@ fn update_billboards(
             sprite.set,
         );
         for &child in children {
-            if let Ok((handle, layer)) = quads.get(child)
+            if let Ok((handle, layer, animation)) = quads.get(child)
+                && animation.is_none()
                 && let Some(mut mat) = materials.get_mut(&handle.0)
             {
                 let columns = layer.map_or(sprite.columns, |l| l.columns);
@@ -336,5 +428,51 @@ mod tests {
         // Объект смотрит на +X, камера тоже на +X: кадр «к камере» одинаков у основы и слоёв.
         assert_eq!(uv(l1), uv(base_quad));
         assert_eq!(uv(l2), uv(base_quad));
+    }
+}
+
+#[cfg(test)]
+mod animation_tests {
+    use super::SheetAnimation;
+
+    #[test]
+    fn frames_follow_their_delays_and_loop() {
+        let a = SheetAnimation::new(2, 2, 3, &[0.1, 0.2, 0.3]).expect("анимация");
+        assert_eq!(a.frame_at(0.0), 0);
+        assert_eq!(a.frame_at(0.09), 0);
+        assert_eq!(a.frame_at(0.1), 1);
+        assert_eq!(a.frame_at(0.29), 1);
+        assert_eq!(a.frame_at(0.3), 2);
+        assert_eq!(a.frame_at(0.59), 2);
+        // Цикл 0,6 с: дальше всё по кругу.
+        assert_eq!(a.frame_at(0.6), 0);
+        assert_eq!(a.frame_at(0.75), 1);
+        assert_eq!(a.frame_at(12.0 + 0.35), 2);
+    }
+
+    #[test]
+    fn only_a_consistent_multi_frame_sheet_is_animated() {
+        assert!(SheetAnimation::new(1, 1, 1, &[]).is_none(), "один кадр");
+        assert!(
+            SheetAnimation::new(2, 2, 3, &[0.1, 0.1]).is_none(),
+            "не хватает задержек"
+        );
+        assert!(
+            SheetAnimation::new(2, 2, 3, &[0.1, 0.0, 0.1]).is_none(),
+            "нулевая задержка"
+        );
+        assert!(
+            SheetAnimation::new(1, 2, 3, &[0.1; 3]).is_none(),
+            "лист мал"
+        );
+    }
+
+    #[test]
+    fn the_uv_window_walks_the_sheet_row_by_row() {
+        let a = SheetAnimation::new(3, 2, 5, &[0.1; 5]).expect("анимация");
+        let at = |f: usize| a.uv(f).transform_point2(bevy::prelude::Vec2::ZERO);
+        assert_eq!(at(0), bevy::prelude::Vec2::new(0.0, 0.0));
+        assert!((at(1).x - 1.0 / 3.0).abs() < 1e-6 && at(1).y == 0.0);
+        assert!((at(4).x - 1.0 / 3.0).abs() < 1e-6 && (at(4).y - 0.5).abs() < 1e-6);
     }
 }
