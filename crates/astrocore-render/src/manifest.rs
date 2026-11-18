@@ -52,6 +52,10 @@ pub struct SpriteEntry {
     /// Ориентированный лежащий спрайт (конвейер, труба): поворот по `rot` карты, а не случайный.
     #[serde(default)]
     pub oriented: bool,
+    /// Воксельная модель (`.avox` или `.vox`, путь относительно манифеста): если есть, размещение
+    /// рисуется ею, а не спрайтом (ADR-0011). Модель стоит опорой на полу, перед — по `rot`.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Вид размещения в мире. Все спрайты плоские, как в Daggerfall: либо стоят, либо лежат на
@@ -140,6 +144,8 @@ pub struct PlacementSprite {
     pub oriented: bool,
     /// Анимация по листу кадров; `None` — статичный спрайт (картинка уже обрезана до ячейки).
     pub animation: Option<SheetAnimation>,
+    /// Меш воксельной модели, если она задана: тогда спрайт не рисуется.
+    pub model: Option<Handle<Mesh>>,
 }
 
 /// Спрайты размещений по идентификатору прототипа.
@@ -221,6 +227,23 @@ impl RenderManifest {
         ),
         ManifestError,
     > {
+        self.install_with_models(base, images, &mut Assets::<Mesh>::default())
+    }
+
+    /// То же, с воксельными моделями: их меши кладутся в `meshes`, одна сетка на файл.
+    pub fn install_with_models(
+        &self,
+        base: &Path,
+        images: &mut Assets<Image>,
+        meshes: &mut Assets<Mesh>,
+    ) -> Result<
+        (
+            MaterialTextures,
+            PlacementSprites,
+            crate::doors::DoorSprites,
+        ),
+        ManifestError,
+    > {
         let mut textures = MaterialTextures::default();
         for (id, e) in &self.materials {
             let pid =
@@ -229,6 +252,7 @@ impl RenderManifest {
             textures.0.insert(pid, images.add(img));
         }
         let mut sprites = PlacementSprites::default();
+        let mut models: HashMap<String, Handle<Mesh>> = HashMap::new();
         for (id, e) in &self.sprites {
             let pid =
                 PrototypeId::new(id.as_str()).map_err(|e| ManifestError::Parse(e.to_string()))?;
@@ -245,9 +269,22 @@ impl RenderManifest {
             {
                 return Err(ManifestError::Parse(format!("размер спрайта {id}")));
             }
+            let model = match &e.model {
+                Some(rel) => Some(match models.get(rel) {
+                    Some(h) => h.clone(),
+                    None => {
+                        let m = crate::voxels::load_model(&safe_join(base, rel)?)?;
+                        let h = meshes.add(crate::voxels::model_mesh(&m));
+                        models.insert(rel.clone(), h.clone());
+                        h
+                    }
+                }),
+                None => None,
+            };
             sprites.0.insert(
                 pid,
                 PlacementSprite {
+                    model,
                     image: images.add(img),
                     size: Vec2::new(e.size[0], e.size[1]),
                     layout: e.layout,
@@ -375,6 +412,7 @@ fn sync_placements(
     )>,
     mut seen: Local<Option<(u64, usize)>>,
     mut voxel_meshes: Local<VoxelMeshes>,
+    mut voxel_model_material: Local<Option<Handle<StandardMaterial>>>,
 ) {
     let Some(rendered) = rendered else { return };
     let key = (rendered.world.revision().0, sprites.0.len());
@@ -436,6 +474,24 @@ fn sync_placements(
             PlacementAppearance(sprite_id.clone()),
             PlacementAt(feet),
         );
+        // Воксельная модель: стоит опорой на полу, повёрнута по `rot` (ориентированные и
+        // стоячие) или как попало (лежащие вещи), как и спрайты.
+        if let Some(model) = &sprite.model {
+            let yaw = if sprite.layout == SpriteLayout::Billboard || sprite.oriented {
+                f32::from(rot.get(&id).copied().unwrap_or(0)) * std::f32::consts::FRAC_PI_2
+            } else {
+                (id.as_uuid().as_u128() % 360) as f32 * std::f32::consts::PI / 180.0
+            };
+            let material = voxel_model_material
+                .get_or_insert_with(|| crate::voxels::voxel_model_material(&mut materials));
+            commands.spawn((
+                Mesh3d(model.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(feet).with_rotation(Quat::from_rotation_y(yaw)),
+                marks,
+            ));
+            continue;
+        }
         let animation = sprite.animation.clone();
         let upright = sprite.layout == SpriteLayout::Billboard;
         // Спрайты плоские, но с объёмом в пару пикселей (`thickness`): неанимированный — выдавлен
@@ -797,6 +853,35 @@ mod tests {
             r#"{"sprites":{"ss14:x":{"image":"w.png","size":[0,1]}}}"#
         ));
         assert!(bad(r#"{"materials":{"ss14:wall":{"image":"../w.png"}}}"#));
+        // Воксельная модель у спрайта: одна сетка на файл, плохой файл — ошибка.
+        let mut model = astrocore_voxels::VoxelModel::new([1, 1, 1], vec![[9, 9, 9, 255]]).unwrap();
+        model.set(0, 0, 0, 1).unwrap();
+        std::fs::write(dir.join("m.avox"), astrocore_voxels::encode(&model)).unwrap();
+        let with_model: RenderManifest = serde_json::from_str(
+            r#"{"sprites":{"ss14:a":{"image":"w.png","model":"m.avox"},"ss14:b":{"image":"w.png","model":"m.avox"},"ss14:c":{"image":"w.png"}}}"#,
+        )
+        .unwrap();
+        let mut meshes = Assets::<Mesh>::default();
+        let (_, s, _) = with_model
+            .install_with_models(&dir, &mut Assets::<Image>::default(), &mut meshes)
+            .unwrap();
+        let a = s.0[&PrototypeId::new("ss14:a").unwrap()]
+            .model
+            .clone()
+            .unwrap();
+        let b = s.0[&PrototypeId::new("ss14:b").unwrap()]
+            .model
+            .clone()
+            .unwrap();
+        assert_eq!(a, b, "одна сетка на файл");
+        assert!(s.0[&PrototypeId::new("ss14:c").unwrap()].model.is_none());
+        assert_eq!(meshes.len(), 1);
+        assert!(bad(
+            r#"{"sprites":{"ss14:x":{"image":"w.png","model":"missing.avox"}}}"#
+        ));
+        assert!(bad(
+            r#"{"sprites":{"ss14:x":{"image":"w.png","model":"../m.avox"}}}"#
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

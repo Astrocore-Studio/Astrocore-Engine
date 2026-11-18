@@ -661,6 +661,7 @@ dependencies = [
  "astrocore-math",
  "astrocore-sprites",
  "astrocore-terrain",
+ "astrocore-voxels",
  "astrocore-world",
  "bevy",
  "serde",

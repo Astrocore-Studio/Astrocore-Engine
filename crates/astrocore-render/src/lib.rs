@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod meshes;
 pub mod models;
 pub mod terrain;
+pub mod voxels;
 
 use std::collections::HashMap;
 

@@ -26,7 +26,7 @@ astrocore-client — клиент Astrocore
 
   astrocore-client ... [--interact-command вид]  клавиша E: игровая команда с ближайшим объектом
   astrocore-client ... [--render-manifest файл.json]  текстуры и спрайты предметов
-  astrocore-client --demo [--ortho] [--first-person] [--no-shadows] [--stats] [--screenshot файл.png [--frames N]]
+  astrocore-client --demo [--ortho] [--first-person] [--no-shadows] [--stats] [--demo-voxels папка] [--screenshot файл.png [--frames N]]
   astrocore-client --connect 127.0.0.1:7777 [--build имя] [--world-id id] [--assets папка]
   astrocore-client --connect-lightyear 127.0.0.1:7779 --ly-key <hex32> [--assets папка]
   astrocore-client --connect-udp 127.0.0.1:7778 --server-key <hex32> [--assets папка]
@@ -43,6 +43,8 @@ pub struct Args {
     pub server_key: Option<[u8; 32]>,
     pub assets: Option<PathBuf>,
     pub render_manifest: Option<PathBuf>,
+    /// Демо: воксельные модели (`.avox`/`.vox`) из папки ставятся в ряд перед камерой.
+    pub demo_voxels: Option<PathBuf>,
     pub camera: Option<(f32, f32, f32)>,
     pub debug_doors_open: bool,
     pub interact_command: Option<String>,
@@ -68,6 +70,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         server_key: None,
         assets: None,
         render_manifest: None,
+        demo_voxels: None,
         camera: None,
         debug_doors_open: false,
         interact_command: None,
@@ -121,6 +124,7 @@ pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--interact-command" => a.interact_command = Some(value("--interact-command")?),
             "--debug-doors-open" => a.debug_doors_open = true,
             "--assets" => a.assets = Some(PathBuf::from(value("--assets")?)),
+            "--demo-voxels" => a.demo_voxels = Some(PathBuf::from(value("--demo-voxels")?)),
             "--build" => a.build = value("--build")?,
             "--world-id" => a.world_id = value("--world-id")?,
             "--screenshot" => a.screenshot = Some(PathBuf::from(value("--screenshot")?)),
@@ -388,6 +392,7 @@ fn connect_network(world: &mut World) {
 fn load_render_manifest(
     args: Res<Args>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
 ) {
     let Some(path) = &args.render_manifest else {
@@ -397,8 +402,8 @@ fn load_render_manifest(
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
-    let result =
-        astrocore_render::RenderManifest::load(path).and_then(|m| m.install(&base, &mut images));
+    let result = astrocore_render::RenderManifest::load(path)
+        .and_then(|m| m.install_with_models(&base, &mut images, &mut meshes));
     match result {
         Ok((textures, sprites, doors)) => {
             println!(
@@ -436,7 +441,12 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
         Camera3d::default(),
         CameraRig {
             mode,
-            target: Vec3::new(32.0, 4.0, 3.0),
+            // С `--demo-voxels` камера смотрит на ряд моделей перед зданием.
+            target: if args.demo_voxels.is_some() {
+                DEMO_VOXELS_AT + Vec3::Y * 0.5
+            } else {
+                Vec3::new(32.0, 4.0, 3.0)
+            },
             yaw: cam_yaw,
             pitch: cam_pitch,
             distance: cam_distance,
@@ -456,12 +466,39 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
 }
 
 /// Демонстрационный мир: вертикальный срез и четыре спрайта лицом в разные стороны.
+/// Где в демо-сцене стоит ряд воксельных моделей (`--demo-voxels`): на земле к югу от здания.
+const DEMO_VOXELS_AT: Vec3 = Vec3::new(32.0, 0.0, 16.0);
+
 fn setup_demo_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     sheet: Res<Sheet>,
+    args: Res<Args>,
 ) {
+    // Воксельные модели из папки (`--demo-voxels`): в ряд перед камерой, по метру друг от друга.
+    if let Some(dir) = &args.demo_voxels {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.retain(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("avox" | "vox")));
+        files.sort();
+        let material = astrocore_render::voxels::voxel_model_material(&mut materials);
+        let n = files.len() as f32;
+        for (i, path) in files.iter().enumerate() {
+            match astrocore_render::voxels::load_model(path) {
+                Ok(model) => {
+                    let x = (i as f32 - (n - 1.0) / 2.0) * 1.2;
+                    commands.spawn((
+                        Mesh3d(meshes.add(astrocore_render::voxels::model_mesh(&model))),
+                        MeshMaterial3d(material.clone()),
+                        Transform::from_translation(DEMO_VOXELS_AT + Vec3::X * x),
+                    ));
+                }
+                Err(e) => eprintln!("модель {}: {e}", path.display()),
+            }
+        }
+    }
     let slice = Slice::build().expect("демо-сцена строится");
     commands.insert_resource(RenderedWorld::new(slice.world));
     commands.insert_resource(RenderedTerrain::new(demo_terrain()));

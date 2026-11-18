@@ -12,6 +12,7 @@ astrocore-geometry.workspace = true
 astrocore-math.workspace = true
 astrocore-sprites.workspace = true
 astrocore-terrain.workspace = true
+astrocore-voxels.workspace = true
 astrocore-world.workspace = true
 serde.workspace = true
 serde_json.workspace = true
