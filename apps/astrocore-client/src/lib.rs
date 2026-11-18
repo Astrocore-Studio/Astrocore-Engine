@@ -797,6 +797,7 @@ fn door_key(keys: Res<ButtonInput<KeyCode>>, mut net: NonSendMut<Net>) {
 }
 
 /// Другие игроки — направленные спрайты, интерполированные между серверными состояниями.
+#[allow(clippy::too_many_arguments)]
 fn sync_remote_players(
     mut commands: Commands,
     net: NonSend<Net>,
@@ -855,6 +856,7 @@ fn sync_remote_players(
 }
 
 /// Своё тело: спрайт игрока в точке, где его держит сервер; в виде от первого лица скрыт.
+#[allow(clippy::too_many_arguments)]
 fn sync_local_body(
     mut commands: Commands,
     net: NonSend<Net>,

@@ -9,6 +9,7 @@ members = [
     "crates/astrocore-spatial",
     "crates/astrocore-navigation",
     "crates/astrocore-sprites",
+    "crates/astrocore-voxels",
     "crates/astrocore-prefabs",
     "crates/astrocore-runtime",
     "crates/astrocore-physics",
@@ -50,6 +51,7 @@ astrocore-geometry = { path = "crates/astrocore-geometry" }
 astrocore-spatial = { path = "crates/astrocore-spatial" }
 astrocore-navigation = { path = "crates/astrocore-navigation" }
 astrocore-sprites = { path = "crates/astrocore-sprites" }
+astrocore-voxels = { path = "crates/astrocore-voxels" }
 astrocore-prefabs = { path = "crates/astrocore-prefabs" }
 astrocore-runtime = { path = "crates/astrocore-runtime" }
 astrocore-physics = { path = "crates/astrocore-physics" }

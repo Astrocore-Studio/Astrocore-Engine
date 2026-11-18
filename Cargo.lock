@@ -808,6 +808,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-voxels"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-world"
 version = "0.1.0"
 dependencies = [

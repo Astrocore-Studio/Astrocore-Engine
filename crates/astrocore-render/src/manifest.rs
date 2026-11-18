@@ -344,7 +344,7 @@ fn apply_material_textures(
                 }
                 let data = image.data.as_ref()?;
                 let mut transparent = false;
-                for pixel in data.chunks_exact(4) {
+                for pixel in data.as_chunks::<4>().0 {
                     match pixel[3] {
                         255 => {}
                         0 => transparent = true,
