@@ -162,7 +162,14 @@ pub struct Look {
     pub yaw: f32,
     pub pitch: f32,
     pub first_person: bool,
+    /// Вид строго сверху (призраки): наклон и вид от первого лица не меняются ни мышью, ни клавишами.
+    pub top_down: bool,
 }
+
+/// Наклон камеры при виде сверху, радианы (положительный — взгляд вниз).
+pub const TOP_DOWN_PITCH: f32 = 1.4;
+/// Пределы расстояния камеры при виде сверху, м.
+pub const TOP_DOWN_DISTANCE: (f32, f32) = (6.0, 60.0);
 
 enum Transport {
     Tcp(TcpClient),
@@ -267,6 +274,7 @@ pub fn build_app(args: Args) -> App {
         yaw: 0.7,
         pitch: 0.5,
         first_person: false,
+        top_down: false,
     })
     .insert_resource(ShadowSettings {
         sun: args.shadows,
@@ -422,6 +430,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, args: Res<Ar
         yaw: cam_yaw,
         pitch: cam_pitch,
         first_person: args.first_person,
+        top_down: false,
     });
     commands.spawn((
         Camera3d::default(),
@@ -493,9 +502,12 @@ fn look_input(
     let dt = time.delta_secs();
     let turn = 1.6 * dt;
     // Обзор мышью: правая кнопка зажата — поворот головы (курсор остаётся для интерфейса).
+    let top_down = look.top_down;
     if buttons.pressed(MouseButton::Right) {
         look.yaw -= mouse.delta.x * 0.004;
-        look.pitch = (look.pitch - mouse.delta.y * 0.004).clamp(-1.2, 1.4);
+        if !top_down {
+            look.pitch = (look.pitch - mouse.delta.y * 0.004).clamp(-1.2, 1.4);
+        }
     }
     if keys.pressed(KeyCode::KeyQ) || keys.pressed(KeyCode::ArrowLeft) {
         look.yaw += turn;
@@ -505,13 +517,13 @@ fn look_input(
     if turn_right_key || keys.pressed(KeyCode::ArrowRight) {
         look.yaw -= turn;
     }
-    if keys.pressed(KeyCode::ArrowUp) {
+    if !top_down && keys.pressed(KeyCode::ArrowUp) {
         look.pitch = (look.pitch + turn).min(1.4);
     }
-    if keys.pressed(KeyCode::ArrowDown) {
+    if !top_down && keys.pressed(KeyCode::ArrowDown) {
         look.pitch = (look.pitch - turn).max(-1.2);
     }
-    if keys.just_pressed(KeyCode::KeyV) {
+    if !top_down && keys.just_pressed(KeyCode::KeyV) {
         look.first_person = !look.first_person;
     }
     for mut rig in &mut rigs {
@@ -534,10 +546,23 @@ fn look_input(
 }
 
 /// Камера следует за взглядом: в демо — орбита вокруг здания, в сети — за игроком.
-fn drive_camera(look: Res<Look>, net: Option<NonSend<Net>>, mut rigs: Query<&mut CameraRig>) {
+fn drive_camera(
+    mut look: ResMut<Look>,
+    net: Option<NonSend<Net>>,
+    mut rigs: Query<&mut CameraRig>,
+) {
+    if look.top_down {
+        // Сверху: взгляд вниз, не от первого лица; пока свойство `first_person` выключено, камера
+        // стоит над игроком на расстоянии не меньше нижнего предела.
+        look.first_person = false;
+        look.pitch = TOP_DOWN_PITCH;
+    }
     for mut rig in &mut rigs {
         rig.yaw = look.yaw;
         rig.pitch = look.pitch;
+        if look.top_down {
+            rig.distance = rig.distance.clamp(TOP_DOWN_DISTANCE.0, TOP_DOWN_DISTANCE.1);
+        }
         if let Some(net) = net.as_ref() {
             let p = net.core.position();
             rig.target = Vec3::new(p.x, p.y + 0.9, p.z);
