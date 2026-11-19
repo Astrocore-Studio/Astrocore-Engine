@@ -57,9 +57,10 @@ impl LyGameHost {
         }
     }
 
+    /// Отправить исходящие по порядку: порядок значим (`MapChanged` — раньше снимка новой карты).
     fn route(&mut self, outs: Vec<Out>) {
-        let mut queue = outs;
-        while let Some(out) = queue.pop() {
+        let mut queue: std::collections::VecDeque<Out> = outs.into();
+        while let Some(out) = queue.pop_front() {
             match out {
                 Out::Send { to, msg } => {
                     if let Some(bytes) = encode_out(&msg) {
