@@ -141,6 +141,7 @@ mod tests {
             name: "g".into(),
             base_y: 1.0,
             height: 3.0,
+            map: Default::default(),
         }))
         .unwrap();
         let m = PrototypeId::new("t:m").unwrap();

@@ -110,6 +110,13 @@ impl EditSession {
                 .world
                 .floor(*id)
                 .map(|f: &FloorDef| WorldCommand::DefineFloor(f.clone())),
+            // Карта: прежнее определение или удаление новой.
+            WorldCommand::DefineMap(def) => Some(match self.world.map(def.id) {
+                Some(old) => WorldCommand::DefineMap(old),
+                None => WorldCommand::RemoveMap { id: def.id },
+            }),
+            // Удаление карты одной командой не откатить: её содержимое — много команд.
+            WorldCommand::RemoveMap { .. } => None,
         }
     }
 

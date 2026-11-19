@@ -46,6 +46,7 @@ pub fn city_world(blocks: i32) -> World {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
+        map: Default::default(),
     }))
     .expect("этаж");
     let mat = PrototypeId::new("bench:wall").expect("валидный ID");

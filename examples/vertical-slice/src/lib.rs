@@ -51,6 +51,7 @@ impl Slice {
                 name: format!("floor-{f}"),
                 base_y: f as f32 * FLOOR_HEIGHT_M,
                 height: FLOOR_HEIGHT_M,
+                map: Default::default(),
             }))?;
         }
         for f in 0..FLOORS {

@@ -497,6 +497,7 @@ fn strip_world() -> astrocore_world::World {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
+        map: Default::default(),
     }))
     .unwrap();
     let mut id = 1u128;
@@ -762,6 +763,7 @@ mod terrain {
             name: "g".into(),
             base_y: 0.0,
             height: 3.0,
+            map: Default::default(),
         }))
         .unwrap();
         let mut t = Terrain::new(1.0, 16, 0.0).unwrap();

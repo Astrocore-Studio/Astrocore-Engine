@@ -352,6 +352,7 @@ mod tests {
             name: "g".into(),
             base_y: 0.0,
             height: 3.0,
+            map: Default::default(),
         }))
         .unwrap();
         w

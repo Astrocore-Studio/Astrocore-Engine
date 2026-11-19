@@ -176,6 +176,7 @@ fn new_world() -> World {
         name: "Этаж 0".into(),
         base_y: 0.0,
         height: 3.0,
+        map: Default::default(),
     }))
     .expect("первый этаж");
     w
