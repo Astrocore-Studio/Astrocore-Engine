@@ -62,6 +62,8 @@ pub struct HookContext<'a> {
     map_defs: &'a BTreeMap<MapId, MapDef>,
     /// Карта каждого игрока; пусто — все на карте 0.
     player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
+    /// Миры всех карт (только чтение): снимок другой карты, `savemap`.
+    worlds: &'a BTreeMap<MapId, &'a World>,
     map_requests: Vec<MapRequest>,
     positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
     physics: Option<&'a astrocore_physics::BoxWorld>,
@@ -132,11 +134,14 @@ impl<'a> HookContext<'a> {
         static NO_DEFS: std::sync::OnceLock<BTreeMap<MapId, MapDef>> = std::sync::OnceLock::new();
         static NO_MAPS: std::sync::OnceLock<BTreeMap<NetworkEntityId, MapId>> =
             std::sync::OnceLock::new();
+        static NO_WORLDS: std::sync::OnceLock<BTreeMap<MapId, &'static World>> =
+            std::sync::OnceLock::new();
         Self {
             world,
             map: MapId(0),
             map_defs: NO_DEFS.get_or_init(BTreeMap::new),
             player_maps: NO_MAPS.get_or_init(BTreeMap::new),
+            worlds: NO_WORLDS.get_or_init(BTreeMap::new),
             map_requests: Vec::new(),
             positions,
             physics: None,
@@ -245,16 +250,21 @@ impl<'a> HookContext<'a> {
 
     /// Подключить карты (ADR-0013): карта вызова, определения всех карт и карты игроков.
     #[must_use]
-    pub fn with_maps(
-        mut self,
-        map: MapId,
-        defs: &'a BTreeMap<MapId, MapDef>,
-        player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
-    ) -> Self {
-        self.map = map;
-        self.map_defs = defs;
-        self.player_maps = player_maps;
+    pub fn with_maps(mut self, scope: MapScope<'a>) -> Self {
+        self.map = scope.map;
+        self.map_defs = scope.defs;
+        self.player_maps = scope.player_maps;
+        self.worlds = scope.worlds;
         self
+    }
+
+    /// Мир карты (только чтение); для карты вызова — `world`.
+    pub fn world_of(&self, map: MapId) -> Option<&World> {
+        if map == self.map {
+            Some(self.world)
+        } else {
+            self.worlds.get(&map).copied()
+        }
     }
 
     /// Карта, в рамках которой вызван хук (её мир — `world`).
@@ -413,6 +423,8 @@ pub struct MapScope<'a> {
     pub map: MapId,
     pub defs: &'a BTreeMap<MapId, MapDef>,
     pub player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
+    /// Миры остальных карт (только чтение).
+    pub worlds: &'a BTreeMap<MapId, &'a World>,
 }
 
 /// Хост модулей: порядок вызова определяется зависимостями.
@@ -493,12 +505,13 @@ impl ModuleHost {
         doors: Option<&DoorRegistry>,
         event: &HookEvent,
     ) -> HookOutput {
-        let (defs, maps) = (BTreeMap::new(), BTreeMap::new());
+        let (defs, maps, worlds) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
         self.dispatch_on(
             MapScope {
                 map: MapId(0),
                 defs: &defs,
                 player_maps: &maps,
+                worlds: &worlds,
             },
             world,
             positions,
@@ -520,11 +533,7 @@ impl ModuleHost {
     ) -> HookOutput {
         let mut out = HookOutput::default();
         for &i in &self.order {
-            let mut ctx = HookContext::with_positions(world, positions).with_maps(
-                scope.map,
-                scope.defs,
-                scope.player_maps,
-            );
+            let mut ctx = HookContext::with_positions(world, positions).with_maps(scope);
             if let Some(p) = physics {
                 ctx = ctx.with_physics(p);
             }

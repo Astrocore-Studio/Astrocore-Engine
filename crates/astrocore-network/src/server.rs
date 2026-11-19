@@ -1270,11 +1270,14 @@ impl GameServer {
             .collect();
         let player_maps: BTreeMap<NetworkEntityId, MapId> =
             self.players.values().map(|p| (p.net, p.map)).collect();
+        let worlds: BTreeMap<MapId, &World> =
+            self.parked.iter().map(|(id, s)| (*id, &s.world)).collect();
         let result = host.dispatch_on(
             MapScope {
                 map: scope,
                 defs: &self.map_defs,
                 player_maps: &player_maps,
+                worlds: &worlds,
             },
             &self.world,
             &positions,
