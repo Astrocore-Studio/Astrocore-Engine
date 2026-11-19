@@ -1,130 +1,95 @@
-# Astrocore Engine
+<div class="header" align="center">
+<img alt="Astrocore Engine" width="880" height="300" src="docs/img/logo.svg">
+</div>
 
-Универсальный игровой движок на Rust (поверх [Bevy](https://bevyengine.org)) для
-многопользовательских 2.5D/3D-песочниц: физически трёхмерный мир, структурная сетка
-и свободная геометрия, 2D-спрайты (directional billboards) в 3D-сцене,
-сервер-авторитарное состояние, графический редактор карт (Astrocore Studio).
+Astrocore Engine — универсальный игровой движок на Rust поверх [Bevy](https://bevyengine.org) для
+многопользовательских 3D-песочниц: физически трёхмерный мир на структурной сетке со свободной
+геометрией, воксельные модели, сервер-авторитарное состояние с предсказанием на клиенте и
+редактор карт Astrocore Studio.
 
-> **Репозиторий содержит только движок.** Игровые билды, контент, карты, правила и
-> сеттинги живут в отдельных репозиториях и подключают движок как зависимость.
+Это репозиторий движка. Игр, контента, карт и правил здесь нет: они живут в отдельных
+репозиториях и подключают движок как зависимость. Основная игра на движке —
+[Astrocore Build](https://github.com/Astrocore-Studio/Astrocore-Build).
 
-Проектный документ: страница «Astrocore Engine — Архитектура гибридного 3D-мира и
-редактора карт» в Notion (версия 1.2). Принятые решения зафиксированы в
-[`docs/ADR`](docs/ADR), фактическое состояние — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
+Если вы хотите делать свою игру на Astrocore или развивать сам движок — вам нужен этот
+репозиторий. Если вы хотите играть, поднять сервер или делать контент — вам нужен Build.
 
-## Что уже есть
+## Ссылки
 
-Рабочая основа движка, проверенная тестами; клиент с рендером проверен скриншотами на
-программном Vulkan:
+<div class="header" align="center">
 
-| Крейт | Назначение |
-| --- | --- |
-| `astrocore-math` | Конвенция координат (метры, **Y-up**, правосторонняя), чанки, ячейки, рёбра, преобразования сетки |
-| `astrocore-core` | Идентификаторы, ревизии, версии схем |
-| `astrocore-world` | Канонический мир: стены, проёмы, перекрытия, лестницы, пандусы, свободные модели; команды, ревизии, dirty-регионы |
-| `astrocore-geometry` | Меши и коллизионные коробки, сварка углов, импорт GLB |
-| `astrocore-spatial` | Топология: комнаты, порталы с независимыми каналами, диагностика |
-| `astrocore-navigation` | Пути по этажам и лестницам, кэш тайлов с инкрементальным обновлением |
-| `astrocore-physics` | Коллизия мира, запросы луча, триггеры, контроллер персонажа (ступени, двери, рельеф) |
-| `astrocore-terrain` | Карта высот, кисти, фундаменты, дороги, вода, меши |
-| `astrocore-sprites` | Выбор направления спрайта по камере; чтение метаданных RSI |
-| `astrocore-prefabs` | Префабы: вложенность, наследование, переопределения, обновление экземпляров |
-| `astrocore-assets` | Манифест ассетов: хеши, лицензии, безопасные пути |
-| `astrocore-world-compiler` | Клиентский и серверный пакеты, инкрементальная детерминированная сборка |
-| `astrocore-runtime` | Двери, стриминг чанков, уровни активности, API игровых модулей, инфраструктура симуляций |
-| `astrocore-persistence` | Снимок + журнал, восстановление, миграции |
-| `astrocore-protocol` | Версионированный бинарный протокол |
-| `astrocore-network` | Авторитарный сервер, клиент с предсказанием, интерес, TCP |
-| `astrocore-editor` | Ядро Studio: undo/redo, инструменты, валидатор, проекты, «играть отсюда» |
-| `astrocore-bevy` | Bevy-плагины серверной симуляции (без графики) |
-| `astrocore-studio` | Окно редактора карт (Bevy + egui) |
-| `astrocore-render` | Клиентский рендер: меши чанков, направленные спрайты, камеры |
-| `astrocore-server` | Headless-сервер (пакетный режим и сетевой `--listen`) |
-| `astrocore-physics-avian` | Адаптер Avian3D: запросы и динамические тела |
-| `astrocore-lightyear` | Транспорт на Lightyear (UDP + netcode) |
-| `astrocore-client` | Клиент: `--demo`, `--connect` (TCP), `--connect-udp` (шифрованный UDP), `--assets`, `--screenshot` |
-| `astrocore-tools` | Валидатор карты, компилятор пакетов, демо-проект, бенчмарки |
-| `astrocore-vertical-slice` | Приёмочные сценарии AC-VS1 |
+[Astrocore Build](https://github.com/Astrocore-Studio/Astrocore-Build) | [Задачи (issues)](https://github.com/Astrocore-Studio/Astrocore-Engine/issues) | [Обзор и крейты](docs/OVERVIEW.md) | [Состояние](docs/PROGRESS.md) | [Решения (ADR)](docs/ADR)
 
-**Ещё нет:** браузера ресурсов в Studio, репликации динамических тел Avian. Подробности — в [`docs/PROGRESS.md`](docs/PROGRESS.md).
+</div>
 
-![Клиент, перспектива](docs/img/client-demo-perspective.png)
+## Документация
 
-## Быстрый старт
+- [docs/OVERVIEW.md](docs/OVERVIEW.md) — крейты, быстрый старт, примеры запуска.
+- [docs/PROGRESS.md](docs/PROGRESS.md) — что сделано и известные ограничения.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — устройство движка, зависимости крейтов, жизненный цикл.
+- [docs/WORLD_FORMAT.md](docs/WORLD_FORMAT.md) — мир, координаты, ревизии, идентификаторы.
+- [docs/NETWORKING.md](docs/NETWORKING.md) — протокол и репликация.
+- [docs/RENDERING.md](docs/RENDERING.md), [docs/EDITOR.md](docs/EDITOR.md), [docs/ASSETS.md](docs/ASSETS.md), [docs/PERSISTENCE.md](docs/PERSISTENCE.md).
+- [docs/TEST_PLAN.md](docs/TEST_PLAN.md), [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — тесты, приёмка, измерения.
+- [docs/ADR](docs/ADR) — архитектурные решения.
 
-Нужен Rust stable (проверено на 1.99.1; Bevy 0.20 требует не ниже 1.97.1).
+Координаты: метры, ось Y вверх, 1 тайл = 1 м.
+
+## Участие
+
+Помощь принимается от всех. Берите задачи из
+[issues](https://github.com/Astrocore-Studio/Astrocore-Engine/issues) и не бойтесь спрашивать.
+Движок не знает об игровых механиках: всё игровое — в Build и других играх, в движке — только
+общие возможности (мир, физика, сеть, рендер, редактор).
+
+Перед отправкой изменений всё должно проходить без ошибок и предупреждений:
+
+```bash
+cargo fmt --all -- --check
+```
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
 ```bash
 cargo test --workspace
 ```
 
+Решения, меняющие архитектуру, оформляются ADR в `docs/ADR`. После изменения движка игры
+подтягивают новую версию командой `cargo update -p <крейт>`.
+
+## Сборка
+
+1. Установите Rust stable (не ниже 1.97.1) через [rustup](https://rustup.rs).
+2. Склонируйте репозиторий:
 ```bash
-./scripts/check-headless.sh
+git clone https://github.com/Astrocore-Studio/Astrocore-Engine.git
 ```
-
+3. Соберите и проверьте движок:
 ```bash
-cargo run -p astrocore-vertical-slice
+cd Astrocore-Engine
 ```
-
 ```bash
-cargo run -p astrocore-server -- --data-dir ./data --listen 127.0.0.1:7777 --allow-edit --backup-keep 5
+cargo test --workspace
 ```
-
-```bash
-cargo run -p astrocore-client -- --connect 127.0.0.1:7777 --world-id world
-```
-
-Шифрованный UDP: сервер печатает свой открытый ключ, клиент закрепляет его.
-
-```bash
-cargo run -p astrocore-server -- --data-dir ./data --listen-udp 127.0.0.1:7778 --key-file ./server.key --allow-edit
-```
-
-```bash
-cargo run -p astrocore-server -- --data-dir ./data --listen-lightyear 127.0.0.1:7779 --ly-key <64 hex-символа>
-```
-
-```bash
-cargo run -p astrocore-client -- --connect-lightyear 127.0.0.1:7779 --ly-key <64 hex-символа>
-```
-
-```bash
-cargo run -p astrocore-client -- --connect-udp 127.0.0.1:7778 --server-key <64 hex-символа> --assets ./models
-```
-
+4. Демо-сцена клиента и редактор карт:
 ```bash
 cargo run -p astrocore-client -- --demo
 ```
-
 ```bash
 cargo run -p astrocore-studio
 ```
 
-```bash
-cargo run --release -p astrocore-tools -- bench
-```
-
-Перед отправкой изменений (правило 4 раздела 26 дизайн-документа):
-
-```bash
-cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-```
-
-## Документация
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — крейты, зависимости, жизненный цикл
-- [`docs/WORLD_FORMAT.md`](docs/WORLD_FORMAT.md) — мир, координаты, ревизии, идентификаторы
-- [`docs/PERSISTENCE.md`](docs/PERSISTENCE.md) — снимки, журнал, миграции
-- [`docs/NETWORKING.md`](docs/NETWORKING.md) — протокол и репликация
-- [`docs/RENDERING.md`](docs/RENDERING.md) — режимы отображения, спрайты (проект)
-- [`docs/EDITOR.md`](docs/EDITOR.md) — Astrocore Studio (проект)
-- [`docs/ASSETS.md`](docs/ASSETS.md) — ассеты, RSI, лицензии
-- [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) — тесты и приёмка
-- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — измерения
-- [`docs/ADR`](docs/ADR) — архитектурные решения
+Сервер, сетевые режимы и инструменты — в [docs/OVERVIEW.md](docs/OVERVIEW.md#быстрый-старт).
 
 ## Лицензия
 
-GNU Affero General Public License v3.0 или новее (`AGPL-3.0-or-later`) — см. [`LICENSE`](LICENSE).
-Если вы запускаете изменённый движок как сетевой сервис, AGPL обязывает предоставить пользователям
-сервиса исходный код ваших изменений.
+Astrocore Engine распространяется по лицензии
+[GNU Affero General Public License v3.0 или новее](LICENSE) (`AGPL-3.0-or-later`).
+
+Если вы распространяете движок или игру на нём либо запускаете изменённый движок как сетевой
+сервис, AGPL обязывает предоставить исходный код пользователям, включая ваши изменения.
+
+Ассеты, которые использует движок в демо и тестах, распространяются по лицензиям, указанным в их
+файлах метаданных; подробности — в [docs/ASSETS.md](docs/ASSETS.md).
