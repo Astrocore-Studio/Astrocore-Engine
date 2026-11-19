@@ -108,12 +108,6 @@ pub struct DirtyRegion {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorldCommand {
     DefineFloor(FloorDef),
-    /// Создать карту или обновить её имя и флаги (ADR-0012).
-    DefineMap(MapDef),
-    /// Удалить карту со всеми её этажами, элементами и авторскими объектами одной операцией.
-    RemoveMap {
-        id: MapId,
-    },
     /// Удалить пустой этаж (без элементов и без лестниц, ведущих на него).
     RemoveFloor {
         id: FloorId,
@@ -163,8 +157,6 @@ pub const MAX_MAP_NAME: usize = 64;
 pub struct World {
     id: String,
     config: WorldConfig,
-    /// Заданные карты; карта 0 есть и без записи (`MapDef::default_map`).
-    maps: BTreeMap<MapId, MapDef>,
     floors: BTreeMap<FloorId, FloorDef>,
     elements: BTreeMap<ObjectId, StructureElement>,
     authored: BTreeMap<ObjectId, AuthoredObject>,
@@ -183,7 +175,6 @@ impl World {
         Ok(Self {
             id: id.into(),
             config,
-            maps: BTreeMap::new(),
             floors: BTreeMap::new(),
             elements: BTreeMap::new(),
             authored: BTreeMap::new(),
@@ -212,35 +203,6 @@ impl World {
             .get(&chunk)
             .copied()
             .unwrap_or(Revision::ZERO)
-    }
-
-    /// Карта по номеру; карта 0 есть всегда.
-    pub fn map(&self, id: MapId) -> Option<MapDef> {
-        self.maps
-            .get(&id)
-            .cloned()
-            .or_else(|| (id == MapId(0)).then(MapDef::default_map))
-    }
-
-    /// Все карты по номеру, включая неявную карту 0.
-    pub fn maps(&self) -> Vec<MapDef> {
-        let mut out: Vec<MapDef> = self.maps.values().cloned().collect();
-        if !self.maps.contains_key(&MapId(0)) {
-            out.insert(0, MapDef::default_map());
-        }
-        out
-    }
-
-    /// Карта, которой принадлежит этаж.
-    pub fn map_of_floor(&self, floor: FloorId) -> Option<MapId> {
-        self.floors.get(&floor).map(|f| f.map)
-    }
-
-    /// Стоит ли карта этажа (на паузе). Неизвестный этаж — не стоит.
-    pub fn floor_paused(&self, floor: FloorId) -> bool {
-        self.map_of_floor(floor)
-            .and_then(|m| self.map(m))
-            .is_some_and(|m| m.paused)
     }
 
     pub fn floor(&self, id: FloorId) -> Option<&FloorDef> {
@@ -390,71 +352,8 @@ impl World {
                 if self.floors.contains_key(&def.id) {
                     return Err(WorldError::DuplicateFloor(def.id));
                 }
-                if self.map(def.map).is_none() {
-                    return Err(WorldError::UnknownMap(def.map));
-                }
                 self.floors.insert(def.id, def.clone());
                 self.revision = self.revision.next();
-            }
-            WorldCommand::DefineMap(def) => {
-                if def.name.chars().count() > MAX_MAP_NAME {
-                    return Err(WorldError::InvalidFloor(format!(
-                        "имя карты длиннее {MAX_MAP_NAME} знаков"
-                    )));
-                }
-                self.maps.insert(def.id, def.clone());
-                self.revision = self.revision.next();
-            }
-            WorldCommand::RemoveMap { id } => {
-                if self.map(*id).is_none() {
-                    return Err(WorldError::UnknownMap(*id));
-                }
-                let floors: BTreeSet<FloorId> = self
-                    .floors
-                    .values()
-                    .filter(|f| f.map == *id)
-                    .map(|f| f.id)
-                    .collect();
-                let elements: Vec<StructureElement> = self
-                    .elements
-                    .values()
-                    .filter(|e| {
-                        floors.contains(&e.floor)
-                            || e.kind.target_floor().is_some_and(|t| floors.contains(&t))
-                    })
-                    .cloned()
-                    .collect();
-                let mut gone: BTreeSet<ObjectId> = self
-                    .authored
-                    .values()
-                    .filter(|o| floors.contains(&o.floor))
-                    .map(|o| o.id)
-                    .collect();
-                // Порталы других карт, ведущие в удаляемые объекты, уходят вместе с ними.
-                let portals: Vec<ObjectId> = self
-                    .authored
-                    .values()
-                    .filter_map(|o| match &o.kind {
-                        AuthoredKind::Portal { to, .. } if gone.contains(to) => Some(o.id),
-                        _ => None,
-                    })
-                    .collect();
-                gone.extend(portals);
-                self.revision = self.revision.next();
-                for e in &elements {
-                    self.index_remove(e);
-                    self.mark_dirty(e);
-                    self.elements.remove(&e.id);
-                }
-                for id in gone {
-                    if let Some(o) = self.authored.remove(&id) {
-                        self.mark_authored_dirty(&o);
-                    }
-                }
-                for f in &floors {
-                    self.floors.remove(f);
-                }
-                self.maps.remove(id);
             }
             WorldCommand::RemoveFloor { id } => {
                 if !self.floors.contains_key(id) {

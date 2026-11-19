@@ -10,7 +10,6 @@ fn drive(api: &mut dyn WorldApi) -> Revision {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     api.revision()
@@ -93,7 +92,6 @@ fn simulation_topology_reports_rooms_and_changes() {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     let a = Topology::build(&w, FloorId(0)).unwrap();

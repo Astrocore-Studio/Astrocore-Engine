@@ -16,7 +16,6 @@ fn new_world() -> World {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     w
@@ -259,7 +258,6 @@ fn generate_golden() {
         name: "ground".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     w.apply(wall_cmd(0xA11CE, 0)).unwrap();
@@ -411,7 +409,6 @@ mod upgrade {
             name: "up".into(),
             base_y: 3.0,
             height: 3.0,
-            map: Default::default(),
         }))
         .unwrap();
         let mut w = base();
@@ -425,7 +422,6 @@ mod upgrade {
                 name: "x".into(),
                 base_y: 0.0,
                 height: 3.0,
-                map: Default::default(),
             }))
             .unwrap();
         let mut w = base();

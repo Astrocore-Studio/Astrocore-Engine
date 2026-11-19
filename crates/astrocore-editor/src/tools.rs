@@ -306,7 +306,6 @@ pub fn add_floor_above(world: &World, name: &str, height: f32) -> (FloorId, Worl
             name: name.to_string(),
             base_y,
             height,
-            map: Default::default(),
         }),
     )
 }

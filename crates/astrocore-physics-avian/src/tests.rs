@@ -14,7 +14,6 @@ fn arena() -> World {
         name: "g".into(),
         base_y: 0.0,
         height: 4.0,
-        map: Default::default(),
     }))
     .unwrap();
     let m = PrototypeId::new("t:m").unwrap();

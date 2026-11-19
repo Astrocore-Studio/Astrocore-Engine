@@ -9,14 +9,14 @@ use crate::{DirtyFlags, WorldError};
 #[serde(transparent)]
 pub struct FloorId(pub i32);
 
-/// Карта мира (ADR-0012): именованная группа этажей со своими флагами. Карта 0 есть всегда.
+/// Номер карты (ADR-0013): у каждой карты свой мир; карта 0 — основная, есть всегда.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
 #[serde(transparent)]
 pub struct MapId(pub u32);
 
-/// Определение карты: имя и состояние.
+/// Определение карты: имя и состояние (хранит сервер, у мира карты его нет).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapDef {
     pub id: MapId,
@@ -47,9 +47,6 @@ pub struct FloorDef {
     pub base_y: f32,
     /// Высота этажа, метры. Не обязана совпадать с шагом сетки.
     pub height: f32,
-    /// Карта, которой принадлежит этаж (по умолчанию — карта 0).
-    #[serde(default)]
-    pub map: MapId,
 }
 
 impl FloorDef {

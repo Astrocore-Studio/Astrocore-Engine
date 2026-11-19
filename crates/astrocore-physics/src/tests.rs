@@ -16,7 +16,6 @@ fn world() -> World {
             name: format!("f{f}"),
             base_y: f as f32 * 4.0,
             height: 4.0,
-            map: Default::default(),
         }))
         .unwrap();
     }

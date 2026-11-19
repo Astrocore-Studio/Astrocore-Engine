@@ -402,7 +402,6 @@ mod tests {
             name: "g".into(),
             base_y: 0.0,
             height: 3.0,
-            map: Default::default(),
         }))
         .unwrap();
         w
@@ -570,7 +569,6 @@ mod tests {
                 name: "up".into(),
                 base_y: 3.0,
                 height: 3.0,
-                map: Default::default(),
             }))
             .unwrap();
             w.apply(WorldCommand::PlaceElement(StructureElement {
@@ -632,7 +630,6 @@ mod tests {
                     name: "up".into(),
                     base_y: 3.0,
                     height: 3.0,
-                    map: Default::default(),
                 }))
                 .unwrap();
             assert_eq!(
@@ -815,7 +812,6 @@ mod tests {
                 name: "up".into(),
                 base_y: 3.0,
                 height: 3.0,
-                map: Default::default(),
             }))
             .unwrap();
             w.apply(WorldCommand::PlaceElement(StructureElement {

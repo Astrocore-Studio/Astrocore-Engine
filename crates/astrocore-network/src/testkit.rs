@@ -29,7 +29,6 @@ pub fn test_world() -> World {
         name: "ground".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .expect("этаж");
     let mut id = 1u128;

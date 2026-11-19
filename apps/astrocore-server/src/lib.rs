@@ -102,7 +102,6 @@ pub fn load_or_create(store: &Store, world_id: &str) -> Result<(World, bool), Se
         name: "ground".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))?;
     store.save_snapshot(&world)?;
     Ok((world, false))

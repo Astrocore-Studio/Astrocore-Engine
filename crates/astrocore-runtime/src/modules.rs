@@ -4,7 +4,7 @@ use astrocore_core::{NetworkEntityId, ObjectId};
 
 use crate::doors::DoorRegistry;
 use astrocore_math::ChunkCoord;
-use astrocore_world::{World, WorldCommand};
+use astrocore_world::{MapDef, MapId, World, WorldCommand};
 
 /// Универсальные события движка.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +53,16 @@ pub enum HookEvent {
 
 /// Контекст вызова: чтение мира и накопление команд.
 pub struct HookContext<'a> {
+    /// Мир карты, в рамках которой вызван хук (ADR-0013): карта игрока для его команд, карта тика
+    /// для `Tick`. Команды `request` меняют этот мир.
     pub world: &'a World,
+    /// Карта, в рамках которой вызван хук.
+    map: MapId,
+    /// Все карты сервера: номер → определение (имя, пауза, инициализация).
+    map_defs: &'a BTreeMap<MapId, MapDef>,
+    /// Карта каждого игрока; пусто — все на карте 0.
+    player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
+    map_requests: Vec<MapRequest>,
     positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
     physics: Option<&'a astrocore_physics::BoxWorld>,
     doors: Option<&'a DoorRegistry>,
@@ -84,6 +93,23 @@ pub struct DoorRequest {
     pub force: bool,
 }
 
+/// Что модуль просит сделать с картами (ADR-0013).
+#[derive(Debug, Clone)]
+pub enum MapRequest {
+    /// Новая карта со своим миром.
+    Create { def: MapDef, world: Box<World> },
+    /// Удалить карту; игроков с неё движок переносит на карту 0.
+    Remove { id: MapId },
+    /// Сменить имя или флаги карты (пауза, инициализация).
+    Define(MapDef),
+    /// Перенести игрока на другую карту в точку (ступни); клиент загружает новую карту.
+    Move {
+        net: NetworkEntityId,
+        map: MapId,
+        pos: astrocore_math::glam::Vec3,
+    },
+}
+
 /// Значение реплицируемого вида данных, которое модуль просит установить сущности.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentUpdate {
@@ -103,8 +129,15 @@ impl<'a> HookContext<'a> {
         world: &'a World,
         positions: &'a BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
     ) -> Self {
+        static NO_DEFS: std::sync::OnceLock<BTreeMap<MapId, MapDef>> = std::sync::OnceLock::new();
+        static NO_MAPS: std::sync::OnceLock<BTreeMap<NetworkEntityId, MapId>> =
+            std::sync::OnceLock::new();
         Self {
             world,
+            map: MapId(0),
+            map_defs: NO_DEFS.get_or_init(BTreeMap::new),
+            player_maps: NO_MAPS.get_or_init(BTreeMap::new),
+            map_requests: Vec::new(),
             positions,
             physics: None,
             doors: None,
@@ -210,14 +243,100 @@ impl<'a> HookContext<'a> {
         self.unobstructed_distance(from, to) >= (to - from).length() - 1e-4
     }
 
-    /// Все подключённые игроки на момент вызова (по возрастанию сетевого идентификатора).
+    /// Подключить карты (ADR-0013): карта вызова, определения всех карт и карты игроков.
+    #[must_use]
+    pub fn with_maps(
+        mut self,
+        map: MapId,
+        defs: &'a BTreeMap<MapId, MapDef>,
+        player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
+    ) -> Self {
+        self.map = map;
+        self.map_defs = defs;
+        self.player_maps = player_maps;
+        self
+    }
+
+    /// Карта, в рамках которой вызван хук (её мир — `world`).
+    pub fn map(&self) -> MapId {
+        self.map
+    }
+
+    /// Определение карты; карта 0 есть всегда.
+    pub fn map_def(&self, id: MapId) -> Option<MapDef> {
+        self.map_defs
+            .get(&id)
+            .cloned()
+            .or_else(|| (id == MapId(0)).then(MapDef::default_map))
+    }
+
+    /// Все карты сервера по номеру.
+    pub fn maps(&self) -> Vec<MapDef> {
+        let mut out: Vec<MapDef> = self.map_defs.values().cloned().collect();
+        if !self.map_defs.contains_key(&MapId(0)) {
+            out.insert(0, MapDef::default_map());
+        }
+        out
+    }
+
+    /// Стоит ли карта вызова (на паузе): её симуляции модуль не продвигает.
+    pub fn paused(&self) -> bool {
+        self.map_def(self.map).is_some_and(|m| m.paused)
+    }
+
+    /// Карта игрока.
+    pub fn map_of(&self, net: NetworkEntityId) -> Option<MapId> {
+        self.positions
+            .contains_key(&net)
+            .then(|| self.player_maps.get(&net).copied().unwrap_or(MapId(0)))
+    }
+
+    /// Игроки на карте вызова (по возрастанию сетевого идентификатора).
     pub fn players(&self) -> impl Iterator<Item = NetworkEntityId> + '_ {
+        let here = self.map;
+        self.positions
+            .keys()
+            .copied()
+            .filter(move |n| self.player_maps.get(n).copied().unwrap_or(MapId(0)) == here)
+    }
+
+    /// Все подключённые игроки, на любой карте.
+    pub fn all_players(&self) -> impl Iterator<Item = NetworkEntityId> + '_ {
         self.positions.keys().copied()
     }
 
-    /// Позиция (ступни) подключённого игрока на момент вызова.
+    /// Позиция (ступни) подключённого игрока на момент вызова — в координатах его карты
+    /// (карту даёт [`HookContext::map_of`]).
     pub fn position_of(&self, net: NetworkEntityId) -> Option<astrocore_math::glam::Vec3> {
         self.positions.get(&net).copied()
+    }
+
+    /// Создать карту со своим миром.
+    pub fn create_map(&mut self, def: MapDef, world: World) {
+        self.map_requests.push(MapRequest::Create {
+            def,
+            world: Box::new(world),
+        });
+    }
+
+    /// Удалить карту (игроков с неё — на карту 0).
+    pub fn remove_map(&mut self, id: MapId) {
+        self.map_requests.push(MapRequest::Remove { id });
+    }
+
+    /// Сменить имя или флаги карты.
+    pub fn define_map(&mut self, def: MapDef) {
+        self.map_requests.push(MapRequest::Define(def));
+    }
+
+    /// Перенести игрока на карту `map` в точку `pos` её координат.
+    pub fn move_to_map(
+        &mut self,
+        net: NetworkEntityId,
+        map: MapId,
+        pos: astrocore_math::glam::Vec3,
+    ) {
+        self.map_requests.push(MapRequest::Move { net, map, pos });
     }
 
     /// Забрать накопленное: команды мира, значения данных и журнал (для проверки модулей без
@@ -231,6 +350,7 @@ impl<'a> HookContext<'a> {
             speeds: self.speeds,
             teleports: self.teleports,
             doors: self.door_requests,
+            maps: self.map_requests,
             log: self.log,
         }
     }
@@ -246,7 +366,7 @@ impl<'a> HookContext<'a> {
 }
 
 /// Результат обработки события всеми модулями.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub struct HookOutput {
     pub commands: Vec<WorldCommand>,
     pub components: Vec<ComponentUpdate>,
@@ -260,6 +380,8 @@ pub struct HookOutput {
     /// Переставить игрока в точку (ступни); клиент получает новую позицию сразу.
     pub teleports: Vec<(NetworkEntityId, astrocore_math::glam::Vec3)>,
     pub doors: Vec<DoorRequest>,
+    /// Просьбы о картах: создать, удалить, сменить флаги, перенести игрока.
+    pub maps: Vec<MapRequest>,
     pub log: Vec<String>,
 }
 
@@ -283,6 +405,14 @@ pub enum ModuleError {
     MissingDependency { module: String, missing: String },
     #[error("циклическая зависимость модулей: {0}")]
     Cycle(String),
+}
+
+/// Карта, в рамках которой рассылается событие, и сведения о картах сервера.
+#[derive(Debug, Clone, Copy)]
+pub struct MapScope<'a> {
+    pub map: MapId,
+    pub defs: &'a BTreeMap<MapId, MapDef>,
+    pub player_maps: &'a BTreeMap<NetworkEntityId, MapId>,
 }
 
 /// Хост модулей: порядок вызова определяется зависимостями.
@@ -363,9 +493,38 @@ impl ModuleHost {
         doors: Option<&DoorRegistry>,
         event: &HookEvent,
     ) -> HookOutput {
+        let (defs, maps) = (BTreeMap::new(), BTreeMap::new());
+        self.dispatch_on(
+            MapScope {
+                map: MapId(0),
+                defs: &defs,
+                player_maps: &maps,
+            },
+            world,
+            positions,
+            physics,
+            doors,
+            event,
+        )
+    }
+
+    /// То же в рамках карты (ADR-0013): `world` — мир карты `scope.map`.
+    pub fn dispatch_on(
+        &mut self,
+        scope: MapScope<'_>,
+        world: &World,
+        positions: &BTreeMap<NetworkEntityId, astrocore_math::glam::Vec3>,
+        physics: Option<&astrocore_physics::BoxWorld>,
+        doors: Option<&DoorRegistry>,
+        event: &HookEvent,
+    ) -> HookOutput {
         let mut out = HookOutput::default();
         for &i in &self.order {
-            let mut ctx = HookContext::with_positions(world, positions);
+            let mut ctx = HookContext::with_positions(world, positions).with_maps(
+                scope.map,
+                scope.defs,
+                scope.player_maps,
+            );
             if let Some(p) = physics {
                 ctx = ctx.with_physics(p);
             }
@@ -380,6 +539,7 @@ impl ModuleHost {
             out.speeds.append(&mut ctx.speeds);
             out.teleports.append(&mut ctx.teleports);
             out.doors.append(&mut ctx.door_requests);
+            out.maps.append(&mut ctx.map_requests);
             out.log.append(&mut ctx.log);
         }
         out
@@ -479,7 +639,12 @@ mod tests {
                 chunk: ChunkCoord::new(0, 0),
             },
         );
-        assert_eq!(quiet, HookOutput::default());
+        assert!(
+            quiet.commands.is_empty()
+                && quiet.components.is_empty()
+                && quiet.maps.is_empty()
+                && quiet.log.is_empty()
+        );
     }
 
     #[test]

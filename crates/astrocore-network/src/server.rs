@@ -10,10 +10,10 @@ use astrocore_protocol::{
 use astrocore_runtime::doors::{
     DEFAULT_REACH_M, DoorEvent, DoorRegistry, InteractError, InteractRequest,
 };
-use astrocore_runtime::modules::{HookEvent, ModuleHost};
+use astrocore_runtime::modules::{HookEvent, MapRequest, MapScope, ModuleHost};
 use astrocore_spatial::{Channel, Topology};
 use astrocore_terrain::{Terrain, TerrainEdit, TerrainOp};
-use astrocore_world::{FloorId, World, WorldCommand, WorldError, WorldOp};
+use astrocore_world::{FloorId, MapDef, MapId, World, WorldCommand, WorldError, WorldOp};
 
 use crate::movement::{InputCmd, apply_input};
 use crate::snapshot;
@@ -104,7 +104,20 @@ impl Default for ServerNetConfig {
     }
 }
 
+/// Мир карты со всем, что сервер держит по миру (ADR-0013). Активная карта лежит прямо в полях
+/// `GameServer`, остальные — здесь; [`GameServer::enter`] меняет их местами.
+struct Space {
+    world: World,
+    physics: BoxWorld,
+    doors: DoorRegistry,
+    door_net: BTreeMap<ObjectId, NetworkEntityId>,
+    door_by_net: BTreeMap<NetworkEntityId, ObjectId>,
+    topo_cache: BTreeMap<FloorId, (Revision, Topology)>,
+}
+
 struct Player {
+    /// Карта, на которой игрок; его позиция — в координатах этой карты.
+    map: MapId,
     net: NetworkEntityId,
     identity: Identity,
     state: CharacterState,
@@ -191,6 +204,12 @@ pub struct GameServer {
     next_net: u32,
     tick: u32,
     topo_cache: BTreeMap<FloorId, (Revision, Topology)>,
+    /// Карта, мир которой сейчас лежит в полях `world`, `physics`, `doors`…
+    active: MapId,
+    /// Остальные карты.
+    parked: BTreeMap<MapId, Space>,
+    /// Определения карт (имя, пауза, инициализация); карта 0 — `MapDef::default_map`, если не задана.
+    map_defs: BTreeMap<MapId, MapDef>,
 }
 
 impl GameServer {
@@ -221,9 +240,166 @@ impl GameServer {
             next_net: 1,
             tick: 0,
             topo_cache: BTreeMap::new(),
+            active: MapId(0),
+            parked: BTreeMap::new(),
+            map_defs: [(MapId(0), MapDef::default_map())].into(),
         };
         s.sync_doors();
         s
+    }
+
+    // ---- карты (ADR-0013) -----------------------------------------------------
+
+    /// Сделать карту активной: её мир, физика и двери оказываются в полях сервера. `false` — нет
+    /// такой карты.
+    fn enter(&mut self, map: MapId) -> bool {
+        if map == self.active {
+            return true;
+        }
+        let Some(next) = self.parked.remove(&map) else {
+            return false;
+        };
+        let prev = Space {
+            world: std::mem::replace(&mut self.world, next.world),
+            physics: std::mem::replace(&mut self.physics, next.physics),
+            doors: std::mem::replace(&mut self.doors, next.doors),
+            door_net: std::mem::replace(&mut self.door_net, next.door_net),
+            door_by_net: std::mem::replace(&mut self.door_by_net, next.door_by_net),
+            topo_cache: std::mem::replace(&mut self.topo_cache, next.topo_cache),
+        };
+        self.parked.insert(self.active, prev);
+        self.active = map;
+        true
+    }
+
+    /// Номера всех карт по возрастанию.
+    pub fn map_ids(&self) -> Vec<MapId> {
+        let mut ids: Vec<MapId> = self.parked.keys().copied().collect();
+        ids.push(self.active);
+        ids.sort();
+        ids
+    }
+
+    /// Определение карты.
+    pub fn map_def(&self, map: MapId) -> Option<&MapDef> {
+        self.map_defs.get(&map)
+    }
+
+    /// Мир карты.
+    pub fn world_of(&self, map: MapId) -> Option<&World> {
+        if map == self.active {
+            Some(&self.world)
+        } else {
+            self.parked.get(&map).map(|s| &s.world)
+        }
+    }
+
+    /// Новая карта со своим миром. `Err` — номер занят.
+    pub fn create_map(&mut self, def: MapDef, world: World) -> Result<(), String> {
+        if self.map_defs.contains_key(&def.id) {
+            return Err(format!("карта {} уже есть", def.id.0));
+        }
+        let mut space = Space {
+            physics: BoxWorld::from_world(&world),
+            world,
+            doors: DoorRegistry::new(),
+            door_net: BTreeMap::new(),
+            door_by_net: BTreeMap::new(),
+            topo_cache: BTreeMap::new(),
+        };
+        space.doors.sync(&space.world);
+        self.map_defs.insert(def.id, def.clone());
+        self.parked.insert(def.id, space);
+        let back = self.active;
+        self.enter(def.id);
+        self.sync_doors();
+        self.enter(back);
+        Ok(())
+    }
+
+    /// Сменить имя или флаги карты.
+    pub fn define_map(&mut self, def: MapDef) -> bool {
+        match self.map_defs.get_mut(&def.id) {
+            Some(d) => {
+                *d = def;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Удалить карту (кроме 0): игроки с неё переходят на карту 0 в точку появления.
+    pub fn remove_map(&mut self, map: MapId) -> Vec<Out> {
+        let mut out = Vec::new();
+        if map == MapId(0) || !self.map_defs.contains_key(&map) {
+            return out;
+        }
+        let here: Vec<ConnId> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.map == map)
+            .map(|(c, _)| *c)
+            .collect();
+        let spawn = self.cfg.spawn;
+        for conn in here {
+            self.move_conn(conn, MapId(0), spawn, &mut out);
+        }
+        if self.active == map {
+            self.enter(MapId(0));
+        }
+        self.parked.remove(&map);
+        self.map_defs.remove(&map);
+        out
+    }
+
+    /// Карта игрока по соединению.
+    pub fn player_map(&self, conn: ConnId) -> Option<MapId> {
+        self.players.get(&conn).map(|p| p.map)
+    }
+
+    /// Перенести игрока на карту в точку (ступни) её координат: клиент получает `MapChanged`,
+    /// снимок новой карты и позицию.
+    pub fn move_player(&mut self, net: NetworkEntityId, map: MapId, pos: Vec3) -> Vec<Out> {
+        let mut out = Vec::new();
+        if let Some(conn) = self
+            .players
+            .iter()
+            .find(|(_, p)| p.net == net)
+            .map(|(c, _)| *c)
+        {
+            self.move_conn(conn, map, pos, &mut out);
+        }
+        out
+    }
+
+    fn move_conn(&mut self, conn: ConnId, map: MapId, pos: Vec3, out: &mut Vec<Out>) {
+        if !self.map_defs.contains_key(&map) {
+            return;
+        }
+        let tick = self.tick;
+        let Some(p) = self.players.get_mut(&conn) else {
+            return;
+        };
+        let changed = p.map != map;
+        p.map = map;
+        p.state = CharacterState::at(pos);
+        p.queue.clear();
+        p.moved_tick = tick;
+        p.touching.clear();
+        if changed {
+            out.push(Out::Send {
+                to: conn,
+                msg: ServerMessage::MapChanged { map: map.0 },
+            });
+            self.send_snapshot(conn, out);
+        }
+        out.push(Out::Send {
+            to: conn,
+            msg: ServerMessage::InputAck {
+                seq: 0,
+                pos: pos.to_array(),
+            },
+        });
     }
 
     /// Рельеф мира: игроки стоят на земле, правки реплицируются.
@@ -387,8 +563,9 @@ impl GameServer {
         self
     }
 
+    /// Мир карты 0 (станции).
     pub fn world(&self) -> &World {
-        &self.world
+        self.world_of(MapId(0)).expect("карта 0 есть всегда")
     }
 
     pub fn doors(&self) -> &DoorRegistry {
@@ -539,12 +716,14 @@ impl GameServer {
         self.content_queue.remove(&conn);
         let mut out: Vec<Out> = self
             .players
-            .keys()
-            .map(|&to| Out::Send {
+            .iter()
+            .filter(|(_, o)| o.map == p.map)
+            .map(|(&to, _)| Out::Send {
                 to,
                 msg: ServerMessage::EntityRemoved { id: p.net },
             })
             .collect();
+        self.enter(p.map);
         self.dispatch_hook(
             HookEvent::PlayerLeft {
                 actor: p.net,
@@ -650,7 +829,8 @@ impl GameServer {
                     } => self.on_edit(conn, base_revision, command, &mut out),
                     ClientMessage::RequestSnapshot => self.send_snapshot(conn, &mut out),
                     ClientMessage::GameCommand { kind, data } => {
-                        if let Some(net) = self.players.get(&conn).map(|p| p.net) {
+                        if let Some((net, map)) = self.players.get(&conn).map(|p| (p.net, p.map)) {
+                            self.enter(map);
                             self.dispatch_hook(
                                 HookEvent::Command {
                                     actor: net,
@@ -740,8 +920,10 @@ impl GameServer {
             Err(reason) => return fail(out, reason, "вход отклонён"),
         };
         self.pending.remove(&conn);
+        self.enter(MapId(0));
         let net = self.alloc_net();
         let player = Player {
+            map: MapId(0),
             net,
             identity,
             state: CharacterState::at(self.cfg.spawn),
@@ -779,6 +961,9 @@ impl GameServer {
     }
 
     fn send_snapshot(&mut self, conn: ConnId, out: &mut Vec<Out>) {
+        if let Some(map) = self.players.get(&conn).map(|p| p.map) {
+            self.enter(map);
+        }
         match snapshot::split(&self.world.to_state()) {
             Ok(parts) => out.extend(parts.into_iter().map(|msg| Out::Send { to: conn, msg })),
             Err(e) => out.push(Out::Send {
@@ -812,12 +997,13 @@ impl GameServer {
                 (Some(astrocore_api::Interest::Everyone), _) => true,
                 (Some(astrocore_api::Interest::Owner), Some((v, _))) => v == *net,
                 (Some(astrocore_api::Interest::Radius(r)), Some((v, pos))) => {
+                    let here = self.active;
                     v == *net
                         || self
                             .players
                             .values()
                             .find(|p| p.net == *net)
-                            .is_some_and(|o| o.state.pos.distance(pos) <= r)
+                            .is_some_and(|o| o.map == here && o.state.pos.distance(pos) <= r)
                 }
                 _ => false,
             };
@@ -856,6 +1042,8 @@ impl GameServer {
     }
 
     fn on_interact(&mut self, conn: ConnId, target: NetworkEntityId, out: &mut Vec<Out>) {
+        let map = self.players[&conn].map;
+        self.enter(map);
         let Some(&element) = self.door_by_net.get(&target) else {
             out.push(Out::Send {
                 to: conn,
@@ -987,10 +1175,14 @@ impl GameServer {
             self.strike(conn, out);
             return;
         }
+        let map = self.players[&conn].map;
+        self.enter(map);
         match self.world.apply_checked(command, Revision(base_revision)) {
             Ok(op) => {
                 self.metrics.edits_applied += 1;
-                self.applied_ops.push(op.clone());
+                if self.active == MapId(0) {
+                    self.applied_ops.push(op.clone());
+                }
                 self.after_world_change();
                 self.broadcast(out, ServerMessage::WorldOp(op));
                 let new_doors: Vec<(ObjectId, NetworkEntityId)> =
@@ -1024,9 +1216,23 @@ impl GameServer {
 
     /// Серверная правка мира без проверки прав (разрушение, скрипты, игровые модули).
     pub fn apply_world_command(&mut self, command: WorldCommand) -> Result<Vec<Out>, WorldError> {
+        self.apply_world_command_on(MapId(0), command)
+    }
+
+    /// Серверная правка мира карты `map`.
+    pub fn apply_world_command_on(
+        &mut self,
+        map: MapId,
+        command: WorldCommand,
+    ) -> Result<Vec<Out>, WorldError> {
+        if !self.enter(map) {
+            return Ok(Vec::new());
+        }
         let _span = tracing::debug_span!("world_revision").entered();
         let op = self.world.apply(command)?;
-        self.applied_ops.push(op.clone());
+        if self.active == MapId(0) {
+            self.applied_ops.push(op.clone());
+        }
         self.after_world_change();
         let mut out = Vec::new();
         self.broadcast(&mut out, ServerMessage::WorldOp(op));
@@ -1051,16 +1257,25 @@ impl GameServer {
         self.hook_depth -= 1;
     }
 
+    /// Разослать событие модулям в рамках активной карты: её мир — `ctx.world`.
     fn dispatch_hook_inner(&mut self, event: HookEvent, out: &mut Vec<Out>) {
         let Some(host) = self.modules.as_mut() else {
             return;
         };
+        let scope = self.active;
         let positions: BTreeMap<NetworkEntityId, Vec3> = self
             .players
             .values()
             .map(|p| (p.net, p.state.pos))
             .collect();
-        let result = host.dispatch_with(
+        let player_maps: BTreeMap<NetworkEntityId, MapId> =
+            self.players.values().map(|p| (p.net, p.map)).collect();
+        let result = host.dispatch_on(
+            MapScope {
+                map: scope,
+                defs: &self.map_defs,
+                player_maps: &player_maps,
+            },
             &self.world,
             &positions,
             Some(&self.physics),
@@ -1068,6 +1283,8 @@ impl GameServer {
             &event,
         );
         for r in result.doors {
+            // Вложенные события могли сменить активную карту: просьбы — о карте вызова.
+            self.enter(scope);
             self.apply_door_request(r, out);
         }
         for (net, frozen) in result.freezes {
@@ -1114,20 +1331,43 @@ impl GameServer {
             }
         }
         for cmd in result.commands {
+            self.enter(scope);
             // Модуль не имеет прямого доступа к миру: его команды проходят обычную валидацию.
             if let Ok(op) = self.world.apply(cmd) {
-                self.applied_ops.push(op.clone());
+                if self.active == MapId(0) {
+                    self.applied_ops.push(op.clone());
+                }
                 self.after_world_change();
                 self.broadcast(out, ServerMessage::WorldOp(op));
             }
         }
+        for r in result.maps {
+            match r {
+                MapRequest::Create { def, world } => {
+                    let _ = self.create_map(def, *world);
+                }
+                MapRequest::Define(def) => {
+                    self.define_map(def);
+                }
+                MapRequest::Remove { id } => out.extend(self.remove_map(id)),
+                MapRequest::Move { net, map, pos } => out.extend(self.move_player(net, map, pos)),
+            }
+        }
+        self.enter(scope);
     }
 
+    /// Разослать игрокам активной карты (изменения её мира и дверей).
     fn broadcast(&self, out: &mut Vec<Out>, msg: ServerMessage) {
-        out.extend(self.players.keys().map(|&to| Out::Send {
-            to,
-            msg: msg.clone(),
-        }));
+        let map = self.active;
+        out.extend(
+            self.players
+                .iter()
+                .filter(|(_, p)| p.map == map)
+                .map(|(&to, _)| Out::Send {
+                    to,
+                    msg: msg.clone(),
+                }),
+        );
     }
 
     // ---- тик ----------------------------------------------------------------
@@ -1159,8 +1399,13 @@ impl GameServer {
         let cap = self.cfg.rate_capacity;
         let shape = self.cfg.shape;
         let tick = self.tick;
-        let mut collisions: Vec<(ObjectId, ObjectId)> = Vec::new();
-        for (&conn, p) in &mut self.players {
+        let mut collisions: Vec<(MapId, ObjectId, ObjectId)> = Vec::new();
+        let conns: Vec<ConnId> = self.players.keys().copied().collect();
+        for conn in conns {
+            // Игрок движется по физике своей карты.
+            let map = self.players[&conn].map;
+            self.enter(map);
+            let p = self.players.get_mut(&conn).expect("игрок есть");
             p.bucket = (p.bucket + refill).min(cap);
             // Симуляция игрока идёт только по его командам: одна команда — один шаг, точно как
             // у клиента при предсказании. Игрок без ввода не симулируется (не «падает» и не
@@ -1179,6 +1424,7 @@ impl GameServer {
                 &self.physics,
                 self.terrain
                     .as_ref()
+                    .filter(|_| map == MapId(0))
                     .map(|t| t as &dyn astrocore_physics::GroundProvider),
                 &mut p.state,
                 &shape,
@@ -1209,16 +1455,26 @@ impl GameServer {
                 .into_iter()
                 .collect();
             let actor = ObjectId::from_u128(u128::from(p.net.0));
-            collisions.extend(now.difference(&p.touching).map(|&other| (actor, other)));
+            collisions.extend(
+                now.difference(&p.touching)
+                    .map(|&other| (map, actor, other)),
+            );
             p.touching = now;
         }
-        for (a, b) in collisions {
+        for (map, a, b) in collisions {
+            self.enter(map);
             self.dispatch_hook(HookEvent::Collision { a, b }, &mut out);
         }
 
-        // Время для игровых модулей: таймеры действий, перезарядки и прочее, что идёт само.
+        // Время для игровых модулей: таймеры действий, перезарядки и прочее, что идёт само. Тик
+        // приходит по каждой карте в её рамках; на карте на паузе модуль не продвигает симуляцию
+        // (`HookContext::paused`).
         let tick = self.tick;
-        self.dispatch_hook(HookEvent::Tick { tick, dt }, &mut out);
+        for map in self.map_ids() {
+            if self.enter(map) {
+                self.dispatch_hook(HookEvent::Tick { tick, dt }, &mut out);
+            }
+        }
 
         self.replicate_entities(&mut out);
         self.pump_content(&mut out);
@@ -1276,18 +1532,20 @@ impl GameServer {
         let radius = self.cfg.interest_radius_chunks;
         let budget = self.cfg.entity_budget;
         let tick = self.tick;
-        let snapshot: Vec<(ConnId, NetworkEntityId, Vec3, f32, u32)> = self
+        let snapshot: Vec<(ConnId, NetworkEntityId, Vec3, f32, u32, MapId)> = self
             .players
             .iter()
-            .map(|(c, p)| (*c, p.net, p.state.pos, p.yaw, p.moved_tick))
+            .map(|(c, p)| (*c, p.net, p.state.pos, p.yaw, p.moved_tick, p.map))
             .collect();
 
-        for &(viewer, _, vpos, _, _) in &snapshot {
+        for &(viewer, _, vpos, _, _, vmap) in &snapshot {
+            // Видимость считается по миру карты наблюдателя; других карт он не видит.
+            self.enter(vmap);
             let vchunk = ChunkCoord::from_world(vpos, chunk_size);
             // Кандидаты в зоне интереса и видимости.
             let mut visible: Vec<(NetworkEntityId, Vec3, f32, u32, f32)> = Vec::new();
-            for &(other, net, pos, yaw, moved) in &snapshot {
-                if other == viewer {
+            for &(other, net, pos, yaw, moved, omap) in &snapshot {
+                if other == viewer || omap != vmap {
                     continue;
                 }
                 let oc = ChunkCoord::from_world(pos, chunk_size);

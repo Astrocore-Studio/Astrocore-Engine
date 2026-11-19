@@ -14,7 +14,6 @@ fn world() -> World {
         name: "ground".into(),
         base_y: 0.0,
         height: 4.0,
-        map: Default::default(),
     }))
     .unwrap();
     w
@@ -278,7 +277,6 @@ fn replication_is_ordered_and_idempotent() {
             name: "ground".into(),
             base_y: 0.0,
             height: 4.0,
-            map: Default::default(),
         }),
     }];
     log.push(
@@ -362,7 +360,6 @@ fn invalid_floor_is_rejected() {
         name: "bad".into(),
         base_y: 0.0,
         height: 0.0,
-        map: Default::default(),
     }));
     assert!(matches!(r, Err(WorldError::InvalidFloor(_))));
     assert_eq!(w.revision(), Revision::ZERO);
@@ -380,7 +377,6 @@ mod stairs {
             name: "up".into(),
             base_y: 4.0,
             height: 4.0,
-            map: Default::default(),
         }))
         .unwrap();
         w
@@ -554,7 +550,6 @@ fn empty_floors_can_be_removed_and_nonempty_cannot() {
         name: "up".into(),
         base_y: 4.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     w.apply(WorldCommand::PlaceElement(wall(1, GridEdge::along_x(0, 0))))
@@ -578,7 +573,6 @@ fn empty_floors_can_be_removed_and_nonempty_cannot() {
         name: "up".into(),
         base_y: 4.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     w.apply(WorldCommand::PlaceElement(StructureElement {
@@ -933,93 +927,4 @@ mod authored {
         }
         assert_eq!(client.content_hash(), server.content_hash());
     }
-}
-
-fn station_map(id: u32, paused: bool) -> MapDef {
-    MapDef {
-        id: MapId(id),
-        name: format!("карта {id}"),
-        paused,
-        initialized: false,
-    }
-}
-
-#[test]
-fn a_world_holds_several_maps_with_their_own_floors_and_flags() {
-    let mut w = world();
-    let hash0 = w.content_hash();
-    // Карта 0 есть без записи: идёт и инициализирована.
-    let m0 = w.map(MapId(0)).unwrap();
-    assert!(!m0.paused && m0.initialized);
-    assert_eq!(w.maps().len(), 1);
-    // Этаж на несуществующей карте — ошибка.
-    let floor2 = FloorDef {
-        id: FloorId(2000),
-        name: "уровень 0".into(),
-        base_y: 2000.0,
-        height: 2.3,
-        map: MapId(2),
-    };
-    assert_eq!(
-        w.apply(WorldCommand::DefineFloor(floor2.clone())),
-        Err(WorldError::UnknownMap(MapId(2)))
-    );
-    w.apply(WorldCommand::DefineMap(station_map(2, true)))
-        .unwrap();
-    w.apply(WorldCommand::DefineFloor(floor2)).unwrap();
-    assert_eq!(w.map_of_floor(FloorId(2000)), Some(MapId(2)));
-    assert!(w.floor_paused(FloorId(2000)));
-    assert!(!w.floor_paused(FloorId(0)));
-    // Обновление флагов той же командой.
-    w.apply(WorldCommand::DefineMap(station_map(2, false)))
-        .unwrap();
-    assert!(!w.floor_paused(FloorId(2000)));
-    // Снимок сохраняет карты.
-    let restored = World::from_state(w.to_state()).unwrap();
-    assert_eq!(restored.maps(), w.maps());
-    assert_eq!(restored.content_hash(), w.content_hash());
-    assert_ne!(w.content_hash(), hash0, "карта 2 входит в хеш");
-}
-
-#[test]
-fn removing_a_map_removes_its_floors_elements_and_objects_in_one_operation() {
-    let mut w = world();
-    w.apply(WorldCommand::PlaceElement(wall(1, GridEdge::along_x(0, 0))))
-        .unwrap();
-    w.apply(WorldCommand::DefineMap(station_map(1, true)))
-        .unwrap();
-    w.apply(WorldCommand::DefineFloor(FloorDef {
-        id: FloorId(1000),
-        name: "уровень 0".into(),
-        base_y: 1000.0,
-        height: 2.3,
-        map: MapId(1),
-    }))
-    .unwrap();
-    let mut other = wall(2, GridEdge::along_x(0, 0));
-    other.floor = FloorId(1000);
-    w.apply(WorldCommand::PlaceElement(other)).unwrap();
-    w.apply(WorldCommand::PlaceAuthored(AuthoredObject::new(
-        ObjectId::from_u128(3),
-        AuthoredKind::Zone,
-        FloorId(1000),
-        astrocore_math::glam::Vec3::new(0.0, 1000.0, 0.0),
-        astrocore_math::glam::Vec3::new(1.0, 1001.0, 1.0),
-    )))
-    .unwrap();
-    // Клиент применяет те же операции и приходит к тому же миру.
-    let mut replica = World::from_state(w.to_state()).unwrap();
-    let rev = w.revision();
-    let op = w.apply(WorldCommand::RemoveMap { id: MapId(1) }).unwrap();
-    assert_eq!(w.revision(), rev.next(), "одна операция");
-    assert!(w.map(MapId(1)).is_none());
-    assert!(w.floor(FloorId(1000)).is_none());
-    assert_eq!(w.element_count(), 1, "стена карты 0 осталась");
-    assert_eq!(w.authored_count(), 0);
-    assert_eq!(replica.apply_replicated(&op), ReplicaOutcome::Applied);
-    assert_eq!(replica.content_hash(), w.content_hash());
-    assert_eq!(
-        w.apply(WorldCommand::RemoveMap { id: MapId(1) }),
-        Err(WorldError::UnknownMap(MapId(1)))
-    );
 }

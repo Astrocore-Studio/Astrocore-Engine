@@ -33,7 +33,6 @@ fn base_world(floors: i32) -> World {
             name: format!("f{f}"),
             base_y: f as f32 * 4.0,
             height: 4.0,
-            map: Default::default(),
         }))
         .unwrap();
     }
@@ -280,7 +279,6 @@ fn external_changes_invalidate_the_history() {
         name: "x".into(),
         base_y: 40.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     assert!(!s.can_undo(), "после внешней правки история сброшена");
@@ -318,7 +316,6 @@ fn journal_replays_to_the_same_world() {
                 name: format!("f{f}"),
                 base_y: f as f32 * 4.0,
                 height: 4.0,
-                map: Default::default(),
             }))
             .unwrap();
     }

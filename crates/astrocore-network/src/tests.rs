@@ -497,7 +497,6 @@ fn strip_world() -> astrocore_world::World {
         name: "g".into(),
         base_y: 0.0,
         height: 3.0,
-        map: Default::default(),
     }))
     .unwrap();
     let mut id = 1u128;
@@ -763,7 +762,6 @@ mod terrain {
             name: "g".into(),
             base_y: 0.0,
             height: 3.0,
-            map: Default::default(),
         }))
         .unwrap();
         let mut t = Terrain::new(1.0, 16, 0.0).unwrap();
@@ -1891,4 +1889,129 @@ fn a_round_restart_clears_the_client_and_asks_it_to_join_again() {
     // Хеш локальной карты сброшен: новый сервер пришлёт её целиком.
     let hello: ClientMessage = decode(&core.hello_packet()).unwrap();
     assert!(matches!(hello, ClientMessage::Hello { world_hash: 0, .. }));
+}
+
+/// Карты как отдельные миры (ADR-0013): игрок на другой карте получает её мир, не видит игроков
+/// и правок прежней карты; модули получают тик в рамках каждой карты; удаление карты возвращает
+/// игроков на карту 0.
+#[test]
+fn players_live_on_separate_maps_with_their_own_worlds() {
+    use astrocore_runtime::modules::{GameModule, HookContext, HookEvent, ModuleHost};
+    use astrocore_world::{MapDef, MapId, World, WorldConfig};
+    use std::sync::{Arc, Mutex};
+
+    /// Модуль записывает, в рамках каких карт пришёл тик.
+    struct Spy(Arc<Mutex<Vec<(u32, bool)>>>);
+    impl GameModule for Spy {
+        fn id(&self) -> &str {
+            "spy"
+        }
+        fn handle(&mut self, ctx: &mut HookContext<'_>, event: &HookEvent) {
+            if let HookEvent::Tick { .. } = event {
+                self.0.lock().unwrap().push((ctx.map().0, ctx.paused()));
+            }
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut host = ModuleHost::new();
+    host.register(Box::new(Spy(seen.clone()))).unwrap();
+    host.finalize().unwrap();
+    let server = crate::server::GameServer::new(
+        crate::testkit::test_world(),
+        Harness::default_cfg(),
+        Box::new(crate::testkit::ByBuild),
+    )
+    .with_modules(host);
+    let mut h = Harness::with_server(server);
+    let (a, b) = (h.join("a"), h.join("b"));
+    h.ticks(5);
+    assert_eq!(h.client(a).remote_entities().len(), 1, "видят друг друга");
+    // Карта 1 — другой мир (пустой, один этаж), на паузе.
+    let mut other = World::new("другая", WorldConfig::default()).unwrap();
+    other
+        .apply(WorldCommand::DefineFloor(astrocore_world::FloorDef {
+            id: FloorId(0),
+            name: "ground".into(),
+            base_y: 0.0,
+            height: 3.0,
+        }))
+        .unwrap();
+    let def = MapDef {
+        id: MapId(1),
+        name: "карта 1".into(),
+        paused: true,
+        initialized: false,
+    };
+    h.server.create_map(def, other.clone()).unwrap();
+    assert!(
+        h.server
+            .create_map(
+                MapDef {
+                    id: MapId(1),
+                    ..MapDef::default_map()
+                },
+                other
+            )
+            .is_err()
+    );
+    seen.lock().unwrap().clear();
+    h.tick();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(0, false), (1, true)],
+        "тик по каждой карте"
+    );
+    // Игрок a уходит на карту 1: у него её мир, игрока b он больше не видит.
+    let net_a = h.client(a).net_id().unwrap();
+    let outs = h
+        .server
+        .move_player(net_a, MapId(1), Vec3::new(0.5, 0.1, 0.5));
+    h.deliver(outs);
+    h.ticks(5);
+    assert!(
+        h.take_events(a)
+            .iter()
+            .any(|e| matches!(e, ClientEvent::MapChanged { map: 1 }))
+    );
+    assert_eq!(h.client(a).world().unwrap().id(), "другая");
+    assert_eq!(h.client(a).world().unwrap().element_count(), 0);
+    assert!(
+        h.client(a).remote_entities().is_empty(),
+        "b на другой карте"
+    );
+    assert!(
+        h.client(b).remote_entities().is_empty(),
+        "a на другой карте"
+    );
+    assert_eq!(h.server.player_map(a), Some(MapId(1)));
+    // Правка карты 0 до a не доходит, правка карты 1 — доходит только до a.
+    let station = h.client(b).world().unwrap().element_count();
+    let floor = |id: u128| StructureElement {
+        id: ObjectId::from_u128(id),
+        kind: StructureKind::Floor,
+        placement: Placement::Cell(GridCell::new(30, 30)),
+        floor: FloorId(0),
+        material: material(),
+        thickness: 0.2,
+    };
+    let outs = h
+        .server
+        .apply_world_command_on(MapId(1), WorldCommand::PlaceElement(floor(9001)))
+        .unwrap();
+    h.deliver(outs);
+    let outs = h
+        .server
+        .apply_world_command(WorldCommand::PlaceElement(floor(9002)))
+        .unwrap();
+    h.deliver(outs);
+    assert_eq!(h.client(a).world().unwrap().element_count(), 1);
+    assert_eq!(h.client(b).world().unwrap().element_count(), station + 1);
+    // Карта удалена — a снова на станции, с её миром, и они видят друг друга.
+    let outs = h.server.remove_map(MapId(1));
+    h.deliver(outs);
+    h.ticks(5);
+    assert_eq!(h.server.player_map(a), Some(MapId(0)));
+    assert_eq!(h.client(a).world().unwrap().id(), "testkit");
+    assert_eq!(h.client(a).remote_entities().len(), 1);
+    assert_eq!(h.server.map_ids(), vec![MapId(0)]);
 }

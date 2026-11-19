@@ -54,6 +54,10 @@ pub enum ClientEvent {
     TerrainChanged,
     /// Сервер начал новый раунд: состояние сброшено, нужно отправить `Hello` заново.
     RoundRestarted,
+    /// Игрок перенесён на другую карту (ADR-0013): мир прежней карты забыт, идёт снимок новой.
+    MapChanged {
+        map: u32,
+    },
     Rejected {
         reason: RejectReason,
         detail: String,
@@ -148,6 +152,22 @@ impl ClientCore {
             terrain_dirty: Vec::new(),
             terrain_serial: 0,
         }
+    }
+
+    /// Переход на другую карту: забыть мир, двери, чужие сущности и неподтверждённый ввод прежней
+    /// карты; сам игрок, его данные и содержимое по хешу остаются. Снимок новой карты придёт следом.
+    fn change_map(&mut self) {
+        self.replica = None;
+        self.physics = BoxWorld::default();
+        self.reassembler.reset();
+        self.buffered_ops.clear();
+        self.doors.clear();
+        let you = self.you;
+        self.components.retain(|(n, _), _| Some(*n) == you);
+        self.pending.clear();
+        self.history.clear();
+        self.remotes.clear();
+        self.snapshot_serial += 1;
     }
 
     /// Новый раунд на сервере: всё, что пришло от прежнего, забыть. Содержимое по хешу остаётся.
@@ -539,6 +559,10 @@ impl ClientCore {
             ServerMessage::RoundRestart => {
                 self.restart();
                 events.push(ClientEvent::RoundRestarted);
+            }
+            ServerMessage::MapChanged { map } => {
+                self.change_map();
+                events.push(ClientEvent::MapChanged { map });
             }
             ServerMessage::Reject { reason, detail } => {
                 events.push(ClientEvent::Rejected { reason, detail })

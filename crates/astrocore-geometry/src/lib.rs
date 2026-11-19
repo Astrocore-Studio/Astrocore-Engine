@@ -477,7 +477,6 @@ mod tests {
             name: "g".into(),
             base_y: 2.0,
             height: 3.5,
-            map: Default::default(),
         }))
         .unwrap();
         w
@@ -686,7 +685,6 @@ mod tests {
                 name: "up".into(),
                 base_y: 6.0,
                 height: 3.0,
-                map: Default::default(),
             }))
             .unwrap();
             w
@@ -831,7 +829,6 @@ mod tests {
                 name: "up".into(),
                 base_y: 6.0,
                 height: 3.0,
-                map: Default::default(),
             }))
             .unwrap();
             w

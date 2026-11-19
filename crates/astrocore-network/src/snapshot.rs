@@ -129,7 +129,6 @@ mod tests {
                 name: format!("a-fairly-long-floor-name-number-{f}"),
                 base_y: f as f32,
                 height: 1.0,
-                map: Default::default(),
             }))
             .unwrap();
         }

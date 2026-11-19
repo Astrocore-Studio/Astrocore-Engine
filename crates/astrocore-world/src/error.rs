@@ -1,6 +1,6 @@
 use astrocore_core::{IdError, ObjectId, Revision};
 
-use crate::{FloorId, MapId, Slot};
+use crate::{FloorId, Slot};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum WorldError {
@@ -8,8 +8,6 @@ pub enum WorldError {
     InvalidConfig(String),
     #[error("неизвестный этаж {0:?}")]
     UnknownFloor(FloorId),
-    #[error("неизвестная карта {0:?}")]
-    UnknownMap(MapId),
     #[error("этаж {0:?} уже определён")]
     DuplicateFloor(FloorId),
     #[error("этаж {0:?} не пуст: на нём есть элементы или ведущие на него лестницы")]

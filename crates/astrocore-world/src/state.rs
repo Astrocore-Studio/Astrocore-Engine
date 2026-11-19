@@ -4,7 +4,7 @@ use astrocore_core::{Revision, SchemaVersion};
 use astrocore_math::ChunkCoord;
 use serde::{Deserialize, Serialize};
 
-use crate::{AuthoredObject, FloorDef, MapDef, StructureElement, World, WorldConfig, WorldError};
+use crate::{AuthoredObject, FloorDef, StructureElement, World, WorldConfig, WorldError};
 
 /// Версия схемы сериализованного состояния мира.
 pub const WORLD_SCHEMA_VERSION: SchemaVersion = SchemaVersion(1);
@@ -16,9 +16,6 @@ pub struct WorldState {
     pub schema_version: SchemaVersion,
     pub id: String,
     pub config: WorldConfig,
-    /// Карты (ADR-0012); в старых снимках поля нет — одна неявная карта 0.
-    #[serde(default)]
-    pub maps: Vec<MapDef>,
     pub floors: Vec<FloorDef>,
     pub elements: Vec<StructureElement>,
     /// Авторские объекты; поле отсутствует в старых снимках и в мирах без них.
@@ -35,7 +32,6 @@ impl World {
             schema_version: WORLD_SCHEMA_VERSION,
             id: self.id.clone(),
             config: self.config,
-            maps: self.maps.values().cloned().collect(),
             floors: self.floors.values().cloned().collect(),
             elements: self.elements.values().cloned().collect(),
             authored: self.authored.values().cloned().collect(),
@@ -53,14 +49,8 @@ impl World {
             });
         }
         let mut world = World::new(state.id, state.config)?;
-        for m in state.maps {
-            world.maps.insert(m.id, m);
-        }
         for def in state.floors {
             def.validate()?;
-            if world.map(def.map).is_none() {
-                return Err(WorldError::UnknownMap(def.map));
-            }
             if world.floors.insert(def.id, def.clone()).is_some() {
                 return Err(WorldError::DuplicateFloor(def.id));
             }
@@ -104,9 +94,6 @@ impl World {
         if self.authored.is_empty() {
             text = text.replacen("\"authored\":[],", "", 1);
         }
-        // Карты (ADR-0012): без заданных карт и с этажами на карте 0 хеш прежний.
-        text = text.replacen("\"maps\":[],", "", 1);
-        text = text.replace(",\"map\":0}", "}");
         let bytes = text.into_bytes();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for b in bytes {
