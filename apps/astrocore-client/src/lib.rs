@@ -170,6 +170,9 @@ pub struct Look {
     pub top_down: bool,
 }
 
+/// Высота глаз над ступнями, м (рост 1,8 м).
+pub const EYE_HEIGHT_M: f32 = 1.65;
+
 /// Наклон камеры при виде сверху, радианы (положительный — взгляд вниз).
 pub const TOP_DOWN_PITCH: f32 = 1.4;
 /// Пределы расстояния камеры при виде сверху, м.
@@ -520,7 +523,7 @@ fn setup_demo_world(
             &mut materials,
             &sheet.0,
             feet,
-            Vec2::new(0.5, 1.0),
+            Vec2::new(0.9, 1.8),
             facing,
             DirectionSet::Four,
         );
@@ -602,7 +605,7 @@ fn drive_camera(
         }
         if let Some(net) = net.as_ref() {
             let p = net.core.position();
-            rig.target = Vec3::new(p.x, p.y + 0.9, p.z);
+            rig.target = Vec3::new(p.x, p.y + EYE_HEIGHT_M, p.z);
             rig.distance = if look.first_person {
                 0.0
             } else {
@@ -847,7 +850,7 @@ fn sync_remote_players(
 ) {
     let (sheet, size) = match (&player, &sheet) {
         (Some(p), _) => (p.sheet.clone(), p.size),
-        (None, Some(s)) => (s.0.clone(), Vec2::new(0.5, 1.0)),
+        (None, Some(s)) => (s.0.clone(), Vec2::new(0.9, 1.8)),
         _ => return,
     };
     let ids = net.core.remote_entities();

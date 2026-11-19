@@ -14,9 +14,11 @@ pub struct CharacterShape {
 impl Default for CharacterShape {
     fn default() -> Self {
         Self {
-            radius: 0.17,
-            height: 1.0,
-            step_height: 0.2,
+            // Рост человека 1,8 м (решение владельца, 19.11.2026), ширина 0,5 м — проходит в
+            // проём шириной в тайл; ступень 0,35 м — как у лестниц мира.
+            radius: 0.25,
+            height: 1.8,
+            step_height: 0.35,
         }
     }
 }
