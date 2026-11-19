@@ -170,8 +170,8 @@ pub struct Look {
     pub top_down: bool,
 }
 
-/// Высота глаз над ступнями, м (рост 1,8 м).
-pub const EYE_HEIGHT_M: f32 = 1.65;
+/// Высота глаз над ступнями, м (рост 1 тайл = 1 м).
+pub const EYE_HEIGHT_M: f32 = 0.9;
 
 /// Наклон камеры при виде сверху, радианы (положительный — взгляд вниз).
 pub const TOP_DOWN_PITCH: f32 = 1.4;
@@ -523,7 +523,7 @@ fn setup_demo_world(
             &mut materials,
             &sheet.0,
             feet,
-            Vec2::new(0.9, 1.8),
+            Vec2::new(0.5, 1.0),
             facing,
             DirectionSet::Four,
         );
@@ -850,7 +850,7 @@ fn sync_remote_players(
 ) {
     let (sheet, size) = match (&player, &sheet) {
         (Some(p), _) => (p.sheet.clone(), p.size),
-        (None, Some(s)) => (s.0.clone(), Vec2::new(0.9, 1.8)),
+        (None, Some(s)) => (s.0.clone(), Vec2::new(0.5, 1.0)),
         _ => return,
     };
     let ids = net.core.remote_entities();
