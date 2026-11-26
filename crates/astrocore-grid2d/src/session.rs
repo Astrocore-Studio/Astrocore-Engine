@@ -9,11 +9,13 @@ use astrocore_protocol::MAX_PACKET_BYTES;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-const PROTOCOL_NAMESPACE: u64 = 0x4153_5452_4401_0000;
+const PROTOCOL_NAMESPACE: u64 = 0x4153_5452_4402_0000;
 const MOVEMENT_TIMEOUT_TICKS: u64 = 5;
 const MAX_PENDING_ACTIONS: usize = 16;
 const MAX_LAYOUT_BYTES: usize = 512 * 1024;
 const LAYOUT_PART_BYTES: usize = 8 * 1024;
+// Полный снимок должен уйти до стандартного отключения Lightyear через 3 секунды.
+const HISTORY_TICKS: u64 = 32;
 pub const TICK_HZ: u32 = 20;
 pub const TICK_PERIOD: Duration = Duration::from_millis(1000 / TICK_HZ as u64);
 
@@ -26,11 +28,19 @@ pub struct Input<A> {
     pub action: Option<A>,
 }
 
+/// Снимок, который можно восстановить из точной копии базового тика и дельты.
+pub trait ReplicatedState: Clone + Serialize + DeserializeOwned {
+    type Delta: Serialize + DeserializeOwned;
+
+    fn diff(&self, baseline: &Self) -> Self::Delta;
+    fn apply(&mut self, delta: Self::Delta);
+}
+
 pub trait Simulation {
     const WIRE_VERSION: u16;
 
     type Layout: Serialize;
-    type State: Serialize;
+    type State: ReplicatedState;
     type Action: DeserializeOwned;
 
     fn layout(&self) -> &Self::Layout;
@@ -44,13 +54,15 @@ pub trait Simulation {
 enum ClientMessage<A> {
     Move([i8; 2]),
     Action(A),
+    Ack(u64),
 }
 
 #[derive(Serialize, Deserialize)]
-enum ServerMessage<'a, State> {
+enum ServerMessage<'a, State, Delta> {
     Welcome { player: PlayerId, layout_bytes: u32 },
     LayoutPart { bytes: &'a [u8] },
     State { tick: u64, state: State },
+    Delta { base: u64, tick: u64, delta: Delta },
 }
 
 fn packet(message: &impl Serialize) -> Result<Vec<u8>, String> {
@@ -73,12 +85,25 @@ fn deserialize_exact<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
     rest.is_empty().then_some(message)
 }
 
+fn prune_history<State>(history: &mut BTreeMap<u64, State>, tick: u64) {
+    let oldest = tick.saturating_sub(HISTORY_TICKS - 1);
+    while history
+        .first_key_value()
+        .is_some_and(|(&key, _)| key < oldest)
+    {
+        history.pop_first();
+    }
+}
+
 struct Peer<A> {
     player: PlayerId,
     movement: [i8; 2],
     actions: VecDeque<A>,
     last_movement_tick: u64,
     bootstrap: Bootstrap,
+    acknowledged: Option<u64>,
+    last_sent: u64,
+    next_full: u64,
 }
 
 enum Bootstrap {
@@ -94,6 +119,7 @@ pub struct Host<S: Simulation> {
     layout_bytes: u32,
     layout_packets: Vec<Vec<u8>>,
     peers: BTreeMap<ConnKey, Peer<S::Action>>,
+    history: BTreeMap<u64, S::State>,
     next_player: u64,
     tick: u64,
 }
@@ -107,7 +133,7 @@ impl<S: Simulation> Host<S> {
         let layout_bytes = layout.len() as u32;
         let layout_packets = layout
             .chunks(LAYOUT_PART_BYTES)
-            .map(|bytes| packet(&ServerMessage::<()>::LayoutPart { bytes }))
+            .map(|bytes| packet(&ServerMessage::<(), ()>::LayoutPart { bytes }))
             .collect::<Result<_, _>>()?;
         let transport = LyServer::start_with_protocol(
             address,
@@ -124,6 +150,7 @@ impl<S: Simulation> Host<S> {
             layout_bytes,
             layout_packets,
             peers: BTreeMap::new(),
+            history: BTreeMap::new(),
             next_player: 1,
             tick: 0,
         })
@@ -159,6 +186,9 @@ impl<S: Simulation> Host<S> {
                     actions: VecDeque::new(),
                     last_movement_tick: self.tick,
                     bootstrap: Bootstrap::Welcome,
+                    acknowledged: None,
+                    last_sent: 0,
+                    next_full: 0,
                 }
             });
         }
@@ -177,6 +207,13 @@ impl<S: Simulation> Host<S> {
                 }
                 Some(ClientMessage::Action(action)) if peer.actions.len() < MAX_PENDING_ACTIONS => {
                     peer.actions.push_back(action);
+                }
+                Some(ClientMessage::Ack(tick))
+                    if tick <= peer.last_sent
+                        && peer.acknowledged.is_none_or(|base| tick > base)
+                        && self.history.contains_key(&tick) =>
+                {
+                    peer.acknowledged = Some(tick);
                 }
                 _ => {}
             }
@@ -198,23 +235,20 @@ impl<S: Simulation> Host<S> {
             })
             .collect();
         self.simulation.tick(&inputs);
+        self.publish()
+    }
 
-        let state = if self
-            .peers
-            .values()
-            .any(|peer| matches!(peer.bootstrap, Bootstrap::State | Bootstrap::Complete))
-        {
-            Some(packet(&ServerMessage::State {
-                tick: self.tick,
-                state: self.simulation.state(),
-            })?)
-        } else {
-            None
-        };
+    fn publish(&mut self) -> Result<(), String> {
+        let tick = self.tick;
+        let snapshot = self.simulation.state();
+        let mut full = None;
+        let mut deltas = BTreeMap::new();
+        let mut published = false;
+        prune_history(&mut self.history, tick);
         for (&connection, peer) in &mut self.peers {
-            let (reliable, bytes, next) = match peer.bootstrap {
+            let (bytes, next) = match peer.bootstrap {
                 Bootstrap::Welcome => {
-                    let welcome = ServerMessage::<()>::Welcome {
+                    let welcome = ServerMessage::<(), ()>::Welcome {
                         player: peer.player,
                         layout_bytes: self.layout_bytes,
                     };
@@ -223,7 +257,7 @@ impl<S: Simulation> Host<S> {
                     } else {
                         Bootstrap::Layout(0)
                     };
-                    (true, packet(&welcome)?, next)
+                    (packet(&welcome)?, next)
                 }
                 Bootstrap::Layout(part) => {
                     let next = if part + 1 == self.layout_packets.len() {
@@ -231,18 +265,58 @@ impl<S: Simulation> Host<S> {
                     } else {
                         Bootstrap::Layout(part + 1)
                     };
-                    (true, self.layout_packets[part].clone(), next)
+                    (self.layout_packets[part].clone(), next)
                 }
                 Bootstrap::State | Bootstrap::Complete => {
-                    let initial = matches!(peer.bootstrap, Bootstrap::State);
-                    // Первый снимок надёжен. Последующие заменяются свежими после потерь.
-                    let bytes = state.as_ref().expect("для готового клиента есть снимок");
-                    (initial, bytes.clone(), Bootstrap::Complete)
+                    let baseline = peer
+                        .acknowledged
+                        .and_then(|base| self.history.get(&base).map(|state| (base, state)));
+                    let delta = if let Some((base, baseline)) = baseline {
+                        deltas
+                            .entry(base)
+                            .or_insert_with(|| {
+                                packet(&ServerMessage::<(), _>::Delta {
+                                    base,
+                                    tick,
+                                    delta: snapshot.diff(baseline),
+                                })
+                                .ok()
+                            })
+                            .as_ref()
+                    } else {
+                        None
+                    };
+                    let (reliable, bytes) = if let Some(bytes) = delta {
+                        (false, bytes)
+                    } else {
+                        if tick < peer.next_full {
+                            continue;
+                        }
+                        if full.is_none() {
+                            full = Some(packet(&ServerMessage::<_, ()>::State {
+                                tick,
+                                state: snapshot,
+                            })?);
+                        }
+                        (true, full.as_ref().expect("полный снимок подготовлен"))
+                    };
+                    if self.transport.send(connection, reliable, bytes.clone()) {
+                        peer.bootstrap = Bootstrap::Complete;
+                        peer.last_sent = tick;
+                        if reliable {
+                            peer.next_full = tick + HISTORY_TICKS;
+                        }
+                        published = true;
+                    }
+                    continue;
                 }
             };
-            if self.transport.send(connection, reliable, bytes) {
+            if self.transport.send(connection, true, bytes) {
                 peer.bootstrap = next;
             }
+        }
+        if published {
+            self.history.insert(tick, snapshot.clone());
         }
         Ok(())
     }
@@ -253,6 +327,32 @@ pub struct Session<Layout, State> {
     pub layout: Layout,
     pub state: State,
     tick: u64,
+    history: BTreeMap<u64, State>,
+}
+
+impl<Layout, State: ReplicatedState> Session<Layout, State> {
+    fn update(&mut self, tick: u64, state: State) {
+        self.history
+            .insert(self.tick, std::mem::replace(&mut self.state, state));
+        self.tick = tick;
+        prune_history(&mut self.history, tick);
+    }
+
+    fn apply_delta(&mut self, base: u64, tick: u64, delta: State::Delta) {
+        if tick <= self.tick || base >= tick {
+            return;
+        }
+        let baseline = if base == self.tick {
+            &self.state
+        } else if let Some(state) = self.history.get(&base) {
+            state
+        } else {
+            return;
+        };
+        let mut state = baseline.clone();
+        state.apply(delta);
+        self.update(tick, state);
+    }
 }
 
 pub struct Client<Layout, State, Action> {
@@ -282,7 +382,7 @@ impl<Layout: DeserializeOwned> PendingLayout<Layout> {
     }
 }
 
-impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
+impl<Layout: DeserializeOwned, State: ReplicatedState, Action: Serialize>
     Client<Layout, State, Action>
 {
     pub fn connect(
@@ -312,8 +412,9 @@ impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
             self.pending = None;
             return;
         }
+        let previous_tick = self.session.as_ref().map(|session| session.tick);
         for bytes in self.transport.take_packets() {
-            match decode::<ServerMessage<State>>(&bytes) {
+            match decode::<ServerMessage<State, State::Delta>>(&bytes) {
                 Some(ServerMessage::Welcome {
                     player,
                     layout_bytes,
@@ -340,8 +441,7 @@ impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
                 Some(ServerMessage::State { tick, state }) => {
                     if let Some(session) = self.session.as_mut() {
                         if tick > session.tick {
-                            session.tick = tick;
-                            session.state = state;
+                            session.update(tick, state);
                         }
                     } else if let Some(PendingLayout {
                         player,
@@ -354,11 +454,22 @@ impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
                             layout,
                             state,
                             tick,
+                            history: BTreeMap::new(),
                         });
+                    }
+                }
+                Some(ServerMessage::Delta { base, tick, delta }) => {
+                    if let Some(session) = self.session.as_mut() {
+                        session.apply_delta(base, tick, delta);
                     }
                 }
                 _ => {}
             }
+        }
+        if let Some(tick) = self.session.as_ref().map(|session| session.tick)
+            && previous_tick != Some(tick)
+        {
+            self.send(true, ClientMessage::Ack(tick));
         }
     }
 
