@@ -9,8 +9,8 @@ use astrocore_map::{
 };
 use astrocore_math::Vec2;
 use astrocore_net::{
-    ClientNet, ClientStatus, ClientWorldExt, NetClientPlugin, NetEntities, NetEntity,
-    NetServerPlugin, ServerNet, SessionWorldExt,
+    ClientNet, ClientStatus, ClientTransport, ClientWorldExt, NetClientPlugin, NetEntities,
+    NetEntity, NetServerPlugin, ServerNet, SessionWorldExt,
 };
 use astrocore_transport::{ClientLink, ServerLink};
 

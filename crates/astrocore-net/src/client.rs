@@ -56,6 +56,16 @@ impl ClientNet {
     }
 }
 
+/// Транспорт клиента: доставляет пакеты между почтовым ящиком [`ClientNet`] и сервером.
+/// Реализации — соединение Lightyear и связь внутри процесса.
+pub trait ClientTransport {
+    /// Кладёт пришедшие пакеты в мир. Вызывается перед тактом мира.
+    fn receive(&mut self, world: &mut World);
+
+    /// Забирает пакеты мира и отправляет серверу. Вызывается после такта мира.
+    fn send(&mut self, world: &mut World);
+}
+
 /// Маркер сущности, вышедшей из зоны видимости: она хранится у клиента, но нигде не находится.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct Detached;

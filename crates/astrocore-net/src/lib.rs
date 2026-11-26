@@ -21,8 +21,8 @@ use bevy_ecs::schedule::{IntoScheduleConfigs, Schedules};
 use bevy_ecs::world::World;
 
 pub use client::{
-    ClientNet, ClientStatus, ClientWorldExt, Detached, LocalPlayerAttached, StateApplied,
-    StateApplying, apply_state,
+    ClientNet, ClientStatus, ClientTransport, ClientWorldExt, Detached, LocalPlayerAttached,
+    StateApplied, StateApplying, apply_state,
 };
 pub use events::{NetEvent, NetEventWorldExt, NetEvents, NetTarget};
 pub use ids::{DeletionLog, NetEntities, NetEntity, NetSync};

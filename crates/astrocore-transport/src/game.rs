@@ -86,16 +86,16 @@ impl ClientLink {
     pub fn is_connected(&self) -> bool {
         self.transport.is_connected()
     }
+}
 
-    /// Принимает пакеты сервера в мир. Вызывается перед тактом мира.
-    pub fn receive(&mut self, world: &mut World) {
+impl astrocore_net::ClientTransport for ClientLink {
+    fn receive(&mut self, world: &mut World) {
         self.transport.step();
         let packets = self.transport.take_packets();
         world.resource_mut::<ClientNet>().incoming.extend(packets);
     }
 
-    /// Отправляет пакеты мира серверу. Вызывается после такта мира.
-    pub fn send(&mut self, world: &mut World) {
+    fn send(&mut self, world: &mut World) {
         let outgoing = std::mem::take(&mut world.resource_mut::<ClientNet>().outgoing);
         for (reliable, bytes) in outgoing {
             self.transport.send(reliable, bytes);
