@@ -464,6 +464,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-math"
+version = "0.1.0"
+dependencies = [
+ "astrocore-data",
+ "glam",
+ "serde",
+]
+
+[[package]]
 name = "astrocore-prototypes"
 version = "0.1.0"
 dependencies = [
