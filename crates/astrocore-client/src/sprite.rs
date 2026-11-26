@@ -108,6 +108,11 @@ pub struct SpriteLayer {
     /// Ключи, по которым слой находят системы внешнего вида.
     #[serde(default)]
     pub map: Vec<String>,
+    /// Направление набора RSI, которое слой показывает всегда (0 — юг, 1 — север,
+    /// 2 — восток, 3 — запад), вместо направления сущности. Так сглаживание стен берёт из
+    /// набора нужный угол.
+    #[serde(default)]
+    pub direction: Option<u8>,
 }
 
 impl Default for SpriteLayer {
@@ -123,6 +128,7 @@ impl Default for SpriteLayer {
             rotation: Angle::ZERO,
             shader: None,
             map: Vec::new(),
+            direction: None,
         }
     }
 }
@@ -186,6 +192,8 @@ pub enum LayerSource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedLayer {
     pub source: LayerSource,
+    /// Направление набора RSI, заданное слоем.
+    pub direction: Option<u8>,
     pub color: Color,
     pub scale: Vec2,
     pub offset: Vec2,
@@ -215,6 +223,7 @@ impl Sprite {
         }
         let base = |source: LayerSource| ResolvedLayer {
             source,
+            direction: None,
             color: self.color,
             scale: self.scale,
             offset: self.offset,
@@ -243,6 +252,7 @@ impl Sprite {
                 };
                 Some(ResolvedLayer {
                     source,
+                    direction: layer.direction,
                     color: multiply(self.color, layer.color),
                     scale: self.scale * layer.scale,
                     offset: self.offset + layer.offset,
@@ -278,6 +288,7 @@ mod tests {
                     rsi: "Textures/Structures/Walls/solid.rsi".into(),
                     state: "full".into()
                 },
+                direction: None,
                 color: Color::WHITE,
                 scale: Vec2::ONE,
                 offset: Vec2::ZERO,

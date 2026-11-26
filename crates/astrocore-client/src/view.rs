@@ -47,6 +47,8 @@ pub(crate) struct LayerView {
     offset: Vec2,
     /// Номер слоя: порядок отрисовки внутри сущности.
     order: f32,
+    /// Направление набора, заданное слоем.
+    direction: Option<u8>,
 }
 
 /// Картинка чанка грида.
@@ -244,6 +246,7 @@ pub(crate) fn sync_entities(
                                 rotation: layer.rotation,
                                 offset: layer.offset,
                                 order,
+                                direction: layer.direction,
                             },
                         ));
                     }
@@ -292,7 +295,10 @@ pub(crate) fn animate_layers(
         let directions = layer.texture.state.directions.count();
         // Угол сущности: поворот её изображения вокруг оси Z.
         let facing = Angle(parent.rotation.to_euler(EulerRot::ZYX).0);
-        let direction = rsi_direction(directions, facing);
+        let direction = match layer.direction {
+            Some(fixed) => usize::from(fixed).min(directions - 1),
+            None => rsi_direction(directions, facing),
+        };
         let frame = layer.texture.state.frame_at(direction, now);
         let index = layer.texture.state.sheet_index(direction, frame);
         if let Some(atlas) = &mut sprite.texture_atlas
