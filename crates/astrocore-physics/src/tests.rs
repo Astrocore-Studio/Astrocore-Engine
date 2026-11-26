@@ -128,7 +128,7 @@ impl Scene {
         register_groups();
         let mut world = World::new();
         world.add_plugin(NetServerPlugin);
-        world.add_plugin(PhysicsPlugin);
+        world.add_plugin(PhysicsPlugin::SERVER);
         world.init_resource::<Log>();
         let mut prototypes = Prototypes::default();
         let mut report = LoadReport::default();

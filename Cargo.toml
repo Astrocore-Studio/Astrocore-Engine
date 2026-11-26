@@ -10,6 +10,7 @@ members = [
     "crates/astrocore-console",
     "crates/astrocore-net",
     "crates/astrocore-physics",
+    "crates/astrocore-movement",
     "crates/astrocore-resources",
     "crates/astrocore-loc",
     "crates/astrocore-transport",
@@ -32,6 +33,7 @@ astrocore-map = { path = "crates/astrocore-map" }
 astrocore-console = { path = "crates/astrocore-console" }
 astrocore-net = { path = "crates/astrocore-net" }
 astrocore-physics = { path = "crates/astrocore-physics" }
+astrocore-movement = { path = "crates/astrocore-movement" }
 astrocore-resources = { path = "crates/astrocore-resources" }
 astrocore-loc = { path = "crates/astrocore-loc" }
 astrocore-transport = { path = "crates/astrocore-transport" }

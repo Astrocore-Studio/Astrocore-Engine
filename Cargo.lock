@@ -510,6 +510,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-movement"
+version = "0.1.0"
+dependencies = [
+ "astrocore-console",
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-net",
+ "astrocore-physics",
+ "astrocore-prototypes",
+ "bevy_ecs",
+ "serde",
+]
+
+[[package]]
 name = "astrocore-net"
 version = "0.1.0"
 dependencies = [

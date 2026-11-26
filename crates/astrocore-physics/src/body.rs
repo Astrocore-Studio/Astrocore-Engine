@@ -103,6 +103,10 @@ impl<'de> Deserialize<'de> for CollisionGroups {
             }
         }
 
+        // Двоичный сетевой формат хранит биты числом; имена понимают только YAML и RON.
+        if !deserializer.is_human_readable() {
+            return i32::deserialize(deserializer).map(CollisionGroups);
+        }
         deserializer.deserialize_any(GroupsVisitor)
     }
 }

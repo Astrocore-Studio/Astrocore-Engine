@@ -228,6 +228,8 @@ pub struct Session {
     pub name: String,
     /// Сущность, которой управляет игрок.
     pub attached: Option<Entity>,
+    /// Номер последнего обработанного кадра ввода клиента: уходит ему с каждым состоянием.
+    pub last_input: u32,
     pub sync: SessionSync,
 }
 
@@ -314,7 +316,7 @@ impl SessionWorldExt for World {
 }
 
 /// Разбирает входящие пакеты. Этап `PreUpdate`.
-pub(crate) fn receive(world: &mut World) {
+pub fn receive(world: &mut World) {
     let incoming = std::mem::take(&mut world.resource_mut::<ServerNet>().incoming);
     for event in incoming {
         match event {
@@ -362,6 +364,7 @@ fn handle(world: &mut World, conn: ConnId, message: ClientMessage) {
                     conn,
                     name,
                     attached: None,
+                    last_input: 0,
                     sync: SessionSync::default(),
                 })
                 .id();
@@ -509,6 +512,7 @@ fn build(
     let mut state = GameState {
         from: sync.acked,
         to: tick,
+        last_input: session.last_input,
         deleted: deletions
             .since(sync.acked)
             .iter()

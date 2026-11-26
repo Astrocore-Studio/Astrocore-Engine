@@ -22,7 +22,7 @@ use bevy_ecs::world::World;
 
 pub use client::{
     ClientNet, ClientStatus, ClientWorldExt, Detached, LocalPlayerAttached, StateApplied,
-    apply_state,
+    StateApplying, apply_state,
 };
 pub use events::{NetEvent, NetEventWorldExt, NetEvents, NetTarget};
 pub use ids::{DeletionLog, NetEntities, NetEntity, NetSync};
@@ -40,6 +40,14 @@ pub use server::{
     SessionWorldExt,
 };
 pub use sync::NetSet;
+
+/// Система приёма пакетов сервера (этап `PreUpdate`): относительно неё упорядочиваются
+/// системы, которым нужен свежий ввод игроков.
+pub use server::receive as server_receive;
+
+/// Система приёма пакетов клиента (этап `PreUpdate`): относительно неё упорядочиваются
+/// системы, которым нужно свежее состояние сервера.
+pub use client::receive as client_receive;
 
 /// Сетевые компоненты движка: одинаковый набор у сервера и клиента.
 fn register_engine_components(world: &mut World) {

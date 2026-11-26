@@ -39,6 +39,10 @@ pub struct ClientNet {
     pub tick_rate: u16,
     /// Сущность, которой управляет игрок.
     pub attached: Option<Entity>,
+    /// Номер последнего кадра ввода, который сервер обработал к применённому состоянию.
+    pub last_input: u32,
+    /// Последняя ошибка применения состояния сервера.
+    pub last_error: Option<String>,
     attached_net: Option<NetEntity>,
     /// Собираемые части большого состояния: номер → части.
     parts: HashMap<u32, Vec<Option<Vec<u8>>>>,
@@ -55,6 +59,13 @@ impl ClientNet {
 /// Маркер сущности, вышедшей из зоны видимости: она хранится у клиента, но нигде не находится.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct Detached;
+
+/// Клиент сейчас применит состояние сервера: предсказанные сущности пора вернуть к
+/// последнему состоянию сервера. Широковещательно.
+#[derive(Debug, Clone, Copy)]
+pub struct StateApplying {
+    pub tick: GameTick,
+}
 
 /// Клиент применил состояние сервера. Широковещательно.
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +101,7 @@ impl ClientWorldExt for World {
 }
 
 /// Разбирает входящие пакеты. Этап `PreUpdate`.
-pub(crate) fn receive(world: &mut World) {
+pub fn receive(world: &mut World) {
     let incoming = std::mem::take(&mut world.resource_mut::<ClientNet>().incoming);
     for bytes in incoming {
         let Ok(message) = postcard::from_bytes::<ServerMessage>(&bytes) else {
@@ -107,6 +118,10 @@ fn handle(world: &mut World, message: ServerMessage) {
             let mut net = world.resource_mut::<ClientNet>();
             net.status = ClientStatus::Connected;
             net.tick_rate = tick_rate;
+            // Клиент считает такты с частотой сервера: от этого зависит предсказание.
+            if let Some(mut time) = world.get_resource_mut::<astrocore_ecs::GameTime>() {
+                time.tick_rate = tick_rate.max(1);
+            }
         }
         ServerMessage::Rejected(reason) => {
             world.resource_mut::<ClientNet>().status = ClientStatus::Rejected(reason);
@@ -182,16 +197,25 @@ fn apply_or_resync(world: &mut World, state: GameState) {
         return;
     }
     let tick = state.to;
+    let last_input = state.last_input;
+    world.raise_broadcast(&mut StateApplying { tick });
     match apply_state(world, state) {
         Ok(()) => {
             let mut net = world.resource_mut::<ClientNet>();
             net.applied = tick;
+            net.last_input = last_input;
             net.send(false, &ClientMessage::Ack(tick));
             world.raise_broadcast(&mut StateApplied { tick });
         }
-        Err(_) => {
+        Err(error) => {
             // Мир клиента разошёлся с сервером: просим всё заново.
             let mut net = world.resource_mut::<ClientNet>();
+            let message = format!("состояние на тик {}: {error}", tick.0);
+            // Одна и та же ошибка печатается один раз: при повторе запроса она не засоряет вывод.
+            if net.last_error.as_deref() != Some(message.as_str()) {
+                eprintln!("клиент: {message}");
+            }
+            net.last_error = Some(message);
             net.applied = GameTick::ZERO;
             net.send(true, &ClientMessage::RequestFull);
         }
@@ -268,7 +292,13 @@ pub fn apply_state(world: &mut World, state: GameState) -> Result<(), NetError> 
             if info.deferred {
                 deferred.push((entity, *net_id, bytes));
             } else {
-                info.apply(world, entity, bytes)?;
+                info.apply(world, entity, bytes)
+                    .map_err(|error| match error {
+                        NetError::Decode(reason) => {
+                            NetError::Decode(format!("компонент {}: {reason}", info.name))
+                        }
+                        other => other,
+                    })?;
             }
         }
     }

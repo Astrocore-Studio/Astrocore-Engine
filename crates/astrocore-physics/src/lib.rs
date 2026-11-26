@@ -29,7 +29,18 @@ pub use world::{
 
 /// Подключает физику: компоненты `Physics` и `Fixtures`, сетку поиска столкновений и шаг
 /// симуляции на этапе `PostUpdate`. Подключается после сетевого плагина.
-pub struct PhysicsPlugin;
+pub struct PhysicsPlugin {
+    /// Считать ли шаг симуляции каждый такт. Клиент не считает: положения тел приходят
+    /// с сервера, а своё тело клиент предсказывает отдельно.
+    pub simulate: bool,
+}
+
+impl PhysicsPlugin {
+    /// Физика сервера: шаг симуляции каждый такт.
+    pub const SERVER: PhysicsPlugin = PhysicsPlugin { simulate: true };
+    /// Физика клиента: только компоненты и сетка поиска.
+    pub const CLIENT: PhysicsPlugin = PhysicsPlugin { simulate: false };
+}
 
 impl GamePlugin for PhysicsPlugin {
     fn build(&self, world: &mut World) {
@@ -76,7 +87,9 @@ impl GamePlugin for PhysicsPlugin {
                 world.set_body_type(entity, body_type);
             },
         );
-        world.add_game_systems(PostUpdate, world::physics_system);
+        if self.simulate {
+            world.add_game_systems(PostUpdate, world::physics_system);
+        }
     }
 }
 

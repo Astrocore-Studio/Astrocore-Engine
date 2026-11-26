@@ -101,6 +101,10 @@ impl std::ops::Neg for Angle {
 impl Serialize for Angle {
     /// Запись SS14: `1.5707964 rad`.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Двоичные форматы (сеть) хранят радианы числом.
+        if !serializer.is_human_readable() {
+            return serializer.serialize_f32(self.0);
+        }
         serializer.collect_str(&format_args!("{} rad", self.0))
     }
 }
@@ -146,6 +150,9 @@ impl<'de> Deserialize<'de> for Angle {
             }
         }
 
+        if !deserializer.is_human_readable() {
+            return f32::deserialize(deserializer).map(Angle);
+        }
         deserializer.deserialize_any(AngleVisitor)
     }
 }
@@ -410,6 +417,10 @@ impl Color {
 
 impl Serialize for Color {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Двоичные форматы (сеть) хранят четыре байта.
+        if !serializer.is_human_readable() {
+            return self.to_bytes().serialize(serializer);
+        }
         serializer.serialize_str(&self.to_hex())
     }
 }
@@ -431,6 +442,9 @@ impl<'de> Deserialize<'de> for Color {
             }
         }
 
+        if !deserializer.is_human_readable() {
+            return <[u8; 4]>::deserialize(deserializer).map(Color::from_bytes);
+        }
         deserializer.deserialize_str(ColorVisitor)
     }
 }

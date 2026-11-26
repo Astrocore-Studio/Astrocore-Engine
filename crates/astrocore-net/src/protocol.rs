@@ -55,6 +55,8 @@ pub struct GameState {
     pub from: GameTick,
     /// Тик этого состояния.
     pub to: GameTick,
+    /// Номер последнего кадра ввода этого клиента, который сервер обработал.
+    pub last_input: u32,
     /// Сущности, удалённые после `from`.
     pub deleted: Vec<NetEntity>,
     /// Сущности, вышедшие из зоны видимости.
