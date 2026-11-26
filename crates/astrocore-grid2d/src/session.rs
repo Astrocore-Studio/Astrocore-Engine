@@ -1,5 +1,5 @@
 //! Серверная симуляция с текущим снимком состояния и неизменяемой картой на время сессии.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -9,8 +9,11 @@ use astrocore_protocol::MAX_PACKET_BYTES;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-const PROTOCOL_NAMESPACE: u64 = 0x4153_5452_3244_0000;
+const PROTOCOL_NAMESPACE: u64 = 0x4153_5452_4401_0000;
 const MOVEMENT_TIMEOUT_TICKS: u64 = 5;
+const MAX_PENDING_ACTIONS: usize = 16;
+const MAX_LAYOUT_BYTES: usize = 512 * 1024;
+const LAYOUT_PART_BYTES: usize = 8 * 1024;
 pub const TICK_HZ: u32 = 20;
 pub const TICK_PERIOD: Duration = Duration::from_millis(1000 / TICK_HZ as u64);
 
@@ -44,17 +47,10 @@ enum ClientMessage<A> {
 }
 
 #[derive(Serialize, Deserialize)]
-enum ServerMessage<Layout, State> {
-    Welcome {
-        player: PlayerId,
-        tick: u64,
-        layout: Layout,
-        state: State,
-    },
-    State {
-        tick: u64,
-        state: State,
-    },
+enum ServerMessage<'a, State> {
+    Welcome { player: PlayerId, layout_bytes: u32 },
+    LayoutPart { bytes: &'a [u8] },
+    State { tick: u64, state: State },
 }
 
 fn packet(message: &impl Serialize) -> Result<Vec<u8>, String> {
@@ -65,23 +61,38 @@ fn packet(message: &impl Serialize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
     if bytes.len() > MAX_PACKET_BYTES {
         return None;
     }
+    deserialize_exact(bytes)
+}
+
+fn deserialize_exact<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
     let (message, rest) = postcard::take_from_bytes(bytes).ok()?;
     rest.is_empty().then_some(message)
 }
 
 struct Peer<A> {
     player: PlayerId,
-    input: Input<A>,
+    movement: [i8; 2],
+    actions: VecDeque<A>,
     last_movement_tick: u64,
+    bootstrap: Bootstrap,
+}
+
+enum Bootstrap {
+    Welcome,
+    Layout(usize),
+    State,
+    Complete,
 }
 
 pub struct Host<S: Simulation> {
     transport: LyServer,
     simulation: S,
+    layout_bytes: u32,
+    layout_packets: Vec<Vec<u8>>,
     peers: BTreeMap<ConnKey, Peer<S::Action>>,
     next_player: u64,
     tick: u64,
@@ -89,6 +100,15 @@ pub struct Host<S: Simulation> {
 
 impl<S: Simulation> Host<S> {
     pub fn start(address: SocketAddr, key: [u8; 32], simulation: S) -> Result<Self, String> {
+        let layout = postcard::to_stdvec(simulation.layout()).map_err(|error| error.to_string())?;
+        if layout.len() > MAX_LAYOUT_BYTES {
+            return Err(format!("карта 2D превышает лимит {MAX_LAYOUT_BYTES} байт"));
+        }
+        let layout_bytes = layout.len() as u32;
+        let layout_packets = layout
+            .chunks(LAYOUT_PART_BYTES)
+            .map(|bytes| packet(&ServerMessage::<()>::LayoutPart { bytes }))
+            .collect::<Result<_, _>>()?;
         let transport = LyServer::start_with_protocol(
             address,
             key,
@@ -101,6 +121,8 @@ impl<S: Simulation> Host<S> {
         Ok(Self {
             transport,
             simulation,
+            layout_bytes,
+            layout_packets,
             peers: BTreeMap::new(),
             next_player: 1,
             tick: 0,
@@ -126,20 +148,17 @@ impl<S: Simulation> Host<S> {
             }
         });
 
-        let mut joined = Vec::new();
         for connection in live {
             self.peers.entry(connection).or_insert_with(|| {
                 let player = PlayerId(self.next_player);
                 self.next_player += 1;
                 self.simulation.joined(player);
-                joined.push(connection);
                 Peer {
                     player,
-                    input: Input {
-                        movement: [0, 0],
-                        action: None,
-                    },
+                    movement: [0, 0],
+                    actions: VecDeque::new(),
                     last_movement_tick: self.tick,
+                    bootstrap: Bootstrap::Welcome,
                 }
             });
         }
@@ -148,13 +167,16 @@ impl<S: Simulation> Host<S> {
             let Some(peer) = self.peers.get_mut(&connection) else {
                 continue;
             };
+            if !matches!(peer.bootstrap, Bootstrap::Complete) {
+                continue;
+            }
             match decode(&bytes) {
                 Some(ClientMessage::Move(movement)) => {
-                    peer.input.movement = movement.map(|axis| axis.clamp(-1, 1));
+                    peer.movement = movement.map(|axis| axis.clamp(-1, 1));
                     peer.last_movement_tick = self.tick;
                 }
-                Some(ClientMessage::Action(action)) if peer.input.action.is_none() => {
-                    peer.input.action = Some(action);
+                Some(ClientMessage::Action(action)) if peer.actions.len() < MAX_PENDING_ACTIONS => {
+                    peer.actions.push_back(action);
                 }
                 _ => {}
             }
@@ -164,37 +186,62 @@ impl<S: Simulation> Host<S> {
             .values_mut()
             .map(|peer| {
                 if self.tick - peer.last_movement_tick >= MOVEMENT_TIMEOUT_TICKS {
-                    peer.input.movement = [0, 0];
+                    peer.movement = [0, 0];
                 }
                 (
                     peer.player,
                     Input {
-                        movement: peer.input.movement,
-                        action: peer.input.action.take(),
+                        movement: peer.movement,
+                        action: peer.actions.pop_front(),
                     },
                 )
             })
             .collect();
         self.simulation.tick(&inputs);
 
-        for connection in joined {
-            let welcome = ServerMessage::Welcome {
-                player: self.peers[&connection].player,
-                tick: self.tick,
-                layout: self.simulation.layout(),
-                state: self.simulation.state(),
-            };
-            self.transport.send(connection, true, packet(&welcome)?);
-        }
-        if !self.peers.is_empty() {
-            let state = ServerMessage::<(), _>::State {
+        let state = if self
+            .peers
+            .values()
+            .any(|peer| matches!(peer.bootstrap, Bootstrap::State | Bootstrap::Complete))
+        {
+            Some(packet(&ServerMessage::State {
                 tick: self.tick,
                 state: self.simulation.state(),
+            })?)
+        } else {
+            None
+        };
+        for (&connection, peer) in &mut self.peers {
+            let (reliable, bytes, next) = match peer.bootstrap {
+                Bootstrap::Welcome => {
+                    let welcome = ServerMessage::<()>::Welcome {
+                        player: peer.player,
+                        layout_bytes: self.layout_bytes,
+                    };
+                    let next = if self.layout_packets.is_empty() {
+                        Bootstrap::State
+                    } else {
+                        Bootstrap::Layout(0)
+                    };
+                    (true, packet(&welcome)?, next)
+                }
+                Bootstrap::Layout(part) => {
+                    let next = if part + 1 == self.layout_packets.len() {
+                        Bootstrap::State
+                    } else {
+                        Bootstrap::Layout(part + 1)
+                    };
+                    (true, self.layout_packets[part].clone(), next)
+                }
+                Bootstrap::State | Bootstrap::Complete => {
+                    let initial = matches!(peer.bootstrap, Bootstrap::State);
+                    // Первый снимок надёжен. Последующие заменяются свежими после потерь.
+                    let bytes = state.as_ref().expect("для готового клиента есть снимок");
+                    (initial, bytes.clone(), Bootstrap::Complete)
+                }
             };
-            let bytes = packet(&state)?;
-            for &connection in self.peers.keys() {
-                // Следующий снимок заменяет потерянный, так что изменения сходятся и после потерь.
-                self.transport.send(connection, false, bytes.clone());
+            if self.transport.send(connection, reliable, bytes) {
+                peer.bootstrap = next;
             }
         }
         Ok(())
@@ -211,7 +258,28 @@ pub struct Session<Layout, State> {
 pub struct Client<Layout, State, Action> {
     transport: LyClient,
     session: Option<Session<Layout, State>>,
+    pending: Option<PendingLayout<Layout>>,
     action: PhantomData<fn(Action)>,
+}
+
+struct PendingLayout<Layout> {
+    player: PlayerId,
+    len: usize,
+    bytes: Vec<u8>,
+    layout: Option<Layout>,
+}
+
+impl<Layout: DeserializeOwned> PendingLayout<Layout> {
+    fn receive(&mut self, bytes: &[u8]) {
+        let left = self.len - self.bytes.len();
+        if self.layout.is_some() || bytes.len() != left.min(LAYOUT_PART_BYTES) {
+            return;
+        }
+        self.bytes.extend_from_slice(bytes);
+        if self.bytes.len() == self.len {
+            self.layout = deserialize_exact(&self.bytes);
+        }
+    }
 }
 
 impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
@@ -232,6 +300,7 @@ impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
                 PROTOCOL_NAMESPACE | u64::from(wire_version),
             )?,
             session: None,
+            pending: None,
             action: PhantomData,
         })
     }
@@ -240,29 +309,52 @@ impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
         self.transport.step();
         if !self.transport.is_connected() {
             self.session = None;
+            self.pending = None;
             return;
         }
         for bytes in self.transport.take_packets() {
-            match decode::<ServerMessage<Layout, State>>(&bytes) {
+            match decode::<ServerMessage<State>>(&bytes) {
                 Some(ServerMessage::Welcome {
                     player,
-                    tick,
-                    layout,
-                    state,
-                }) if self.session.is_none() => {
-                    self.session = Some(Session {
+                    layout_bytes,
+                }) if self.session.is_none()
+                    && self.pending.is_none()
+                    && layout_bytes as usize <= MAX_LAYOUT_BYTES =>
+                {
+                    let mut pending = PendingLayout {
                         player,
-                        layout,
-                        state,
-                        tick,
-                    });
+                        len: layout_bytes as usize,
+                        bytes: Vec::new(),
+                        layout: None,
+                    };
+                    if pending.len == 0 {
+                        pending.receive(&[]);
+                    }
+                    self.pending = Some(pending);
+                }
+                Some(ServerMessage::LayoutPart { bytes }) => {
+                    if let Some(pending) = self.pending.as_mut() {
+                        pending.receive(bytes);
+                    }
                 }
                 Some(ServerMessage::State { tick, state }) => {
-                    if let Some(session) = self.session.as_mut()
-                        && tick > session.tick
+                    if let Some(session) = self.session.as_mut() {
+                        if tick > session.tick {
+                            session.tick = tick;
+                            session.state = state;
+                        }
+                    } else if let Some(PendingLayout {
+                        player,
+                        layout: Some(layout),
+                        ..
+                    }) = self.pending.take_if(|pending| pending.layout.is_some())
                     {
-                        session.tick = tick;
-                        session.state = state;
+                        self.session = Some(Session {
+                            player,
+                            layout,
+                            state,
+                            tick,
+                        });
                     }
                 }
                 _ => {}
