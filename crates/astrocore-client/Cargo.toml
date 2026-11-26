@@ -17,6 +17,7 @@ astrocore-map.workspace = true
 astrocore-math.workspace = true
 astrocore-movement.workspace = true
 astrocore-net.workspace = true
+astrocore-prototypes.workspace = true
 astrocore-resources.workspace = true
 astrocore-ui.workspace = true
 bevy = { workspace = true, features = [

@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use astrocore_light::{OccluderGrid, PointLight, collect_occluders};
+use astrocore_light::{LightMask, OccluderGrid, PointLight, collect_occluders};
+use astrocore_map::{ContainerManager, InContainer};
 use astrocore_map::{Transform as GameTransform, TransformWorldExt, WorldTransform};
 use astrocore_net::{ClientNet, Detached};
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
@@ -125,6 +126,8 @@ pub(crate) struct LightOverlay;
 #[derive(Resource, Default)]
 pub(crate) struct LightState {
     kernels: HashMap<bevy_ecs::entity::Entity, Kernel>,
+    /// Загруженные маски: прототип → картинка (`None` — не загрузилась).
+    masks: HashMap<String, Option<std::sync::Arc<LightMask>>>,
     /// Ключ и маска поля зрения последнего кадра.
     fov: Option<(u64, Vec<bool>)>,
     overlay: Option<(Entity, Handle<Image>, Handle<LightMaterial>)>,
@@ -135,6 +138,65 @@ struct Lamp {
     entity: bevy_ecs::entity::Entity,
     light: PointLight,
     position: astrocore_math::Vec2,
+    /// Маска и её поворот в мире.
+    mask: Option<(std::sync::Arc<LightMask>, astrocore_math::Angle)>,
+    /// Прототип маски и поворот: картинка подгружается после сбора источников.
+    mask_id: Option<(String, astrocore_math::Angle)>,
+}
+
+/// Свет сущности закрыт контейнером: она или кто-то из несущих её лежит в контейнере,
+/// который не пропускает свет (`ContainerOccluded`).
+fn occluded_by_container(world: &bevy_ecs::world::World, entity: bevy_ecs::entity::Entity) -> bool {
+    let mut current = entity;
+    // Глубина вложенности ограничена: цикл в данных не зациклит поиск.
+    for _ in 0..32 {
+        let Some(marker) = world.get::<InContainer>(current) else {
+            return false;
+        };
+        let occludes = world
+            .get::<ContainerManager>(marker.owner)
+            .and_then(|containers| containers.containers.get(&*marker.id))
+            .is_none_or(|container| container.occludes_light);
+        if occludes {
+            return true;
+        }
+        current = marker.owner;
+    }
+    false
+}
+
+/// Картинка маски по прототипу `lightMask`: поле `maskPath`.
+fn load_mask(
+    world: &bevy_ecs::world::World,
+    resources: &astrocore_resources::Resources,
+    id: &str,
+) -> Option<LightMask> {
+    let path = world
+        .get_resource::<astrocore_prototypes::Prototypes>()?
+        .resolved_node("lightMask", id)?
+        .get("maskPath")?
+        .as_str()?
+        .trim_start_matches('/')
+        .to_owned();
+    let bytes = resources.read(&path).ok()?;
+    let image = Image::from_buffer(
+        &bytes,
+        bevy::image::ImageType::Extension("png"),
+        bevy::image::CompressedImageFormats::NONE,
+        false,
+        ImageSampler::nearest(),
+        RenderAssetUsages::default(),
+    )
+    .ok()?;
+    let (width, height) = (image.width(), image.height());
+    let data = image.data.as_ref()?;
+    let stride = data.len() / (width as usize * height as usize).max(1);
+    let values = data.chunks(stride.max(1)).map(|pixel| pixel[0]).collect();
+    Some(LightMask {
+        width,
+        height,
+        values,
+    })
 }
 
 fn hash_of(value: impl Hash) -> u64 {
@@ -171,7 +233,10 @@ fn compute_kernel(
     for j in 0..size {
         for i in 0..size {
             let point = texel_center(origin.0 + i, origin.1 + j);
-            let strength = lamp.light.attenuation(point.distance(lamp.position));
+            let mut strength = lamp.light.attenuation(point.distance(lamp.position));
+            if let Some((mask, rotation)) = &lamp.mask {
+                strength *= mask.sample(point - lamp.position, lamp.light.radius, *rotation);
+            }
             if strength <= 0.0 {
                 continue;
             }
@@ -196,6 +261,7 @@ pub(crate) fn update_lighting(
     mut game: ResMut<Game>,
     eye: Res<Eye>,
     lighting: Res<Lighting>,
+    resources: Res<crate::view::GameResources>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     camera: Single<&Transform, (With<Camera2d>, Without<LightOverlay>)>,
     mut state: ResMut<LightState>,
@@ -286,7 +352,16 @@ pub(crate) fn update_lighting(
         if placement.level != eye.level || away.x > half.x + radius || away.y > half.y + radius {
             continue;
         }
+        if occluded_by_container(world, entity) {
+            continue;
+        }
+        let mask = light
+            .light_mask
+            .clone()
+            .map(|id| (id, light.mask_world_rotation(placement.rotation)));
         lamps.push(Lamp {
+            mask: None,
+            mask_id: mask,
             entity,
             light: PointLight {
                 radius,
@@ -294,6 +369,19 @@ pub(crate) fn update_lighting(
             },
             position,
         });
+    }
+
+    // Маски подгружаются один раз на прототип.
+    for lamp in &mut lamps {
+        let Some((id, rotation)) = lamp.mask_id.clone() else {
+            continue;
+        };
+        let loaded = state
+            .masks
+            .entry(id.clone())
+            .or_insert_with(|| load_mask(world, &resources.0, &id).map(std::sync::Arc::new))
+            .clone();
+        lamp.mask = loaded.map(|mask| (mask, rotation));
     }
 
     // Пятна света: готовые берутся из памяти, изменившиеся пересчитываются.
@@ -311,6 +399,9 @@ pub(crate) fn update_lighting(
             lamp.light.falloff.to_bits(),
             lamp.light.curve_factor.to_bits(),
             lamp.light.cast_shadows,
+            lamp.mask_id
+                .as_ref()
+                .map(|(id, rotation)| (id.clone(), (rotation.0 * 64.0).round() as i32)),
             grid_key,
             lamp.light.cast_shadows.then(|| {
                 occluders.window(

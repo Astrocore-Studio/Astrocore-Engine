@@ -6,7 +6,7 @@
 
 use astrocore_ecs::{GamePlugin, RegistryWorldExt};
 use astrocore_map::{MapGrid, TileCoord};
-use astrocore_math::{Color, Vec2};
+use astrocore_math::{Angle, Color, Vec2};
 use astrocore_net::NetRegistryWorldExt;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -57,6 +57,16 @@ pub struct PointLight {
     /// Дальность в тайлах.
     #[serde(default = "default_radius")]
     pub radius: f32,
+    /// Маска света: прототип вида `lightMask` (`ConeSingle` у фонарика).
+    #[serde(default)]
+    pub light_mask: Option<String>,
+    /// Поворот маски вокруг источника.
+    #[serde(default)]
+    pub rotation: Angle,
+    /// Маска поворачивается вместе с сущностью (фонарик в руке светит туда, куда смотрит
+    /// держащий).
+    #[serde(default, rename = "autoRot")]
+    pub auto_rot: bool,
 }
 
 impl Default for PointLight {
@@ -71,7 +81,51 @@ impl Default for PointLight {
             cast_shadows: true,
             enabled: true,
             radius: 5.0,
+            light_mask: None,
+            rotation: Angle::ZERO,
+            auto_rot: false,
         }
+    }
+}
+
+impl PointLight {
+    /// Поворот маски в мире (`GetMaskWorldRotation`): свой поворот и, при `autoRot`,
+    /// поворот сущности.
+    pub fn mask_world_rotation(&self, entity_rotation: Angle) -> Angle {
+        if self.auto_rot {
+            self.rotation + entity_rotation
+        } else {
+            self.rotation
+        }
+    }
+}
+
+/// Маска света: картинка в оттенках серого, растянутая на квадрат со стороной в два радиуса
+/// вокруг источника; в повороте ноль её верхняя строка смотрит на юг (как в Robust).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LightMask {
+    pub width: u32,
+    pub height: u32,
+    /// Яркость точек по строкам, от 0 до 255.
+    pub values: Vec<u8>,
+}
+
+impl LightMask {
+    /// Доля света в точке `offset` от источника (в мире) при радиусе и повороте маски.
+    pub fn sample(&self, offset: Vec2, radius: f32, rotation: Angle) -> f32 {
+        if self.width == 0 || self.height == 0 || radius <= 0.0 {
+            return 1.0;
+        }
+        let local = Angle(-rotation.0).rotate(offset);
+        let u = (local.x / radius + 1.0) / 2.0;
+        // Строка 0 — юг: в повороте ноль маска светит на юг.
+        let v = (local.y / radius + 1.0) / 2.0;
+        if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+            return 0.0;
+        }
+        let x = (u * self.width as f32) as usize;
+        let y = (v * self.height as f32) as usize;
+        f32::from(self.values[y * self.width as usize + x]) / 255.0
     }
 }
 
@@ -270,6 +324,30 @@ mod tests {
         assert!(near > middle && middle > 0.0, "{near} {middle}");
         assert_eq!(light.attenuation(10.0), 0.0);
         assert_eq!(light.attenuation(30.0), 0.0);
+    }
+
+    #[test]
+    fn masks_turn_with_the_entity() {
+        // Маска 2×2: светит только строка 0 (юг в повороте ноль).
+        let mask = LightMask {
+            width: 2,
+            height: 2,
+            values: vec![255, 255, 0, 0],
+        };
+        let south = Vec2::new(0.0, -2.0);
+        let north = Vec2::new(0.0, 2.0);
+        assert_eq!(mask.sample(south, 4.0, Angle::ZERO), 1.0);
+        assert_eq!(mask.sample(north, 4.0, Angle::ZERO), 0.0);
+        // Повёрнутая на восток (π/2) маска светит на восток.
+        let east = Angle(std::f32::consts::FRAC_PI_2);
+        assert_eq!(mask.sample(Vec2::new(2.0, 0.0), 4.0, east), 1.0);
+        assert_eq!(mask.sample(south, 4.0, east), 0.0);
+        let light = PointLight {
+            auto_rot: true,
+            ..PointLight::default()
+        };
+        assert_eq!(light.mask_world_rotation(east), east);
+        assert_eq!(PointLight::default().mask_world_rotation(east), Angle::ZERO);
     }
 
     /// Стена по клеткам x = 3, y = 0..=4 с проёмом в y = 2.
