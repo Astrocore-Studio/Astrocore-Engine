@@ -20,13 +20,13 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub use audio::MasterVolume;
-pub use input::{Bindings, Cursor, key_name, mouse_name};
+pub use input::{Bindings, Cursor, Hovered, key_name, mouse_name};
 pub use lighting::{Lighting, TEXELS_PER_TILE};
 pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, register_draw_depth};
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
 pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
 pub use visualizer::{GenericVisualizer, SpriteLayerData};
-pub use windows::{UiAction, UiHover, UiStyle, WindowKinds, spawn_button, spawn_label};
+pub use windows::{Tooltip, UiAction, UiHover, UiStyle, WindowKinds, spawn_button, spawn_label};
 
 /// Мир игры клиента. Ресурс приложения Bevy.
 #[derive(Resource)]
@@ -104,6 +104,7 @@ impl Plugin for ClientPlugin {
             .init_resource::<audio::Sounds>()
             .init_resource::<audio::AmbientPlaying>()
             .init_resource::<Cursor>()
+            .init_resource::<Hovered>()
             .init_resource::<Textures>()
             .init_resource::<Eye>()
             .insert_resource(Time::<Fixed>::from_hz(f64::from(
@@ -115,6 +116,7 @@ impl Plugin for ClientPlugin {
                 Update,
                 (
                     input::track_cursor,
+                    input::track_hovered,
                     input::read_input,
                     view::follow_player,
                     view::sync_chunks,

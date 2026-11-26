@@ -80,6 +80,71 @@ impl WindowKinds {
     }
 }
 
+/// Подсказка элемента интерфейса: текст у курсора, пока курсор над элементом.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct Tooltip(pub String);
+
+/// Окошко подсказки.
+#[derive(Component)]
+pub(crate) struct TooltipView;
+
+/// Показывает подсказку элемента под курсором.
+pub(crate) fn show_tooltip(
+    mut commands: Commands,
+    style: Res<UiStyle>,
+    window: Option<Single<&Window, With<PrimaryWindow>>>,
+    hovered: Query<(&Interaction, &Tooltip)>,
+    mut shown: Local<Option<(Entity, String)>>,
+    mut views: Query<&mut Node, With<TooltipView>>,
+) {
+    let text = hovered
+        .iter()
+        .find(|(interaction, _)| **interaction != Interaction::None)
+        .map(|(_, tooltip)| tooltip.0.clone());
+    let cursor = window.and_then(|window| window.cursor_position());
+    match (text, cursor) {
+        (Some(text), Some(cursor)) => {
+            let place = |node: &mut Node| {
+                node.left = Val::Px(cursor.x + 14.0);
+                node.top = Val::Px(cursor.y + 14.0);
+            };
+            if let Some((view, current)) = shown.as_ref()
+                && *current == text
+                && let Ok(mut node) = views.get_mut(*view)
+            {
+                place(&mut node);
+                return;
+            }
+            if let Some((view, _)) = shown.take() {
+                commands.entity(view).despawn();
+            }
+            let mut node = Node {
+                position_type: PositionType::Absolute,
+                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            };
+            place(&mut node);
+            let view = commands
+                .spawn((
+                    node,
+                    BackgroundColor(FRAME),
+                    BorderColor::all(BORDER),
+                    GlobalZIndex(1000),
+                    TooltipView,
+                    children![style.text(text.clone(), 13.0)],
+                ))
+                .id();
+            *shown = Some((view, text));
+        }
+        _ => {
+            if let Some((view, _)) = shown.take() {
+                commands.entity(view).despawn();
+            }
+        }
+    }
+}
+
 /// Курсор над окном интерфейса: нажатия мыши в этот момент мир не получает.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct UiHover(pub bool);
@@ -333,5 +398,5 @@ pub(crate) fn build(app: &mut App) {
         .init_resource::<WindowKinds>()
         .init_resource::<UiHover>()
         .add_systems(Startup, load_font)
-        .add_systems(Update, (window_input, sync_windows).chain());
+        .add_systems(Update, (window_input, sync_windows, show_tooltip).chain());
 }

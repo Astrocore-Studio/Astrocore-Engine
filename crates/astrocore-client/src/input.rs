@@ -126,7 +126,22 @@ pub(crate) fn entity_at(
     images: &Assets<Image>,
     layouts: &Assets<TextureAtlasLayout>,
 ) -> Option<bevy_ecs::entity::Entity> {
-    let mut best: Option<(f32, bevy_ecs::entity::Entity)> = None;
+    entities_at(point, game, views, shown, layers, images, layouts)
+        .into_iter()
+        .next()
+}
+
+/// Все сущности с `Clickable` под точкой, сверху вниз (`GetClickableEntities` Robust).
+pub(crate) fn entities_at(
+    point: Vec2,
+    game: &bevy_ecs::world::World,
+    views: &Views,
+    shown: &Query<(&Transform, &Children), With<EntityView>>,
+    layers: &Query<(&Transform, &Sprite), Without<EntityView>>,
+    images: &Assets<Image>,
+    layouts: &Assets<TextureAtlasLayout>,
+) -> Vec<bevy_ecs::entity::Entity> {
+    let mut hits: Vec<(f32, bevy_ecs::entity::Entity)> = Vec::new();
     for (entity, view) in views.iter() {
         if game.get::<Clickable>(entity).is_none() {
             continue;
@@ -138,20 +153,52 @@ pub(crate) fn entity_at(
         if transform.translation.truncate().distance_squared(point) > 16.0 {
             continue;
         }
+        let mut top: Option<f32> = None;
         for child in children.iter() {
             let Ok((layer, sprite)) = layers.get(child) else {
                 continue;
             };
             let depth = transform.translation.z + layer.translation.z;
-            if best.is_some_and(|(top, _)| top >= depth) {
+            if top.is_some_and(|best| best >= depth) {
                 continue;
             }
             if opaque_at(point, transform, layer, sprite, images, layouts) {
-                best = Some((depth, entity));
+                top = Some(depth);
             }
         }
+        if let Some(depth) = top {
+            hits.push((depth, entity));
+        }
     }
-    best.map(|(_, entity)| entity)
+    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+    hits.into_iter().map(|(_, entity)| entity).collect()
+}
+
+/// Сущности под курсором сверху вниз: по ним игра строит контекстное меню.
+#[derive(Resource, Debug, Default, Clone)]
+pub struct Hovered {
+    pub entities: Vec<bevy_ecs::entity::Entity>,
+}
+
+/// Обновляет [`Hovered`] по курсору.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn track_hovered(
+    cursor: Res<Cursor>,
+    game: Res<Game>,
+    views: Res<Views>,
+    images: Res<Assets<Image>>,
+    layouts: Res<Assets<TextureAtlasLayout>>,
+    shown: Query<(&Transform, &Children), With<EntityView>>,
+    layers: Query<(&Transform, &Sprite), Without<EntityView>>,
+    mut hovered: ResMut<Hovered>,
+) {
+    let entities = cursor
+        .world
+        .map(|point| entities_at(point, &game.0, &views, &shown, &layers, &images, &layouts))
+        .unwrap_or_default();
+    if hovered.entities != entities {
+        hovered.entities = entities;
+    }
 }
 
 fn opaque_at(
