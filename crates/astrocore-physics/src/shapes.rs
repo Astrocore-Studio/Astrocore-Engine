@@ -80,6 +80,32 @@ impl Shape {
         }
     }
 
+    /// Момент инерции фигуры единичной плотности относительно начала координат сущности.
+    pub fn unit_inertia(&self) -> f32 {
+        match self {
+            Shape::PhysShapeAabb { bounds } => {
+                let size = bounds.size();
+                let center = bounds.center();
+                let area = size.x * size.y;
+                area * (size.length_squared() / 12.0 + center.length_squared())
+            }
+            Shape::PhysShapeCircle { radius, position } => {
+                let area = std::f32::consts::PI * radius * radius;
+                area * (radius * radius / 2.0 + position.length_squared())
+            }
+            Shape::PolygonShape { vertices } => {
+                // Сумма треугольников (начало, a, b): ∫|r|² dA = cross(a, b) · (a·a + a·b + b·b) / 12.
+                let mut sum = 0.0;
+                for (index, a) in vertices.iter().enumerate() {
+                    let b = vertices[(index + 1) % vertices.len()];
+                    let cross = a.x * b.y - a.y * b.x;
+                    sum += cross * (a.dot(*a) + a.dot(b) + b.dot(b)) / 12.0;
+                }
+                sum.abs()
+            }
+        }
+    }
+
     /// Форма в положении тела.
     pub fn at(&self, pose: &Pose) -> WorldShape {
         match self {

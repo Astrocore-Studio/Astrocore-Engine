@@ -256,6 +256,7 @@ struct Active {
     velocity: Vec2,
     angular: f32,
     inv_mass: f32,
+    inv_inertia: f32,
     body_type: BodyType,
     damping: f32,
     angular_damping: f32,
@@ -278,6 +279,7 @@ impl Active {
             velocity: body.linear_velocity,
             angular: body.angular_velocity,
             inv_mass: body.inv_mass(),
+            inv_inertia: body.inv_inertia(),
             body_type: body.body_type,
             damping: body.linear_damping,
             angular_damping: body.angular_damping,
@@ -305,8 +307,15 @@ struct Hit {
     /// Нормаль от первого тела ко второму.
     normal: Vec2,
     depth: f32,
+    /// Точка касания в координатах корня.
+    point: Vec2,
     hard: bool,
     restitution: f32,
+    /// Трение пары (`MixFriction` Box2D: корень из произведения).
+    friction: f32,
+    /// Второе тело спит и только что разбужено: касание решается со следующего прохода,
+    /// когда оно войдёт в расчёт со своей массой.
+    waking: bool,
 }
 
 /// Ищет перекрытия активных тел с окружением.
@@ -389,7 +398,8 @@ fn detect(
                             };
                             let hard = fixture_a.hard && fixture_b.hard;
                             // Спящее подвижное тело от твёрдого удара просыпается.
-                            if hard && b_index.is_none() && b_movable {
+                            let waking = hard && b_index.is_none() && b_movable;
+                            if waking {
                                 wake.push(other);
                             }
                             hits.push(Hit {
@@ -398,8 +408,11 @@ fn detect(
                                 pair,
                                 normal: manifold.normal,
                                 depth: manifold.depth,
+                                point: manifold.point,
                                 hard,
                                 restitution: fixture_a.restitution.max(fixture_b.restitution),
+                                friction: (fixture_a.friction * fixture_b.friction).sqrt(),
+                                waking,
                             });
                         }
                     }
@@ -563,10 +576,32 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
             chosen.sort_unstable();
             for hit_index in chosen {
                 let hit = &hits[hit_index];
-                let (inv_a, velocity_a) = (bodies[hit.a].inv_mass, bodies[hit.a].velocity);
-                let (inv_b, velocity_b) = match hit.b {
-                    Ok(index) => (bodies[index].inv_mass, bodies[index].velocity),
-                    Err(_) => (0.0, Vec2::ZERO),
+                if hit.waking && only.is_none() {
+                    resolved = true;
+                    continue;
+                }
+                let a_body = &bodies[hit.a];
+                let (inv_a, inv_ia, velocity_a, omega_a, center_a) = (
+                    a_body.inv_mass,
+                    a_body.inv_inertia,
+                    a_body.velocity,
+                    a_body.angular,
+                    a_body.position,
+                );
+                let a_dynamic = a_body.body_type == BodyType::Dynamic;
+                let (inv_b, inv_ib, velocity_b, omega_b, center_b, b_dynamic) = match hit.b {
+                    Ok(index) => {
+                        let b = &bodies[index];
+                        (
+                            b.inv_mass,
+                            b.inv_inertia,
+                            b.velocity,
+                            b.angular,
+                            b.position,
+                            b.body_type == BodyType::Dynamic,
+                        )
+                    }
+                    Err(_) => (0.0, 0.0, Vec2::ZERO, 0.0, hit.point, false),
                 };
                 let total = inv_a + inv_b;
                 if total <= 0.0 {
@@ -575,20 +610,50 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
                 resolved = true;
                 // Расталкивание по нормали пропорционально обратным массам.
                 let correction = hit.normal * (hit.depth - LINEAR_SLOP);
-                // Сближение гасится импульсом вдоль нормали.
-                let approach = (velocity_b - velocity_a).dot(hit.normal);
-                let impulse = if approach < 0.0 {
-                    -(1.0 + hit.restitution) * approach / total
+                // Импульсы в точке касания (Box2D): по нормали гасят сближение, по касательной —
+                // трение; плечо от центра тела к точке раскручивает тело.
+                let (ra, rb) = (hit.point - center_a, hit.point - center_b);
+                let cross = |r: Vec2, v: Vec2| r.x * v.y - r.y * v.x;
+                let spin = |omega: f32, r: Vec2| Vec2::new(-omega * r.y, omega * r.x);
+                let relative = |va: Vec2, wa: f32, vb: Vec2, wb: f32| {
+                    (vb + spin(wb, rb)) - (va + spin(wa, ra))
+                };
+                let effective = |axis: Vec2| {
+                    total + inv_ia * cross(ra, axis).powi(2) + inv_ib * cross(rb, axis).powi(2)
+                };
+                let approach = relative(velocity_a, omega_a, velocity_b, omega_b).dot(hit.normal);
+                let normal_impulse = if approach < 0.0 {
+                    -(1.0 + hit.restitution) * approach / effective(hit.normal)
                 } else {
                     0.0
                 };
+                let mut impulse = hit.normal * normal_impulse;
+                // Трение действует, если в паре есть свободное тело: персонажей ведёт
+                // управление, и о стены они не тормозят.
+                if (a_dynamic || b_dynamic) && hit.friction > 0.0 && normal_impulse > 0.0 {
+                    let (va, wa) = (
+                        velocity_a - impulse * inv_a,
+                        omega_a - inv_ia * cross(ra, impulse),
+                    );
+                    let (vb, wb) = (
+                        velocity_b + impulse * inv_b,
+                        omega_b + inv_ib * cross(rb, impulse),
+                    );
+                    let tangent = Vec2::new(-hit.normal.y, hit.normal.x);
+                    let slide = relative(va, wa, vb, wb).dot(tangent);
+                    let limit = hit.friction * normal_impulse;
+                    let friction_impulse = (-slide / effective(tangent)).clamp(-limit, limit);
+                    impulse += tangent * friction_impulse;
+                }
                 let a = &mut bodies[hit.a];
                 a.position -= correction * (inv_a / total);
-                a.velocity -= hit.normal * (impulse * inv_a);
+                a.velocity -= impulse * inv_a;
+                a.angular -= inv_ia * cross(ra, impulse);
                 if let Ok(index) = hit.b {
                     let b = &mut bodies[index];
                     b.position += correction * (inv_b / total);
-                    b.velocity += hit.normal * (impulse * inv_b);
+                    b.velocity += impulse * inv_b;
+                    b.angular += inv_ib * cross(rb, impulse);
                 }
             }
             if !resolved {
@@ -685,6 +750,19 @@ pub trait PhysicsWorldExt {
     /// Прикладывает импульс: скорость меняется на импульс, делённый на массу.
     fn apply_linear_impulse(&mut self, entity: Entity, impulse: Vec2);
 
+    /// Прикладывает вращающий импульс: угловая скорость меняется на импульс, делённый на
+    /// момент инерции.
+    fn apply_angular_impulse(&mut self, entity: Entity, impulse: f32);
+
+    /// Задаёт угловую скорость и будит тело.
+    fn set_angular_velocity(&mut self, entity: Entity, angular: f32);
+
+    /// Задаёт положение тела относительно пола: в воздухе трение о пол не действует.
+    fn set_body_status(&mut self, entity: Entity, status: crate::body::BodyStatus);
+
+    /// Задаёт затухание скорости тела.
+    fn set_damping(&mut self, entity: Entity, linear: f32, angular: f32);
+
     /// Меняет вид тела.
     fn set_body_type(&mut self, entity: Entity, body_type: BodyType);
 
@@ -720,6 +798,47 @@ impl PhysicsWorldExt for World {
         };
         let velocity = body.linear_velocity + impulse * body.inv_mass();
         self.set_linear_velocity(entity, velocity);
+    }
+
+    fn apply_angular_impulse(&mut self, entity: Entity, impulse: f32) {
+        let Some(body) = self.get::<Physics>(entity) else {
+            return;
+        };
+        let angular = body.angular_velocity + impulse * body.inv_inertia();
+        self.set_angular_velocity(entity, angular);
+    }
+
+    fn set_angular_velocity(&mut self, entity: Entity, angular: f32) {
+        let Some(mut body) = self.get_mut::<Physics>(entity) else {
+            return;
+        };
+        if body.body_type == BodyType::Static || body.angular_velocity == angular {
+            return;
+        }
+        body.angular_velocity = angular;
+        if angular != 0.0 {
+            body.awake = true;
+            body.sleep_time = 0.0;
+        }
+    }
+
+    fn set_body_status(&mut self, entity: Entity, status: crate::body::BodyStatus) {
+        if let Some(mut body) = self.get_mut::<Physics>(entity)
+            && body.body_status != status
+        {
+            body.body_status = status;
+        }
+    }
+
+    fn set_damping(&mut self, entity: Entity, linear: f32, angular: f32) {
+        if let Some(mut body) = self.get_mut::<Physics>(entity)
+            && (body.linear_damping != linear || body.angular_damping != angular)
+        {
+            // Затухание меняется каждый такт и клиенту не нужно: не помечаем изменённым.
+            let body = body.bypass_change_detection();
+            body.linear_damping = linear;
+            body.angular_damping = angular;
+        }
     }
 
     fn set_body_type(&mut self, entity: Entity, body_type: BodyType) {

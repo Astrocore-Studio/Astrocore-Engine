@@ -467,3 +467,94 @@ fn rays_stop_at_hard_fixtures_of_the_mask_on_grids_and_in_space() {
     );
     assert!((hits[0].distance - 4.0).abs() < 1e-4, "{hits:?}");
 }
+
+#[test]
+fn friction_slows_sliding_and_off_centre_hits_spin_free_bodies() {
+    let mut scene = Scene::new();
+    // Ящик скользит вдоль стены, прижимаясь к ней: трение гасит скорость вдоль стены.
+    for x in 0..20 {
+        scene.spawn("Wall", x as f32 + 0.5, 0.5);
+    }
+    let sliding = scene.spawn("Crate", 2.5, 1.45);
+    scene.run(1);
+    scene
+        .world
+        .set_linear_velocity(sliding, Vec2::new(4.0, -2.0));
+    let mut free = Scene::new();
+    for x in 0..20 {
+        free.spawn("Wall", x as f32 + 0.5, 0.5);
+    }
+    let reference = free.spawn("Crate", 2.5, 1.45);
+    free.run(1);
+    for fixtures in free
+        .world
+        .get_mut::<Fixtures>(reference)
+        .unwrap()
+        .fixtures
+        .values_mut()
+    {
+        fixtures.friction = 0.0;
+    }
+    free.world
+        .set_linear_velocity(reference, Vec2::new(4.0, -2.0));
+    scene.run(10);
+    free.run(10);
+    let with_friction = scene.position(sliding).x;
+    let without = free.position(reference).x;
+    assert!(
+        with_friction < without - 0.05,
+        "трение {with_friction}, без трения {without}"
+    );
+
+    // Тело, попавшее в край свободно вращающегося ящика, раскручивает его.
+    let mut scene = Scene::new();
+    let target = scene.spawn("Crate", 5.5, 5.5);
+    scene.run(1);
+    scene
+        .world
+        .get_mut::<Physics>(target)
+        .unwrap()
+        .fixed_rotation = false;
+    assert!(scene.world.get::<Physics>(target).unwrap().inv_inertia() > 0.0);
+    // Второй ящик летит выше центра цели: слои ящиков сталкиваются друг с другом.
+    let ball = scene.spawn("Crate", 3.0, 6.1);
+    scene.run(1);
+    scene.world.set_linear_velocity(ball, Vec2::new(6.0, 0.0));
+    scene.run(15);
+    let spin = scene.world.get::<Physics>(target).unwrap().angular_velocity;
+    assert!(spin.abs() > 0.05, "угловая скорость {spin}");
+    // Удар выше центра слева направо закручивает по часовой стрелке.
+    assert!(spin < 0.0, "угловая скорость {spin}");
+
+    // Вращающий импульс: тела с фиксированным поворотом не раскручиваются.
+    scene.world.apply_angular_impulse(ball, 1.0);
+    let wall = scene.spawn("Wall", 9.5, 9.5);
+    scene.world.apply_angular_impulse(wall, 1.0);
+    assert_eq!(
+        scene.world.get::<Physics>(wall).unwrap().angular_velocity,
+        0.0
+    );
+}
+
+#[test]
+fn inertia_of_shapes() {
+    use crate::shapes::Shape;
+    let unit = Shape::PhysShapeAabb {
+        bounds: Box2::new(-0.5, -0.5, 0.5, 0.5),
+    };
+    assert!((unit.unit_inertia() - 1.0 / 6.0).abs() < 1e-6);
+    let polygon = Shape::PolygonShape {
+        vertices: vec![
+            Vec2::new(-0.5, -0.5),
+            Vec2::new(0.5, -0.5),
+            Vec2::new(0.5, 0.5),
+            Vec2::new(-0.5, 0.5),
+        ],
+    };
+    assert!((polygon.unit_inertia() - 1.0 / 6.0).abs() < 1e-6);
+    let circle = Shape::PhysShapeCircle {
+        radius: 1.0,
+        position: Vec2::ZERO,
+    };
+    assert!((circle.unit_inertia() - std::f32::consts::PI / 2.0).abs() < 1e-5);
+}

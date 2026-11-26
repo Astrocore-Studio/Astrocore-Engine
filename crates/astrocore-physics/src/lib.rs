@@ -53,17 +53,11 @@ impl GamePlugin for PhysicsPlugin {
         world.init_resource::<Broadphase>();
 
         world.subscribe::<Fixtures, ComponentStartup>(|world, entity, _| {
-            let mass = world.get::<Fixtures>(entity).map_or(0.0, Fixtures::mass);
-            if let Some(mut body) = world.get_mut::<Physics>(entity) {
-                body.bypass_change_detection().mass = mass;
-            }
+            update_mass(world, entity);
             world::update_proxy(world, entity);
         });
         world.subscribe::<Physics, ComponentStartup>(|world, entity, _| {
-            let mass = world.get::<Fixtures>(entity).map_or(0.0, Fixtures::mass);
-            if let Some(mut body) = world.get_mut::<Physics>(entity) {
-                body.bypass_change_detection().mass = mass;
-            }
+            update_mass(world, entity);
             world::update_proxy(world, entity);
         });
         world.subscribe::<Fixtures, MoveEvent>(|world, entity, _| {
@@ -92,6 +86,18 @@ impl GamePlugin for PhysicsPlugin {
         if self.simulate {
             world.add_game_systems(PostUpdate, world::physics_system);
         }
+    }
+}
+
+/// Масса и момент инерции тела по его фикстурам.
+fn update_mass(world: &mut World, entity: Entity) {
+    let (mass, inertia) = world
+        .get::<Fixtures>(entity)
+        .map_or((0.0, 0.0), |fixtures| (fixtures.mass(), fixtures.inertia()));
+    if let Some(mut body) = world.get_mut::<Physics>(entity) {
+        let body = body.bypass_change_detection();
+        body.mass = mass;
+        body.inertia = inertia;
     }
 }
 

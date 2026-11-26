@@ -195,6 +195,9 @@ pub struct Physics {
     /// Масса по фикстурам.
     #[serde(skip)]
     pub mass: f32,
+    /// Момент инерции по фикстурам: чем больше, тем труднее раскрутить.
+    #[serde(skip)]
+    pub inertia: f32,
 }
 
 impl Default for Physics {
@@ -212,11 +215,21 @@ impl Default for Physics {
             awake: false,
             sleep_time: 0.0,
             mass: 0.0,
+            inertia: 0.0,
         }
     }
 }
 
 impl Physics {
+    /// Обратный момент инерции: ноль у тел, которые удары не вращают.
+    pub fn inv_inertia(&self) -> f32 {
+        if self.body_type.is_movable() && !self.fixed_rotation && self.inertia > 0.0 {
+            1.0 / self.inertia
+        } else {
+            0.0
+        }
+    }
+
     /// Обратная масса: ноль у тел, которые столкновения не двигают.
     pub fn inv_mass(&self) -> f32 {
         if self.body_type.is_movable() && self.mass > 0.0 {
@@ -293,6 +306,14 @@ impl Fixtures {
         self.fixtures
             .values()
             .map(|fixture| fixture.density * fixture.shape.area())
+            .sum()
+    }
+
+    /// Момент инерции тела относительно его начала координат.
+    pub fn inertia(&self) -> f32 {
+        self.fixtures
+            .values()
+            .map(|fixture| fixture.density * fixture.shape.unit_inertia())
             .sum()
     }
 }
