@@ -9,6 +9,7 @@ mod sprite;
 mod textures;
 mod view;
 mod visualizer;
+mod windows;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,6 +26,7 @@ pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, reg
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
 pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
 pub use visualizer::{GenericVisualizer, SpriteLayerData};
+pub use windows::{UiAction, UiHover, UiStyle, WindowKinds, spawn_button, spawn_label};
 
 /// Мир игры клиента. Ресурс приложения Bevy.
 #[derive(Resource)]
@@ -47,6 +49,7 @@ pub fn register_client_components(world: &mut bevy_ecs::world::World) {
     world.add_plugin(astrocore_input::InputPlugin);
     world.add_plugin(astrocore_audio::AudioPlugin);
     world.add_plugin(astrocore_light::LightPlugin);
+    world.add_plugin(astrocore_ui::UiPlugin);
     visualizer::install(world);
 }
 
@@ -94,6 +97,7 @@ pub struct ClientPlugin;
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         lighting::build(app);
+        windows::build(app);
         app.init_resource::<Views>()
             .init_resource::<Bindings>()
             .init_resource::<MasterVolume>()

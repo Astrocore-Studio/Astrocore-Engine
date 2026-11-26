@@ -1,0 +1,23 @@
+[package]
+name = "astrocore-ui"
+description = "Интерфейсы сущностей Astrocore без графики: окна, связанные с сервером (BoundUserInterface Robust)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+astrocore-ecs.workspace = true
+astrocore-map.workspace = true
+astrocore-net.workspace = true
+bevy_ecs.workspace = true
+postcard.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+astrocore-data.workspace = true
+astrocore-math.workspace = true
+astrocore-prototypes.workspace = true
+
+[lints]
+workspace = true

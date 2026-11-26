@@ -220,6 +220,7 @@ pub(crate) fn read_input(
     layouts: Res<Assets<TextureAtlasLayout>>,
     shown: Query<(&Transform, &Children), With<EntityView>>,
     layers: Query<(&Transform, &Sprite), Without<EntityView>>,
+    ui_hover: Res<crate::windows::UiHover>,
     mut bindings: ResMut<Bindings>,
     mut game: ResMut<Game>,
 ) {
@@ -260,8 +261,10 @@ pub(crate) fn read_input(
             }
             continue;
         }
-        // Нажатие, обработанное функцией с большим приоритетом, до остальных не доходит.
-        if change.state == BoundKeyState::Down && handled_down {
+        // Нажатие, обработанное функцией с большим приоритетом, до остальных не доходит;
+        // нажатие мыши над окном интерфейса получает окно.
+        if change.state == BoundKeyState::Down && (handled_down || (change.can_focus && ui_hover.0))
+        {
             continue;
         }
         let under = *target.get_or_insert_with(|| {
