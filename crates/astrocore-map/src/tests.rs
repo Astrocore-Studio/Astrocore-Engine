@@ -831,3 +831,123 @@ fn entities_change_grid_when_they_walk_off_and_on() {
     world.set_local_position(item, Vec2::new(0.1, 0.0)).unwrap();
     assert_eq!(world.parent(item), Some(walker));
 }
+
+#[test]
+fn saved_map_loads_back_into_the_same_map() {
+    use astrocore_data::{parse_yaml, to_yaml_string};
+
+    let mut world = world();
+    load_prototypes(&mut world);
+    world
+        .resource_mut::<TileDefinitions>()
+        .register("FloorSteel", None, 3);
+    // Компонент, которого игра не знает, и неизвестный пропущенный компонент сохраняются как
+    // были; второй ящик без поворота стены и не привязан, хотя прототип привязан.
+    let file = map_file()
+        .replace(
+            "    - type: MapGrid\n",
+            "    - type: DecalGrid\n      chunkCollection:\n        version: 2\n        nodes: []\n    - type: MapGrid\n",
+        )
+        .replace(
+            "  - uid: 3\n    components:\n",
+            "  - uid: 3\n    missingComponents:\n    - Airtight\n    components:\n",
+        )
+        .replace(
+            "- proto: Locker\n",
+            "  - uid: 9\n    components:\n    - type: Transform\n      pos: -13.5,0.5\n      parent: 2\n      anchored: False\n- proto: Locker\n",
+        )
+        // Лом вне карт (`nullspace`) сохраняется вместе с картой файла.
+        .replace(
+            "- proto: NoSuchThing\n",
+            "  - uid: 12\n    components:\n    - type: Transform\n- proto: NoSuchThing\n",
+        );
+    let first = world.load_map(&parse_yaml(&file).unwrap(), false).unwrap();
+    let saved = world
+        .save_map(first.maps[0].0, MapSaveOptions::default())
+        .unwrap();
+    // Сущность с потерянным родителем и неизвестный прототип в карту не входят; сущности
+    // сохраняют номера из файла.
+    assert_eq!(saved.entities, 8);
+    let text = to_yaml_string(&saved.document);
+    assert!(text.contains("nullspace:\n- 12\n"), "{text}");
+    assert!(text.contains("- uid: 9\n"), "{text}");
+    let second = world.load_map(&parse_yaml(&text).unwrap(), false).unwrap();
+    assert_eq!(second.entities, 8, "{text}");
+    let outside = second.uids[&12];
+    assert!(world.parent(outside).is_none());
+    assert!(world.get::<Paused>(outside).is_some());
+    assert!(second.errors.is_empty(), "{:?}", second.errors);
+
+    let map = second.maps[0].0;
+    assert_eq!(
+        world.get::<MetaData>(map).unwrap().name.as_deref(),
+        Some("Test Station")
+    );
+    assert!(world.get::<Map>(map).unwrap().paused);
+    let grid = second.grids[0];
+    let tiles = world.get::<MapGrid>(grid).unwrap();
+    assert_eq!(tiles.tile_count(), 8);
+    assert_eq!(tiles.tile(TileCoord::new(-15, 1, 0)).variant, 1);
+    let preserved = world.get::<MapPreserved>(grid).unwrap();
+    assert_eq!(preserved.components[0].type_name(), Some("DecalGrid"));
+
+    let by_proto = |world: &mut World, id: &str| -> Vec<Entity> {
+        let mut found: Vec<Entity> = world
+            .query::<(Entity, &MetaData)>()
+            .iter(world)
+            .filter(|(e, meta)| {
+                meta.prototype.as_deref() == Some(id)
+                    && world
+                        .parent(*e)
+                        .is_some_and(|p| p == grid || world.parent(p) == Some(grid))
+            })
+            .map(|(e, _)| e)
+            .collect();
+        found.sort_by(|a, b| {
+            let x = |e: &Entity| world.get::<Transform>(*e).unwrap().local_position().x;
+            x(a).total_cmp(&x(b))
+        });
+        found
+    };
+    let walls = by_proto(&mut world, "Wall");
+    assert_eq!(walls.len(), 2);
+    assert!(world.get::<Transform>(walls[0]).unwrap().anchored());
+    assert!(!world.get::<Transform>(walls[1]).unwrap().anchored());
+    assert_eq!(
+        world.get::<MapPreserved>(walls[0]).unwrap().missing,
+        ["Airtight"]
+    );
+    let locker = by_proto(&mut world, "Locker")[0];
+    assert_eq!(
+        world.container(locker, "storage").unwrap().entities().len(),
+        1
+    );
+    assert_eq!(
+        world
+            .container(locker, "lock_slot")
+            .unwrap()
+            .entities()
+            .len(),
+        1
+    );
+
+    // Сохранение устойчиво: загруженная заново карта сохраняется так же.
+    let again = world.save_map(map, MapSaveOptions::default()).unwrap();
+    let third = world.load_map(&again.document, false).unwrap();
+    let last = world
+        .save_map(third.maps[0].0, MapSaveOptions::default())
+        .unwrap();
+    assert_eq!(
+        to_yaml_string(&again.document),
+        to_yaml_string(&last.document)
+    );
+
+    // Инициализированную карту без разрешения не сохранить.
+    let played = world.load_map(&parse_yaml(&file).unwrap(), true).unwrap();
+    assert_eq!(
+        world
+            .save_map(played.maps[0].0, MapSaveOptions::default())
+            .err(),
+        Some(MapSaveError::Initialized)
+    );
+}

@@ -149,15 +149,19 @@ impl ser::Serializer for NodeSerializer {
         Ok(SeqSer {
             items: Vec::with_capacity(len.unwrap_or(0)),
             variant: None,
+            compact: false,
         })
     }
 
     fn serialize_tuple(self, len: usize) -> Result<SeqSer, DataError> {
-        self.serialize_seq(Some(len))
+        Ok(SeqSer {
+            compact: true,
+            ..self.serialize_seq(Some(len))?
+        })
     }
 
     fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<SeqSer, DataError> {
-        self.serialize_seq(Some(len))
+        self.serialize_tuple(len)
     }
 
     fn serialize_tuple_variant(
@@ -170,6 +174,7 @@ impl ser::Serializer for NodeSerializer {
         Ok(SeqSer {
             items: Vec::with_capacity(len),
             variant: Some(variant),
+            compact: false,
         })
     }
 
@@ -203,6 +208,9 @@ impl ser::Serializer for NodeSerializer {
 struct SeqSer {
     items: Vec<DataNode>,
     variant: Option<&'static str>,
+    /// Кортеж чисел пишется строкой через запятую, как векторы SS14 (`0.5,-1`); чтение
+    /// кортежа понимает обе записи.
+    compact: bool,
 }
 
 impl SeqSer {
@@ -212,6 +220,21 @@ impl SeqSer {
     }
 
     fn finish(self) -> DataNode {
+        let numbers = self.compact
+            && self.variant.is_none()
+            && self.items.len() >= 2
+            && self.items.iter().all(|item| {
+                item.as_scalar()
+                    .is_some_and(|s| !s.quoted && s.text.parse::<f64>().is_ok())
+            });
+        if numbers {
+            let text: Vec<&str> = self
+                .items
+                .iter()
+                .filter_map(|item| item.as_scalar().map(|s| s.text.as_str()))
+                .collect();
+            return DataNode::plain(text.join(","));
+        }
         let node = DataNode::seq(self.items);
         match self.variant {
             Some(variant) => tagged(node, variant),

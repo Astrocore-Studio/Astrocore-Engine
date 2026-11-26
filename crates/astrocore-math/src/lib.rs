@@ -105,7 +105,21 @@ impl Serialize for Angle {
         if !serializer.is_human_readable() {
             return serializer.serialize_f32(self.0);
         }
-        serializer.collect_str(&format_args!("{} rad", self.0))
+        serializer.collect_str(&format_args!("{} rad", self.radians_text()))
+    }
+}
+
+impl Angle {
+    /// Радианы текстом, как их пишет SS14 (`double` C#): кратное π/4 — с точностью `f64`
+    /// (`1.5707963267948966`), остальное — кратчайшей записью `f32`. Читается в то же `f32`.
+    pub fn radians_text(self) -> String {
+        let quarter = std::f64::consts::FRAC_PI_4;
+        let value = f64::from(self.0);
+        let steps = (value / quarter).round();
+        if steps != 0.0 && (steps * quarter) as f32 == self.0 {
+            return format!("{}", steps * quarter);
+        }
+        format!("{}", self.0)
     }
 }
 

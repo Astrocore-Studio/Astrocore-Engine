@@ -185,6 +185,16 @@ pub fn to_yaml_string(node: &DataNode) -> String {
     out
 }
 
+/// Простая строка YAML может начинаться с `-`, если за ним сразу идёт не пробел
+/// (`ns-plain-first`): так SS14 пишет `pos: -12.5,-3.5`. `---` — разделитель документов.
+fn plain_after_dash(text: &str) -> bool {
+    !text.starts_with("---")
+        && text[1..]
+            .chars()
+            .next()
+            .is_some_and(|c| !c.is_whitespace() && !matches!(c, ',' | '[' | ']' | '{' | '}'))
+}
+
 fn yaml_plain_safe(text: &str) -> bool {
     let Some(first) = text.chars().next() else {
         return false;
@@ -210,7 +220,7 @@ fn yaml_plain_safe(text: &str) -> bool {
             | '@'
             | '`'
             | ' '
-    ) && !(first == '-' && is_number(text))
+    ) && !(first == '-' && plain_after_dash(text))
     {
         return false;
     }
@@ -220,16 +230,27 @@ fn yaml_plain_safe(text: &str) -> bool {
         && !text.contains(['\n', '\r', '\t'])
 }
 
+/// Строка в кавычках, как пишет YamlDotNet в файлах SS14: одинарные, если в тексте нет
+/// управляющих символов, иначе двойные с экранированием.
+fn yaml_quote(text: &str, out: &mut String) {
+    if text.chars().any(char::is_control) {
+        return quote(text, out);
+    }
+    out.push('\'');
+    out.push_str(&text.replace('\'', "''"));
+    out.push('\'');
+}
+
 fn yaml_scalar(scalar: &Scalar, out: &mut String) {
     let text = scalar.text.as_str();
     if scalar.quoted {
-        quote(text, out);
+        yaml_quote(text, out);
     } else if text.is_empty() {
         out.push_str("null");
     } else if yaml_plain_safe(text) {
         out.push_str(text);
     } else {
-        quote(text, out);
+        yaml_quote(text, out);
     }
 }
 
@@ -316,6 +337,18 @@ fn yaml_entry(node: &DataNode, depth: usize, in_seq: bool, out: &mut String) {
             out.push(' ');
             yaml_map(map, depth + 1, true, out);
         }
+        // `- - item` — вложенная последовательность начинается на строке элемента, как в SS14.
+        Value::Seq(items) if in_seq && node.tag.is_none() => {
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    yaml_indent(depth + 1, out);
+                } else {
+                    out.push(' ');
+                }
+                out.push('-');
+                yaml_entry(item, depth + 1, true, out);
+            }
+        }
         _ => {
             out.push('\n');
             // Последовательность под ключом отображения пишется без отступа, как в SS14.
@@ -388,6 +421,46 @@ mod tests {
         let from_ron = parse_ron(&to_ron_string(&tree)).unwrap();
         let again = parse_yaml(&to_yaml_string(&from_ron)).unwrap();
         assert_eq!(normalize(&again), normalize(&tree));
+    }
+
+    #[test]
+    fn yaml_writes_nested_sequences_on_the_item_line() {
+        let inner =
+            |items: &[&str]| DataNode::seq(items.iter().map(|i| DataNode::plain(*i)).collect());
+        let mut map = DataMap::new();
+        map.insert(
+            "ports",
+            DataNode::seq(vec![inner(&["Pressed", "Toggle"]), inner(&["On", "Off"])]),
+        );
+        let tree = DataNode::map(map);
+        let yaml = to_yaml_string(&tree);
+        assert_eq!(yaml, "ports:\n- - Pressed\n  - Toggle\n- - On\n  - Off\n");
+        assert_eq!(parse_yaml(&yaml).unwrap(), tree);
+    }
+
+    #[test]
+    fn yaml_writes_dash_strings_without_quotes_when_plain() {
+        let mut map = DataMap::new();
+        for (key, value) in [
+            ("pos", "-12.5,-3.5"),
+            ("rot", "-1.5 rad"),
+            ("dash", "-"),
+            ("item", "- x"),
+            ("doc", "---"),
+        ] {
+            map.insert(key, DataNode::plain(value));
+        }
+        let yaml = to_yaml_string(&DataNode::map(map));
+        assert!(yaml.contains("pos: -12.5,-3.5\n"), "{yaml}");
+        assert!(yaml.contains("rot: -1.5 rad\n"), "{yaml}");
+        assert!(yaml.contains("dash: '-'\n"), "{yaml}");
+        assert!(yaml.contains("item: '- x'\n"), "{yaml}");
+        assert!(yaml.contains("doc: '---'\n"), "{yaml}");
+        let back = parse_yaml(&yaml).unwrap();
+        assert_eq!(
+            back.get("pos").and_then(DataNode::as_str),
+            Some("-12.5,-3.5")
+        );
     }
 
     /// Сравнение без учёта кавычек и вида пустого значения.

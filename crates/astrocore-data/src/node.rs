@@ -93,6 +93,10 @@ impl DataMap {
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|(k, _)| k.as_str())
     }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut DataNode> {
+        self.0.iter_mut().map(|(_, v)| v)
+    }
 }
 
 impl FromIterator<(String, DataNode)> for DataMap {

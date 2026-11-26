@@ -1,7 +1,7 @@
 //! Реестр компонентов данных: имя в прототипах и картах ↔ тип Rust.
 //! Образец — `Robust.Shared/GameObjects/ComponentFactory.cs` @ 1afd692.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,6 +19,9 @@ pub trait ErasedComponent: Send + Sync {
     fn insert_clone(&self, world: &mut World, entity: Entity);
 
     fn clone_box(&self) -> Box<dyn ErasedComponent>;
+
+    /// Значение для приведения к известному типу.
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T: Component + Clone> ErasedComponent for T {
@@ -30,6 +33,10 @@ impl<T: Component + Clone> ErasedComponent for T {
 
     fn clone_box(&self) -> Box<dyn ErasedComponent> {
         Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -53,6 +60,7 @@ pub struct ComponentInfo {
     pub inherit_never: &'static [&'static str],
     parse: fn(&DataNode) -> Result<ParsedComponent, DataError>,
     write: fn(&World, Entity) -> Option<Result<DataNode, DataError>>,
+    write_value: fn(&dyn ErasedComponent) -> Option<Result<DataNode, DataError>>,
 }
 
 impl ComponentInfo {
@@ -64,6 +72,12 @@ impl ComponentInfo {
     /// Записывает компонент сущности в узел данных; `None` — компонента нет.
     pub fn write(&self, world: &World, entity: Entity) -> Option<Result<DataNode, DataError>> {
         (self.write)(world, entity)
+    }
+
+    /// Записывает разобранное значение (например, компонент прототипа); `None` — значение
+    /// другого типа.
+    pub fn write_value(&self, value: &dyn ErasedComponent) -> Option<Result<DataNode, DataError>> {
+        (self.write_value)(value)
     }
 }
 
@@ -138,6 +152,12 @@ fn write_as<T: Component + Serialize>(
     world.get::<T>(entity).map(to_node)
 }
 
+fn write_value_as<T: Component + Serialize>(
+    value: &dyn ErasedComponent,
+) -> Option<Result<DataNode, DataError>> {
+    value.as_any().downcast_ref::<T>().map(to_node)
+}
+
 /// Регистрация компонентов данных на `World`.
 pub trait RegistryWorldExt {
     /// Регистрирует компонент под именем его типа (`DoorComponent` и `Door` → `Door`).
@@ -183,6 +203,7 @@ impl RegistryWorldExt for World {
             inherit_never: &[],
             parse: parse_as::<T>,
             write: write_as::<T>,
+            write_value: write_value_as::<T>,
         });
         registry.by_name.insert(name, index);
         registry.by_id.insert(id, index);

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use astrocore_data::{DataNode, from_node};
+use astrocore_data::{DataMap, DataNode, from_node};
 use astrocore_ecs::{LifecycleWorldExt, MetaData};
 use astrocore_math::{Angle, IVec2, Vec2};
 use astrocore_prototypes::{EntityOverrides, PrototypeWorldExt};
@@ -17,8 +17,8 @@ use bevy_ecs::world::World;
 
 use crate::container::{CONTAINER_COMPONENT, ContainerKind, ContainerManager, ContainerWorldExt};
 use crate::coords::{CHUNK_SIZE, MapId, TileCoord};
-use crate::grid::{Tile, TileDefinitions};
-use crate::map::MapWorldExt;
+use crate::grid::{MapGrid, Tile, TileDefinitions};
+use crate::map::{Map, MapWorldExt};
 use crate::transform::{Placement, Transform, TransformWorldExt};
 
 /// Наименьшая и наибольшая версии формата файла карты, которые читает загрузчик.
@@ -66,6 +66,58 @@ impl EntityMigrations {
     }
 }
 
+/// Данные файла карты, которых игра не понимает: компоненты без типа в реестре и такие же
+/// имена в `missingComponents`. Сохранение карты пишет их обратно как были, чтобы карта не
+/// теряла ничего из того, что ещё не перенесено.
+#[derive(bevy_ecs::component::Component, Debug, Clone, Default, PartialEq)]
+pub struct MapPreserved {
+    /// Записи компонентов вместе с полем `type`.
+    pub components: Vec<DataNode>,
+    pub missing: Vec<String>,
+    /// Поля известных компонентов, которых игра не читает: имя компонента → поля как были.
+    pub fields: Vec<(String, DataMap)>,
+}
+
+impl MapPreserved {
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty() && self.missing.is_empty() && self.fields.is_empty()
+    }
+}
+
+/// Поля верхнего уровня, которые компонент не читает: их нет в его записи, и разбор
+/// сообщает о них как о лишних. `None` — таких полей нет.
+fn unknown_fields(info: &astrocore_ecs::ComponentInfo, node: &DataNode) -> Option<DataMap> {
+    let fields = node.as_map()?;
+    let parsed = info.parse(node).ok()?;
+    if parsed.unknown.is_empty() {
+        return None;
+    }
+    let written = info.write_value(parsed.component.as_ref())?.ok();
+    let known = |key: &str| written.as_ref().is_some_and(|w| w.get(key).is_some());
+    let mut out = DataMap::new();
+    for (key, value) in fields.iter() {
+        if !known(key) && parsed.unknown.iter().any(|field| field.name == key) {
+            out.insert(key, value.clone());
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Откуда сущность взялась в файле карты: её номер там и, для сущностей вне карт
+/// (`nullspace`, например чанки декалей), карта файла, с которой их сохранять. Сохранение
+/// оставляет сущности прежние номера: ссылки на них в компонентах, которые игра хранит как
+/// были (`MapPreserved`), остаются верными, а повторное сохранение даёт тот же файл.
+#[derive(bevy_ecs::component::Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapFileEntity {
+    pub uid: u32,
+    pub nullspace_of: Option<Entity>,
+}
+
+/// Номера тайлов в файле, из которого загружена карта: тип тайла в игре → номер. Сохранение
+/// пишет тайлы под прежними номерами, и чанки неизменённой карты не меняются.
+#[derive(bevy_ecs::component::Component, Debug, Clone, Default, PartialEq, Eq)]
+pub struct MapFileTilemap(pub BTreeMap<u16, u32>);
+
 /// Итог загрузки карты.
 #[derive(Debug, Default)]
 pub struct MapLoadReport {
@@ -88,7 +140,7 @@ pub struct MapLoadReport {
 }
 
 /// Декодирует Base64 (стандартный алфавит, с дополнением `=` или без него).
-fn decode_base64(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_base64(text: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let (mut buffer, mut bits) = (0u32, 0u32);
     for byte in text.bytes() {
@@ -370,6 +422,38 @@ impl MapLoadWorldExt for World {
             if self.get::<Transform>(entity).is_none() {
                 self.entity_mut(entity).insert(Transform::default());
             }
+            let preserved = {
+                let registry = self.resource::<astrocore_ecs::ComponentRegistry>();
+                let known = |name: &str| {
+                    HANDLED.contains(&name)
+                        || name == CONTAINER_COMPONENT
+                        || registry.get(name).is_some()
+                };
+                MapPreserved {
+                    components: entry
+                        .components
+                        .iter()
+                        .filter(|(name, _)| !known(name))
+                        .map(|(_, node)| (*node).clone())
+                        .collect(),
+                    missing: entry
+                        .missing
+                        .iter()
+                        .filter(|name| !known(name))
+                        .map(|name| (*name).to_owned())
+                        .collect(),
+                    fields: cleaned
+                        .iter()
+                        .filter_map(|(name, node)| {
+                            let fields = unknown_fields(registry.get(name)?, node)?;
+                            Some(((*name).to_owned(), fields))
+                        })
+                        .collect(),
+                }
+            };
+            if !preserved.is_empty() {
+                self.entity_mut(entity).insert(preserved);
+            }
             if let Some(meta) = component(entry, "MetaData") {
                 let name = meta
                     .get("name")
@@ -399,6 +483,11 @@ impl MapLoadWorldExt for World {
                 self.adopt_map(entity, id, initialize, !initialize);
                 self.set_entity_paused(entity, !initialize);
                 report.maps.push((entity, id));
+                let tilemap = tile_ids
+                    .iter()
+                    .filter_map(|(file, type_id)| Some((*type_id, u32::try_from(*file).ok()?)))
+                    .collect();
+                self.entity_mut(entity).insert(MapFileTilemap(tilemap));
             }
         }
         for &(index, entity) in &created {
@@ -498,6 +587,24 @@ impl MapLoadWorldExt for World {
                 },
             ) {
                 report.errors.push(format!("сущность {uid}: {error}"));
+            }
+        }
+
+        // Номера из файла; сущности без родителя, кроме карт и гридов, сохраняются с первой
+        // картой файла.
+        let home = report.maps.first().map(|(entity, _)| *entity);
+        for (&entity, (data, uid)) in &placement {
+            let nullspace = data.parent.is_none()
+                && self.get::<Map>(entity).is_none()
+                && self.get::<MapGrid>(entity).is_none();
+            self.entity_mut(entity).insert(MapFileEntity {
+                uid: *uid,
+                nullspace_of: if nullspace { home } else { None },
+            });
+            // Вне карт сущность не встаёт на паузу вместе с картой: до `MapInit` ставим сами,
+            // как Robust ставит на паузу всё неинициализированное.
+            if nullspace && !initialize {
+                self.set_entity_paused(entity, true);
             }
         }
 

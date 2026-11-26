@@ -7,6 +7,7 @@ mod coords;
 mod grid;
 mod loader;
 mod map;
+mod saver;
 mod spawn;
 mod transform;
 mod traversal;
@@ -28,9 +29,11 @@ pub use grid::{
     TileDefinitions, TileRef,
 };
 pub use loader::{
-    EntityMigrations, MAP_FORMAT_RANGE, MapLoadError, MapLoadReport, MapLoadWorldExt,
+    EntityMigrations, MAP_FORMAT_RANGE, MapFileEntity, MapLoadError, MapLoadReport,
+    MapLoadWorldExt, MapPreserved,
 };
 pub use map::{Map, MapCreated, MapError, MapRemoved, MapWorldExt, Maps};
+pub use saver::{MAP_FORMAT_VERSION, MapSave, MapSaveError, MapSaveOptions, MapSaveWorldExt};
 pub use spawn::{PlaceError, SpawnWorldExt};
 pub use transform::{
     AnchorStateChanged, EntParentChanged, MoveEvent, Placement, Transform, TransformError,
