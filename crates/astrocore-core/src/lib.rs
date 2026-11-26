@@ -1,4 +1,5 @@
 mod entities;
+pub mod inheritance;
 
 pub use entities::{EntityError, EntityRegistry, RuntimeEntityId};
 
