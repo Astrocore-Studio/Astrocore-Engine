@@ -7,8 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-astrocore-lightyear.workspace = true
-astrocore-protocol.workspace = true
+astrocore-transport.workspace = true
 postcard.workspace = true
 serde.workspace = true
 

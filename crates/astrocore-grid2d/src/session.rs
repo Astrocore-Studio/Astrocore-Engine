@@ -4,8 +4,7 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use astrocore_lightyear::{ConnKey, LyClient, LyServer};
-use astrocore_protocol::MAX_PACKET_BYTES;
+use astrocore_transport::{ConnKey, LyClient, LyServer, MAX_PACKET_BYTES};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 

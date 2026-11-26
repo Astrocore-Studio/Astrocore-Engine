@@ -1,20 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/astrocore-math",
-    "crates/astrocore-api",
     "crates/astrocore-core",
-    "crates/astrocore-world",
-    "crates/astrocore-geometry",
-    "crates/astrocore-spatial",
-    "crates/astrocore-runtime",
-    "crates/astrocore-physics",
-    "crates/astrocore-lightyear",
+    "crates/astrocore-transport",
     "crates/astrocore-grid2d",
-    "crates/astrocore-network",
-    "crates/astrocore-terrain",
-    "crates/astrocore-assets",
-    "crates/astrocore-protocol",
 ]
 
 [workspace.package]
@@ -24,34 +13,14 @@ publish = false
 license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
-tracing = "0.1"
-astrocore-math = { path = "crates/astrocore-math" }
-astrocore-api = { path = "crates/astrocore-api" }
 astrocore-core = { path = "crates/astrocore-core" }
-astrocore-world = { path = "crates/astrocore-world" }
-astrocore-geometry = { path = "crates/astrocore-geometry" }
-astrocore-spatial = { path = "crates/astrocore-spatial" }
-astrocore-runtime = { path = "crates/astrocore-runtime" }
-astrocore-physics = { path = "crates/astrocore-physics" }
-astrocore-lightyear = { path = "crates/astrocore-lightyear" }
-astrocore-network = { path = "crates/astrocore-network" }
-astrocore-terrain = { path = "crates/astrocore-terrain" }
-astrocore-assets = { path = "crates/astrocore-assets" }
-astrocore-protocol = { path = "crates/astrocore-protocol" }
+astrocore-transport = { path = "crates/astrocore-transport" }
+astrocore-grid2d = { path = "crates/astrocore-grid2d" }
 bevy = { version = "=0.20.1", default-features = false }
-glam = { version = "0.33", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
 thiserror = "2"
 postcard = { version = "1", features = ["use-std"] }
-chacha20poly1305 = "0.10"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
-hkdf = "0.12"
-getrandom = "0.2"
-gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
-tempfile = "3"
-sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

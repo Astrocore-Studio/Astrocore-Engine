@@ -2,10 +2,15 @@
 <img alt="Astrocore Engine" width="880" height="300" src="docs/img/logo.svg">
 </div>
 
-Astrocore Engine — 2D-движок на Rust для сетевой станционной песочницы.
-`astrocore-grid2d` предоставляет тайловую сетку, коллизии и авторитарный
-сетевой сеанс через Lightyear. Игровые правила, графический клиент и
-редактор карт находятся в [Astrocore Build](https://github.com/Astrocore-Studio/Astrocore-Build).
+Astrocore Engine — 2D-движок на Rust для сетевых игр по образцу Space Station 14.
+Движок переносит [Robust Toolbox](https://github.com/space-wizards/RobustToolbox): сущности и
+компоненты, события, прототипы, карты с гридами, репликацию состояний. Отличия от Robust —
+этажи Z в ядре, многопоточное расписание и собственный формат контента RON рядом с YAML SS14.
+Игра на движке — [Astrocore Build](https://github.com/Astrocore-Studio/Astrocore-Build).
+
+Устройство ядра описано в [ADR-0015](docs/ADR/0015-entity-core.md), план работ — в
+[ROADMAP Build](https://github.com/Astrocore-Studio/Astrocore-Build/blob/main/docs/ROADMAP.md).
+Список решений: [docs/ADR](docs/ADR/README.md).
 
 ## Сборка и проверка
 
@@ -13,14 +18,21 @@ Astrocore Engine — 2D-движок на Rust для сетевой станц�
 
 ```bash
 cargo build --locked --workspace
+```
+
+```bash
 cargo fmt --all -- --check
+```
+
+```bash
 cargo clippy --locked --workspace --all-targets -- -D warnings
+```
+
+```bash
 cargo test --locked --workspace
 ```
 
 Запуск игры выполняется из соседнего чекаута Build командой `cargo play`.
-В workspace Engine входят 2D-ядро и библиотеки, от которых оно зависит.
-[ADR перехода на 2D](docs/ADR/0014-native-2d-grid.md)
 
 ## Лицензия
 
@@ -29,6 +41,3 @@ Astrocore Engine распространяется по лицензии
 
 Если вы распространяете движок или игру на нём либо запускаете изменённый движок как сетевой
 сервис, AGPL обязывает предоставить исходный код пользователям, включая ваши изменения.
-
-Ассеты, которые использует движок в демо и тестах, распространяются по лицензиям, указанным в их
-файлах метаданных; подробности — в [docs/ASSETS.md](docs/ASSETS.md).

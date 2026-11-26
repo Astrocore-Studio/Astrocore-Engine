@@ -1,6 +1,6 @@
 [package]
 name = "astrocore-core"
-description = "Идентификаторы, версии схем и общие типы ошибок Astrocore"
+description = "Идентификаторы прототипов и порядок наследования каталогов"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,7 +9,6 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

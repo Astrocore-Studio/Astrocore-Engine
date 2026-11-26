@@ -1,0 +1,15 @@
+[package]
+name = "astrocore-transport"
+description = "Транспорт Astrocore: пакеты сеанса поверх каналов и соединений Lightyear (UDP + netcode)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = ["std"] }
+lightyear = { version = "=0.31.0", default-features = false, features = ["std", "client", "server", "netcode", "udp"] }
+serde.workspace = true
+
+[lints]
+workspace = true
