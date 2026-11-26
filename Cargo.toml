@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/astrocore-core",
     "crates/astrocore-data",
+    "crates/astrocore-ecs",
     "crates/astrocore-transport",
     "crates/astrocore-grid2d",
 ]
@@ -16,9 +17,13 @@ license = "AGPL-3.0-or-later"
 [workspace.dependencies]
 astrocore-core = { path = "crates/astrocore-core" }
 astrocore-data = { path = "crates/astrocore-data" }
+astrocore-ecs = { path = "crates/astrocore-ecs" }
 astrocore-transport = { path = "crates/astrocore-transport" }
 astrocore-grid2d = { path = "crates/astrocore-grid2d" }
 bevy = { version = "=0.20.1", default-features = false }
+bevy_ecs = { version = "=0.20.1", default-features = false, features = ["std", "multi_threaded", "async_executor"] }
+bevy_tasks = { version = "=0.20.1", default-features = false, features = ["multi_threaded", "async_executor"] }
+smallvec = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

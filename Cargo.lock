@@ -443,6 +443,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-ecs"
+version = "0.1.0"
+dependencies = [
+ "astrocore-data",
+ "bevy_ecs",
+ "bevy_tasks",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-grid2d"
 version = "0.1.0"
 dependencies = [
@@ -1687,10 +1699,12 @@ version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84c634a7f09e9ccd26137a2f541ab670c84854a1af4107fecca1541cfcd1b466"
 dependencies = [
+ "async-channel",
  "async-executor",
  "async-task",
  "atomic-waker",
  "bevy_platform",
+ "concurrent-queue",
  "crossbeam-queue",
  "derive_more",
  "futures-lite",
