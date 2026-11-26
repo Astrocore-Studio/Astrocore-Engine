@@ -110,6 +110,11 @@ impl Views {
         self.entities.len()
     }
 
+    /// Сущности игры и их изображения.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (bevy_ecs::entity::Entity, Entity)> + '_ {
+        self.entities.iter().map(|(entity, view)| (*entity, *view))
+    }
+
     /// Сколько чанков гридов сейчас нарисовано.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()

@@ -437,11 +437,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrocore-client"
+name = "astrocore-audio"
 version = "0.1.0"
 dependencies = [
  "astrocore-data",
  "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-net",
+ "astrocore-prototypes",
+ "bevy_ecs",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "astrocore-client"
+version = "0.1.0"
+dependencies = [
+ "astrocore-audio",
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-input",
  "astrocore-map",
  "astrocore-math",
  "astrocore-movement",
@@ -500,6 +517,20 @@ version = "0.1.0"
 dependencies = [
  "astrocore-transport",
  "postcard",
+ "serde",
+]
+
+[[package]]
+name = "astrocore-input"
+version = "0.1.0"
+dependencies = [
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-net",
+ "astrocore-prototypes",
+ "bevy_ecs",
  "serde",
 ]
 
@@ -1480,6 +1511,7 @@ dependencies = [
  "bevy_animation",
  "bevy_app",
  "bevy_asset",
+ "bevy_audio",
  "bevy_camera",
  "bevy_color",
  "bevy_core_pipeline",
@@ -4326,6 +4358,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lewton"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
+dependencies = [
+ "byteorder",
+ "ogg",
+ "tinyvec",
+]
+
+[[package]]
 name = "lexical"
 version = "7.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5943,6 +5986,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6888,6 +6940,7 @@ checksum = "d0a536bb79db59098ef71a4dd4246c02eb87b316deceb1b68e0cde7167ec01eb"
 dependencies = [
  "cpal",
  "dasp_sample",
+ "lewton",
  "num-rational",
  "thiserror 2.0.21",
  "tracing",

@@ -7,20 +7,22 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+astrocore-audio.workspace = true
+astrocore-data.workspace = true
 astrocore-ecs.workspace = true
+astrocore-input.workspace = true
 astrocore-map.workspace = true
 astrocore-math.workspace = true
 astrocore-movement.workspace = true
 astrocore-net.workspace = true
 astrocore-resources.workspace = true
 bevy = { workspace = true, features = [
-    "2d_bevy_render", "default_app", "default_font", "bevy_winit", "bevy_window", "x11", "png", "std", "multi_threaded",
+    "2d_bevy_render", "default_app", "default_font", "bevy_winit", "bevy_window", "x11", "png", "std", "multi_threaded", "bevy_audio", "vorbis",
 ] }
 bevy_ecs.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-astrocore-data.workspace = true
 astrocore-physics.workspace = true
 astrocore-prototypes.workspace = true
 

@@ -63,6 +63,11 @@ impl MoveButtons {
         MoveButtons(self.0 | other.0)
     }
 
+    /// Кнопки `self` без кнопок `other`.
+    pub const fn difference(self, other: MoveButtons) -> MoveButtons {
+        MoveButtons(self.0 & !other.0)
+    }
+
     /// Направление движения: единичный вектор или ноль. Противоположные клавиши гасят
     /// друг друга.
     pub fn direction(self) -> Vec2 {

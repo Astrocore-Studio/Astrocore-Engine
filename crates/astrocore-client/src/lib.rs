@@ -2,6 +2,8 @@
 //! сервера, отрисовка спрайтов RSI и тайлов, камера за игроком, ввод с клавиатуры.
 //! Образец — `Robust.Client` (спрайты, глаз, ввод).
 
+mod audio;
+mod input;
 mod sprite;
 mod textures;
 mod view;
@@ -11,11 +13,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use astrocore_ecs::{GameWorldExt, RegistryWorldExt};
-use astrocore_movement::{LocalInput, MoveButtons};
 use astrocore_net::{ClientNet, ClientTransport};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
+pub use audio::MasterVolume;
+pub use input::{Bindings, Cursor, key_name, mouse_name};
 pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, register_draw_depth};
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
 pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
@@ -39,6 +42,8 @@ pub struct Capture {
 /// Регистрирует в мире игры компоненты данных клиента и системы внешнего вида.
 pub fn register_client_components(world: &mut bevy_ecs::world::World) {
     world.register_data_component::<Sprite>();
+    world.add_plugin(astrocore_input::InputPlugin);
+    world.add_plugin(astrocore_audio::AudioPlugin);
     visualizer::install(world);
 }
 
@@ -54,28 +59,6 @@ fn tick(mut game: ResMut<Game>, mut link: NonSendMut<Link>, mut fixed: ResMut<Ti
         if fixed.timestep() != period {
             fixed.set_timestep(period);
         }
-    }
-}
-
-/// Клавиши движения: WASD и стрелки, Shift — шаг вместо бега.
-fn read_keyboard(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>) {
-    let held = |a: KeyCode, b: KeyCode| keys.pressed(a) || keys.pressed(b);
-    let mut buttons = MoveButtons::NONE;
-    for (first, second, button) in [
-        (KeyCode::KeyW, KeyCode::ArrowUp, MoveButtons::UP),
-        (KeyCode::KeyS, KeyCode::ArrowDown, MoveButtons::DOWN),
-        (KeyCode::KeyA, KeyCode::ArrowLeft, MoveButtons::LEFT),
-        (KeyCode::KeyD, KeyCode::ArrowRight, MoveButtons::RIGHT),
-        (KeyCode::ShiftLeft, KeyCode::ShiftRight, MoveButtons::WALK),
-    ] {
-        if held(first, second) {
-            buttons = buttons.union(button);
-        }
-    }
-    if let Some(mut input) = game.0.get_resource_mut::<LocalInput>()
-        && input.buttons != buttons
-    {
-        input.buttons = buttons;
     }
 }
 
@@ -108,6 +91,11 @@ pub struct ClientPlugin;
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Views>()
+            .init_resource::<Bindings>()
+            .init_resource::<MasterVolume>()
+            .init_resource::<audio::Sounds>()
+            .init_resource::<audio::AmbientPlaying>()
+            .init_resource::<Cursor>()
             .init_resource::<Textures>()
             .init_resource::<Eye>()
             .insert_resource(Time::<Fixed>::from_hz(f64::from(
@@ -118,7 +106,8 @@ impl Plugin for ClientPlugin {
             .add_systems(
                 Update,
                 (
-                    read_keyboard,
+                    input::track_cursor,
+                    input::read_input,
                     view::follow_player,
                     view::sync_chunks,
                     view::sync_entities,
@@ -126,6 +115,16 @@ impl Plugin for ClientPlugin {
                     view::animate_layers,
                 )
                     .chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    audio::play_queued,
+                    audio::update_ambient,
+                    audio::update_emitters,
+                )
+                    .chain()
+                    .after(view::follow_player),
             )
             .add_systems(
                 Update,
