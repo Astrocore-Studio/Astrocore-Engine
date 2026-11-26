@@ -326,12 +326,14 @@ struct Hit {
 }
 
 /// Ищет перекрытия активных тел с окружением.
+#[allow(clippy::too_many_arguments)]
 fn detect(
     world: &World,
     broadphase: &Broadphase,
     bodies: &[Active],
     index_of: &HashMap<Entity, usize>,
     margin: f32,
+    no_collide: &HashSet<(Entity, Entity)>,
     hits: &mut Vec<Hit>,
     wake: &mut Vec<Entity>,
 ) {
@@ -369,7 +371,7 @@ fn detect(
                     } else {
                         (other, a.entity)
                     };
-                    if !checked.insert(ordered) {
+                    if !checked.insert(ordered) || no_collide.contains(&ordered) {
                         continue;
                     }
                     let b_index = index_of.get(&other).copied();
@@ -481,6 +483,113 @@ fn admit(world: &mut World, pair: Pair) -> bool {
     prevented
 }
 
+/// Положение тела сочленения: активное — из расчёта, иное — из мира, неподвижное.
+fn joint_body(
+    world: &World,
+    bodies: &[Active],
+    index_of: &HashMap<Entity, usize>,
+    entity: Entity,
+) -> Option<(Option<usize>, Entity, i16, Pose, Vec2, f32)> {
+    match index_of.get(&entity) {
+        Some(&index) => {
+            let body = &bodies[index];
+            let inv = if body.body_type == BodyType::Dynamic {
+                body.inv_mass
+            } else {
+                0.0
+            };
+            Some((
+                Some(index),
+                body.root,
+                body.z,
+                body.pose(),
+                body.velocity,
+                inv,
+            ))
+        }
+        None => {
+            let (root, z, pose) = placement(world, entity)?;
+            Some((None, root, z, pose, Vec2::ZERO, 0.0))
+        }
+    }
+}
+
+/// Дистанционные сочленения (`DistanceJoint.SolvePositionConstraints` и
+/// `SolveVelocityConstraints` Box2D, без вращения): вышедшие за пределы тела
+/// возвращаются, скорость вдоль сочленения гасится; при жёсткости — пружина.
+fn solve_joints(
+    world: &World,
+    joints: &[crate::joint::Joint],
+    bodies: &mut [Active],
+    index_of: &HashMap<Entity, usize>,
+    step: f32,
+) {
+    for joint in joints {
+        let Some(distance) = joint.distance() else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (
+            joint_body(world, bodies, index_of, joint.body_a),
+            joint_body(world, bodies, index_of, joint.body_b),
+        ) else {
+            continue;
+        };
+        let (a_index, a_root, a_z, a_pose, a_velocity, inv_a) = a;
+        let (b_index, b_root, b_z, b_pose, b_velocity, inv_b) = b;
+        if a_root != b_root || a_z != b_z {
+            continue;
+        }
+        let total = inv_a + inv_b;
+        if total <= 0.0 {
+            continue;
+        }
+        let point_a = a_pose.point(joint.anchor_a);
+        let point_b = b_pose.point(joint.anchor_b);
+        let delta = point_b - point_a;
+        let length = delta.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let axis = delta / length;
+        let approach = (b_velocity - a_velocity).dot(axis);
+        let (correction, impulse) = if distance.stiffness > 0.0 {
+            let force =
+                distance.stiffness * (length - distance.length) + distance.damping * approach;
+            (0.0, -force * step)
+        } else if length > distance.max_length {
+            (
+                length - distance.max_length,
+                if approach > 0.0 {
+                    -approach / total
+                } else {
+                    0.0
+                },
+            )
+        } else if length < distance.min_length {
+            (
+                length - distance.min_length,
+                if approach < 0.0 {
+                    -approach / total
+                } else {
+                    0.0
+                },
+            )
+        } else {
+            continue;
+        };
+        if let Some(index) = a_index {
+            let body = &mut bodies[index];
+            body.position += axis * correction * (inv_a / total);
+            body.velocity -= axis * impulse * inv_a;
+        }
+        if let Some(index) = b_index {
+            let body = &mut bodies[index];
+            body.position -= axis * correction * (inv_b / total);
+            body.velocity += axis * impulse * inv_b;
+        }
+    }
+}
+
 /// Шаг физики: `only` ограничивает расчёт одним телом (предсказание на клиенте), остальные
 /// тела для него неподвижны.
 pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
@@ -520,6 +629,35 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
         .map(|(index, body)| (body.entity, index))
         .collect();
     let margin = top_speed * dt + 0.1;
+    // Сочленения активных тел; спящее свободное тело на сочленении просыпается.
+    let joints = crate::joint::active_joints(world, bodies.iter().map(|body| body.entity));
+    if only.is_none() {
+        for joint in &joints {
+            for entity in [joint.body_a, joint.body_b] {
+                let dynamic = world
+                    .get::<Physics>(entity)
+                    .is_some_and(|body| body.body_type == BodyType::Dynamic);
+                if dynamic
+                    && !index_of.contains_key(&entity)
+                    && let Some(body) = Active::load(world, entity)
+                {
+                    index_of.insert(entity, bodies.len());
+                    bodies.push(body);
+                }
+            }
+        }
+    }
+    let no_collide: HashSet<(Entity, Entity)> = joints
+        .iter()
+        .filter(|joint| !joint.collide_connected)
+        .map(|joint| {
+            if joint.body_a < joint.body_b {
+                (joint.body_a, joint.body_b)
+            } else {
+                (joint.body_b, joint.body_a)
+            }
+        })
+        .collect();
     let mut hits = Vec::new();
     let mut wake = Vec::new();
     let mut touching: HashSet<Pair> = HashSet::new();
@@ -531,6 +669,7 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
                 body.rotation = body.rotation + Angle(body.angular * step);
             }
         }
+        solve_joints(world, &joints, &mut bodies, &index_of, step);
         touching.clear();
         for iteration in 0..SOLVER_ITERATIONS {
             world.resource_scope(|world, broadphase: bevy_ecs::world::Mut<Broadphase>| {
@@ -540,6 +679,7 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
                     &bodies,
                     &index_of,
                     margin,
+                    &no_collide,
                     &mut hits,
                     &mut wake,
                 );

@@ -2,10 +2,11 @@
 //! события касаний и шаг симуляции для вида сверху.
 //!
 //! Что перенесено упрощённо: столкновения решаются расталкиванием и гашением сближающей
-//! скорости, без трения между телами, вращения от ударов и сочленений. Тела сталкиваются
+//! скорости; из сочленений — только дистанционное, без вращения тел. Тела сталкиваются
 //! внутри одного грида или космоса карты и одного этажа.
 
 mod body;
+mod joint;
 mod ray;
 mod shapes;
 mod world;
@@ -22,6 +23,7 @@ use bevy_ecs::world::World;
 pub use body::{
     BodyStatus, BodyType, CollisionGroups, Fixture, Fixtures, Physics, register_collision_group,
 };
+pub use joint::{DistanceJoint, Joint, JointAdded, JointKind, JointRemoved, JointWorldExt, Joints};
 pub use ray::{DistanceWorldExt, Ray, RayHit, RayWorldExt, shape_distance};
 pub use shapes::{Manifold, Pose, Shape, WorldShape, collide};
 pub use world::{
@@ -68,6 +70,10 @@ impl GamePlugin for PhysicsPlugin {
         });
         world.subscribe::<Fixtures, EntityTerminating>(|world, entity, _| {
             remove_from_broadphase(world, entity);
+        });
+        // Удаляемое тело отпускает сочленения: второе тело узнаёт об этом.
+        world.subscribe::<Joints, EntityTerminating>(|world, entity, _| {
+            world.clear_joints(entity);
         });
         // Привязанное к клетке тело неподвижно; отвязанное снова подчиняется столкновениям.
         world.subscribe::<Physics, AnchorStateChanged>(

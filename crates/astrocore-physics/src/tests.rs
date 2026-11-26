@@ -594,3 +594,43 @@ fn bodies_report_falling_asleep_and_runtime_fixtures_count() {
     scene.world.refresh_fixtures(crate_);
     assert!(scene.world.get::<Physics>(crate_).unwrap().mass > mass);
 }
+
+#[test]
+fn distance_joint_drags_a_free_body_like_a_rope() {
+    let scene = &mut Scene::new();
+    let mob = scene.spawn("Mob", 3.5, 5.5);
+    let crate_ = scene.spawn("Crate", 2.4, 5.5);
+    scene.run(1);
+    assert!(!scene.world.get::<Physics>(crate_).unwrap().awake);
+    let joint = scene
+        .world
+        .create_distance_joint(crate_, mob, Vec2::ZERO, Vec2::ZERO, "pull")
+        .unwrap();
+    assert!((joint.distance().unwrap().length - 1.1).abs() < 1e-4);
+    scene.world.edit_joint(crate_, "pull", |joint| {
+        joint.collide_connected = false;
+        let rope = joint.distance_mut().unwrap();
+        rope.max_length = rope.length + 0.15;
+        rope.min_length = 0.0;
+    });
+    assert!(scene.world.joint(mob, "pull").is_some());
+
+    // Моб уходит вправо: ящик тянется следом не дальше длины верёвки, моба не тормозит.
+    scene.walk(mob, Vec2::new(3.0, 0.0), 45);
+    let (mob_at, crate_at) = (scene.position(mob), scene.position(crate_));
+    assert!(mob_at.x > 7.9, "{mob_at}");
+    assert!(crate_at.x > 6.6, "{crate_at}");
+    assert!(
+        mob_at.distance(crate_at) <= 1.25 + 0.05,
+        "{}",
+        mob_at.distance(crate_at)
+    );
+
+    // Моб идёт назад сквозь ящик: соединённые тела не сталкиваются, верёвка не толкает.
+    scene.walk(mob, Vec2::new(-3.0, 0.0), 20);
+    assert!(scene.position(mob).x < scene.position(crate_).x);
+
+    // Удалённое тело отпускает сочленение у второго.
+    scene.world.delete_entity(mob);
+    assert!(scene.world.joint(crate_, "pull").is_none());
+}
