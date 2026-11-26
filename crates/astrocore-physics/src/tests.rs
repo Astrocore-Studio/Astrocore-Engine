@@ -374,3 +374,96 @@ fn single_body_step_matches_full_step() {
     }
     assert_eq!(full.position(mobs[0]), solo.position(mobs[1]));
 }
+
+#[test]
+fn rays_stop_at_hard_fixtures_of_the_mask_on_grids_and_in_space() {
+    let mut scene = Scene::new();
+    let wall = scene.spawn("Wall", 5.5, 2.5);
+    let puddle = scene.spawn("Puddle", 3.5, 2.5);
+    let mob = scene.spawn("Mob", 1.5, 2.5);
+    let ball = scene.spawn("Ball", 8.5, 2.5);
+    scene.run(1);
+    let map = scene.world.map_coordinates(mob).unwrap();
+    let mask = CollisionGroups(2 | 128); // Impassable | InteractImpassable
+    let ray = |direction: Vec2, max: f32| Ray {
+        origin: map,
+        direction,
+        max_distance: max,
+        mask,
+    };
+    let none = |_: Entity| false;
+
+    // Нетвёрдая лужа и сам игрок, внутри которого начинается луч, не мешают; стена — да.
+    let hits = scene.world.intersect_ray(ray(Vec2::X, 10.0), &none, false);
+    assert_eq!(hits.iter().map(|h| h.entity).collect::<Vec<_>>(), [wall]);
+    assert!((hits[0].distance - 3.5).abs() < 1e-4, "{hits:?}");
+    assert!((hits[0].point.x - 5.0).abs() < 1e-4);
+    assert!(!hits.iter().any(|h| h.entity == puddle || h.entity == ball));
+    // Короткий луч не достаёт, другая маска стену не видит, предикат её пропускает.
+    assert!(
+        scene
+            .world
+            .intersect_ray(ray(Vec2::X, 3.0), &none, false)
+            .is_empty()
+    );
+    let other_mask = Ray {
+        mask: CollisionGroups(1 << 20),
+        ..ray(Vec2::X, 10.0)
+    };
+    assert!(
+        scene
+            .world
+            .intersect_ray(other_mask, &none, false)
+            .is_empty()
+    );
+    let skip_wall = |entity: Entity| entity == wall;
+    assert!(
+        scene
+            .world
+            .intersect_ray(ray(Vec2::X, 10.0), &skip_wall, false)
+            .is_empty()
+    );
+    assert_eq!(
+        scene.world.unobstructed_distance(ray(Vec2::X, 10.0), &none),
+        hits[0].distance
+    );
+    assert_eq!(
+        scene.world.unobstructed_distance(ray(Vec2::Y, 2.0), &none),
+        2.0
+    );
+
+    // Повёрнутый и сдвинутый грид: луч переводится в его оси.
+    let map_entity = scene
+        .world
+        .get::<Transform>(scene.grid)
+        .unwrap()
+        .map()
+        .unwrap();
+    let shuttle = scene.world.create_grid(map_entity);
+    scene
+        .world
+        .set_coordinates(
+            shuttle,
+            EntityCoordinates::new(map_entity, Vec2::new(30.0, 0.0)),
+            Some(astrocore_math::Angle(std::f32::consts::FRAC_PI_2)),
+        )
+        .unwrap();
+    scene
+        .world
+        .set_tile(shuttle, TileCoord::new(0, 0, 0), Tile::new(1));
+    let shuttle_wall = scene
+        .world
+        .spawn_attached("Wall", EntityCoordinates::new(shuttle, Vec2::new(0.5, 0.5)))
+        .unwrap();
+    // Центр стены шаттла на карте: (30 - 0.5, 0.5).
+    let from_space = Ray {
+        origin: astrocore_map::MapCoordinates::new(map.map, Vec2::new(25.0, 0.5)),
+        ..ray(Vec2::X, 10.0)
+    };
+    let hits = scene.world.intersect_ray(from_space, &none, true);
+    assert_eq!(
+        hits.iter().map(|h| h.entity).collect::<Vec<_>>(),
+        [shuttle_wall]
+    );
+    assert!((hits[0].distance - 4.0).abs() < 1e-4, "{hits:?}");
+}

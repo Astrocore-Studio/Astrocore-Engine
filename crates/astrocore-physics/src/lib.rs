@@ -6,6 +6,7 @@
 //! внутри одного грида или космоса карты и одного этажа.
 
 mod body;
+mod ray;
 mod shapes;
 mod world;
 
@@ -21,6 +22,7 @@ use bevy_ecs::world::World;
 pub use body::{
     BodyStatus, BodyType, CollisionGroups, Fixture, Fixtures, Physics, register_collision_group,
 };
+pub use ray::{DistanceWorldExt, Ray, RayHit, RayWorldExt, shape_distance};
 pub use shapes::{Manifold, Pose, Shape, WorldShape, collide};
 pub use world::{
     Broadphase, EndCollide, LINEAR_SLOP, PhysicsWorldExt, PreventCollide, SLEEP_SPEED,

@@ -126,7 +126,7 @@ pub struct PreventCollide {
 
 /// Положение тела в его гриде или космосе карты: корень, этаж и поза. `None` — тело не
 /// стоит прямо на гриде или карте (лежит в контейнере) и в столкновениях не участвует.
-fn placement(world: &World, entity: Entity) -> Option<(Entity, i16, Pose)> {
+pub(crate) fn placement(world: &World, entity: Entity) -> Option<(Entity, i16, Pose)> {
     let transform = world.get::<Transform>(entity)?;
     let root = transform.grid().or(transform.map())?;
     (world.parent(entity) == Some(root)).then_some((
