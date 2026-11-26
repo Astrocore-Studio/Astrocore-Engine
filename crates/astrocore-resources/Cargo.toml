@@ -1,0 +1,23 @@
+[package]
+name = "astrocore-resources"
+description = "Ресурсы Astrocore: каталоги контента, пути ресурсов и описания наборов спрайтов RSI"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+astrocore-data.workspace = true
+astrocore-ecs.workspace = true
+astrocore-prototypes.workspace = true
+bevy_ecs.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
