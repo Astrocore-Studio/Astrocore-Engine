@@ -521,6 +521,7 @@ dependencies = [
  "astrocore-net",
  "astrocore-physics",
  "astrocore-prototypes",
+ "astrocore-resources",
  "bevy_ecs",
  "serde",
 ]

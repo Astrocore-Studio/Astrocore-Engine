@@ -5,6 +5,7 @@
 mod container;
 mod coords;
 mod grid;
+mod loader;
 mod map;
 mod spawn;
 mod transform;
@@ -24,6 +25,9 @@ pub use coords::{
 pub use grid::{
     Chunk, MapGrid, SPACE_TILE, TILE_SIZE, Tile, TileChange, TileChanged, TileDefinition,
     TileDefinitions, TileRef,
+};
+pub use loader::{
+    EntityMigrations, MAP_FORMAT_RANGE, MapLoadError, MapLoadReport, MapLoadWorldExt,
 };
 pub use map::{Map, MapCreated, MapError, MapRemoved, MapWorldExt, Maps};
 pub use spawn::{PlaceError, SpawnWorldExt};

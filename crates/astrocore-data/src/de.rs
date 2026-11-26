@@ -138,6 +138,19 @@ fn classify(scalar: &Scalar) -> Plain<'_> {
     }
 }
 
+/// Имя варианта, как оно объявлено в типе: данные SS14 пишут варианты и без учёта регистра
+/// (`bodyType: static`), как это разрешает Robust.
+fn canonical_variant<'a>(text: &'a str, variants: &'static [&'static str]) -> &'a str {
+    if variants.contains(&text) {
+        return text;
+    }
+    variants
+        .iter()
+        .find(|variant| variant.eq_ignore_ascii_case(text))
+        .copied()
+        .unwrap_or(text)
+}
+
 impl<'a> NodeDeserializer<'a> {
     fn child(self, node: &'a DataNode) -> Self {
         Self {
@@ -374,26 +387,26 @@ impl<'de> de::Deserializer<'de> for NodeDeserializer<'de> {
     fn deserialize_enum<V: Visitor<'de>>(
         self,
         _name: &'static str,
-        _variants: &'static [&'static str],
+        variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, DataError> {
         // `!type:Foo {..}` в YAML и `Foo(..)` в RON.
         if let Some(variant) = self.node.type_tag() {
             return visitor.visit_enum(EnumDe {
-                variant,
+                variant: canonical_variant(variant, variants),
                 content: Some(self),
             });
         }
         match &self.node.value {
             Value::Scalar(scalar) if !self.node.is_null() => visitor.visit_enum(EnumDe {
-                variant: &scalar.text,
+                variant: canonical_variant(&scalar.text, variants),
                 content: None,
             }),
             // Запись serde: `{Variant: содержимое}`.
             Value::Map(map) if map.len() == 1 => {
                 let (variant, content) = &map.0[0];
                 visitor.visit_enum(EnumDe {
-                    variant,
+                    variant: canonical_variant(variant, variants),
                     content: Some(self.child(content)),
                 })
             }
@@ -950,6 +963,15 @@ mod tests {
         assert_eq!(
             from_node::<Size>(&parse_yaml("Small").unwrap()).unwrap(),
             Size::Small
+        );
+        // Регистр имени варианта не важен, как в Robust.
+        assert_eq!(
+            from_node::<Size>(&parse_yaml("small").unwrap()).unwrap(),
+            Size::Small
+        );
+        assert_eq!(
+            from_node::<Shape>(&parse_yaml("!type:point").unwrap()).unwrap(),
+            Shape::Point
         );
         assert_eq!(
             from_node::<Shape>(&parse_yaml("!type:Point").unwrap()).unwrap(),

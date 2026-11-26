@@ -17,6 +17,7 @@ bevy_ecs.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+astrocore-resources.workspace = true
 astrocore-data.workspace = true
 astrocore-prototypes.workspace = true
 

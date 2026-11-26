@@ -531,3 +531,232 @@ fn moving_entity_out_of_owner_clears_container() {
     assert!(world.container(locker, "storage").unwrap().is_empty());
     assert_eq!(world.empty_container(locker, "storage"), []);
 }
+
+/// Тайлы чанка в записи формата 7: номер (4 байта), флаги, вариант, поворот.
+fn chunk_base64(tile_at: impl Fn(i32, i32) -> (i32, u8)) -> String {
+    let mut bytes = Vec::new();
+    for y in 0..CHUNK_SIZE {
+        for x in 0..CHUNK_SIZE {
+            let (id, variant) = tile_at(x, y);
+            bytes.extend_from_slice(&id.to_le_bytes());
+            bytes.extend_from_slice(&[0, variant, 0]);
+        }
+    }
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::new();
+    for group in bytes.chunks(3) {
+        let value =
+            group.iter().fold(0u32, |acc, b| (acc << 8) | u32::from(*b)) << (8 * (3 - group.len()));
+        for index in 0..=group.len() {
+            text.push(ALPHABET[(value >> (18 - 6 * index)) as usize & 63] as char);
+        }
+    }
+    text
+}
+
+fn map_file() -> String {
+    let tiles = chunk_base64(|x, y| {
+        if x < 4 && y < 2 {
+            (7, (x % 3) as u8)
+        } else {
+            (0, 0)
+        }
+    });
+    format!(
+        r#"meta:
+  format: 7
+maps: [1]
+grids: [2]
+tilemap:
+  0: Space
+  7: FloorSteel
+entities:
+- proto: ""
+  entities:
+  - uid: 1
+    components:
+    - type: MetaData
+      name: Test Station
+    - type: Transform
+    - type: Map
+      mapPaused: True
+  - uid: 2
+    components:
+    - type: MetaData
+      name: grid
+    - type: Transform
+      pos: 10,20
+      parent: 1
+    - type: MapGrid
+      chunks:
+        -1,0:
+          ind: -1,0
+          tiles: {tiles}
+          version: 7
+- proto: Wall
+  entities:
+  - uid: 3
+    components:
+    - type: Transform
+      rot: 1.5707963267948966 rad
+      pos: -14.5,1.5
+      parent: 2
+- proto: Locker
+  entities:
+  - uid: 4
+    components:
+    - type: Transform
+      pos: -15.5,0.5
+      parent: 2
+    - type: ContainerContainer
+      containers:
+        storage: !type:Container
+          ents:
+          - 5
+          showEnts: False
+          occludes: True
+        lock_slot: !type:ContainerSlot
+          ent: 6
+- proto: Crowbar
+  entities:
+  - uid: 5
+    components:
+    - type: Transform
+      parent: 4
+  - uid: 6
+    components:
+    - type: Transform
+      parent: 4
+  - uid: 7
+    components:
+    - type: Transform
+      parent: 99
+- proto: NoSuchThing
+  entities:
+  - uid: 8
+    components:
+    - type: Transform
+      pos: 0.5,0.5
+      parent: 2
+"#
+    )
+}
+
+#[test]
+fn loads_map_file_with_grid_entities_and_containers() {
+    use astrocore_data::parse_yaml;
+
+    let mut world = world();
+    load_prototypes(&mut world);
+    world
+        .resource_mut::<TileDefinitions>()
+        .register("FloorSteel", None, 3);
+    let root = parse_yaml(&map_file()).unwrap();
+    // Таблица переименований: старое имя стены ведёт к новому, удалённый прототип — никуда.
+    let renamed = map_file().replace("proto: Wall", "proto: wallOld");
+    world.insert_resource(EntityMigrations::from_node(
+        &parse_yaml("wallOld: WallRenamed\nWallRenamed: Wall\nCrowbar: null\n").unwrap(),
+    ));
+    let migrated = world
+        .load_map(&parse_yaml(&renamed).unwrap(), true)
+        .unwrap();
+    assert_eq!((migrated.entities, migrated.migrated_away), (4, 3));
+    assert!(
+        world
+            .get::<Transform>(migrated.uids[&3])
+            .unwrap()
+            .anchored()
+    );
+    world.delete_entity(migrated.maps[0].0);
+    world.remove_resource::<EntityMigrations>();
+
+    let report = world.load_map(&root, true).unwrap();
+
+    assert_eq!(report.entities, 7);
+    assert_eq!(report.unknown_prototypes.get("NoSuchThing"), Some(&1));
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert!(report.errors[0].contains("родителя 99 нет"));
+    assert!(report.unknown_tiles.is_empty());
+    let (map, id) = report.maps[0];
+    assert_eq!(
+        world.get::<MetaData>(map).unwrap().name.as_deref(),
+        Some("Test Station")
+    );
+    assert!(world.get::<Map>(map).unwrap().initialized);
+    let grid = report.grids[0];
+    assert_eq!(world.get::<Map>(map).unwrap().grids(), [grid]);
+
+    // Чанк (-1, 0): тайлы с x от -16.
+    let tiles = world.get::<MapGrid>(grid).unwrap();
+    assert_eq!(tiles.tile_count(), 8);
+    let steel = world
+        .resource::<TileDefinitions>()
+        .tile("FloorSteel")
+        .unwrap()
+        .type_id;
+    let tile = tiles.tile(TileCoord::new(-15, 1, 0));
+    assert_eq!((tile.type_id, tile.variant), (steel, 1));
+    assert!(tiles.tile(TileCoord::new(-12, 0, 0)).is_empty());
+
+    // Стена привязана к клетке, повёрнута и инициализирована на карте.
+    let wall = report.uids[&3];
+    let transform = world.get::<Transform>(wall).unwrap();
+    assert!(transform.anchored());
+    assert_eq!(transform.local_position(), Vec2::new(-14.5, 1.5));
+    assert_eq!(
+        transform.local_rotation(),
+        Angle::ZERO,
+        "noRot из прототипа сильнее поворота"
+    );
+    assert_eq!(tiles.anchored_at(TileCoord::new(-15, 1, 0)), [wall]);
+    assert_eq!(
+        world.get::<MetaData>(wall).unwrap().stage,
+        LifeStage::MapInitialized
+    );
+    let coordinates = world.map_coordinates(wall).unwrap();
+    assert_eq!(
+        (coordinates.map, coordinates.position),
+        (id, Vec2::new(-4.5, 21.5))
+    );
+
+    // Содержимое контейнеров.
+    let locker = report.uids[&4];
+    assert_eq!(
+        world.container(locker, "storage").unwrap().entities(),
+        [report.uids[&5]]
+    );
+    assert_eq!(
+        world.container(locker, "lock_slot").unwrap().entities(),
+        [report.uids[&6]]
+    );
+    assert_eq!(world.parent(report.uids[&5]), Some(locker));
+    // Сущность без родителя в файле остаётся «нигде».
+    assert_eq!(world.parent(report.uids[&7]), None);
+
+    // Та же карта для маппинга: на паузе, без MapInit.
+    let report = world.load_map(&root, false).unwrap();
+    let (map, second_id) = report.maps[0];
+    assert_ne!(second_id, id);
+    let state = world.get::<Map>(map).unwrap();
+    assert!(state.paused && !state.initialized);
+    let wall = report.uids[&3];
+    assert!(world.entity(wall).contains::<Paused>());
+    assert_eq!(
+        world.get::<MetaData>(wall).unwrap().stage,
+        LifeStage::Initialized
+    );
+
+    assert_eq!(
+        world
+            .load_map(
+                &parse_yaml("meta: {format: 3}\nentities: []").unwrap(),
+                true
+            )
+            .err(),
+        Some(MapLoadError::Version(3))
+    );
+    assert!(matches!(
+        world.load_map(&parse_yaml("entities: []").unwrap(), true),
+        Err(MapLoadError::Format(_))
+    ));
+}

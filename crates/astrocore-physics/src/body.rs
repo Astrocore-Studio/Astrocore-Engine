@@ -53,12 +53,22 @@ impl<'de> Deserialize<'de> for CollisionGroups {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct GroupsVisitor;
 
-        fn named<E: de::Error>(name: &str) -> Result<i32, E> {
-            if let Ok(bits) = name.trim().parse::<i32>() {
-                return Ok(bits);
+        /// Имя группы, число или несколько имён через запятую (`MidImpassable, LowImpassable`).
+        fn named<E: de::Error>(text: &str) -> Result<i32, E> {
+            let mut bits = 0;
+            for name in text
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                bits |= match name.parse::<i32>() {
+                    Ok(value) => value,
+                    Err(_) => group_bits(name).ok_or_else(|| {
+                        E::custom(format!("неизвестная группа столкновений `{name}`"))
+                    })?,
+                };
             }
-            group_bits(name.trim())
-                .ok_or_else(|| E::custom(format!("неизвестная группа столкновений `{name}`")))
+            Ok(bits)
         }
 
         #[derive(Deserialize)]
