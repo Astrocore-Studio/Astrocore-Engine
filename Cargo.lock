@@ -425,6 +425,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-console"
+version = "0.1.0"
+dependencies = [
+ "astrocore-ecs",
+ "bevy_ecs",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "astrocore-core"
 version = "0.1.0"
 dependencies = [

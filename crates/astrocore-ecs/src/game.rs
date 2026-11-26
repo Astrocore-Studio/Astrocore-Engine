@@ -11,6 +11,7 @@ use bevy_tasks::{ComputeTaskPool, TaskPool};
 
 use crate::event::EventBus;
 use crate::lifecycle::{DeletionQueue, LifecycleWorldExt};
+use crate::random::GameRng;
 use crate::registry::ComponentRegistry;
 use crate::timing::GameTime;
 
@@ -64,6 +65,7 @@ impl GameWorldExt for World {
         self.init_resource::<EventBus>();
         self.init_resource::<ComponentRegistry>();
         self.init_resource::<GameTime>();
+        self.init_resource::<GameRng>();
         self.init_resource::<DeletionQueue>();
         self.init_resource::<Schedules>();
         let mut schedules = self.resource_mut::<Schedules>();

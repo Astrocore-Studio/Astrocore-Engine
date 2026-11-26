@@ -8,6 +8,7 @@ mod event;
 mod game;
 mod lifecycle;
 mod meta;
+mod random;
 mod registry;
 mod timing;
 
@@ -21,6 +22,7 @@ pub use lifecycle::{
     LifecycleWorldExt, MapInit,
 };
 pub use meta::{Active, LifeStage, MetaData, Paused};
+pub use random::GameRng;
 pub use registry::{
     ComponentInfo, ComponentRegistry, ErasedComponent, ParsedComponent, RegistryWorldExt,
     component_name,
