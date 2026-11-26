@@ -46,6 +46,11 @@ pub struct ComponentInfo {
     pub name: Arc<str>,
     pub id: ComponentId,
     pub type_id: TypeId,
+    /// Поля, которые при наследовании прототипов складываются с родительскими
+    /// (`AlwaysPushInheritance`).
+    pub inherit_always: &'static [&'static str],
+    /// Поля, которые от родительского прототипа не наследуются (`NeverPushInheritance`).
+    pub inherit_never: &'static [&'static str],
     parse: fn(&DataNode) -> Result<ParsedComponent, DataError>,
     write: fn(&World, Entity) -> Option<Result<DataNode, DataError>>,
 }
@@ -77,6 +82,19 @@ impl ComponentRegistry {
 
     pub fn get_by_id(&self, id: ComponentId) -> Option<&ComponentInfo> {
         self.by_id.get(&id).map(|&index| &self.list[index])
+    }
+
+    /// Задаёт правила наследования полей компонента в прототипах.
+    pub fn set_inheritance(
+        &mut self,
+        name: &str,
+        always: &'static [&'static str],
+        never: &'static [&'static str],
+    ) {
+        if let Some(&index) = self.by_name.get(name) {
+            self.list[index].inherit_always = always;
+            self.list[index].inherit_never = never;
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ComponentInfo> {
@@ -161,6 +179,8 @@ impl RegistryWorldExt for World {
             name: name.clone(),
             id,
             type_id: TypeId::of::<T>(),
+            inherit_always: &[],
+            inherit_never: &[],
             parse: parse_as::<T>,
             write: write_as::<T>,
         });
