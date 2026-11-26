@@ -14,6 +14,7 @@ mod pvs;
 mod registry;
 mod server;
 mod sync;
+mod visibility;
 
 use astrocore_console::ConsolePlugin;
 use astrocore_ecs::{GamePlugin, GameWorldExt, MetaData, PreUpdate, RegistryWorldExt, Sync};
@@ -42,6 +43,10 @@ pub use server::{
     SessionWorldExt,
 };
 pub use sync::NetSet;
+pub use visibility::{
+    DEFAULT_VISIBILITY, Eye, Visibility, VisibilityLayers, VisibilityMask, VisibilityWorldExt,
+    register_visibility_layer,
+};
 
 /// Система приёма пакетов сервера (этап `PreUpdate`): относительно неё упорядочиваются
 /// системы, которым нужен свежий ввод игроков.
@@ -62,6 +67,7 @@ fn register_engine_components(world: &mut World) {
     world.register_net_component::<ContainerManager>();
     world.register_data_component::<Appearance>();
     world.register_net_component::<Appearance>();
+    visibility::register(world);
     world.init_resource::<NetEvents>();
     world
         .resource_mut::<Schedules>()

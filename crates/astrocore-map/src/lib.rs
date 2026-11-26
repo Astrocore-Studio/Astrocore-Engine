@@ -9,6 +9,7 @@ mod loader;
 mod map;
 mod spawn;
 mod transform;
+mod traversal;
 
 use astrocore_ecs::{GamePlugin, RegistryWorldExt};
 use bevy_ecs::world::World;
@@ -35,6 +36,7 @@ pub use transform::{
     AnchorStateChanged, EntParentChanged, MoveEvent, Placement, Transform, TransformError,
     TransformWorldExt, WorldTransform,
 };
+pub use traversal::GridTraversal;
 
 /// Подключает пространство к миру: компоненты данных, ресурсы и подписки.
 pub struct MapPlugin;
@@ -46,6 +48,7 @@ impl GamePlugin for MapPlugin {
         transform::register(world);
         map::register(world);
         container::register(world);
+        traversal::register(world);
     }
 }
 

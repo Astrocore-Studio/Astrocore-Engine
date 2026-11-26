@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use astrocore_ecs::{EventWorldExt, GameTick, LifecycleWorldExt, MetaData};
-use astrocore_map::{Transform, TransformWorldExt};
+use astrocore_map::{GridTraversal, Transform, TransformWorldExt};
 use astrocore_prototypes::PrototypeWorldExt;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -136,7 +136,15 @@ fn handle(world: &mut World, message: ServerMessage) {
         ServerMessage::Rejected(reason) => {
             world.resource_mut::<ClientNet>().status = ClientStatus::Rejected(reason);
         }
-        ServerMessage::State(state) => apply_or_resync(world, state),
+        message @ (ServerMessage::State(_) | ServerMessage::Packed { .. }) => {
+            match crate::protocol::decode_state(message) {
+                Some(state) => apply_or_resync(world, state),
+                None => {
+                    world.resource_mut::<ClientNet>().last_error =
+                        Some("сжатое состояние сервера не распаковалось".to_owned());
+                }
+            }
+        }
         ServerMessage::StatePart {
             id,
             index,
@@ -166,7 +174,10 @@ fn handle(world: &mut World, message: ServerMessage) {
                 .flatten()
                 .flatten()
                 .collect();
-            if let Ok(ServerMessage::State(state)) = postcard::from_bytes(&whole) {
+            if let Some(state) = postcard::from_bytes(&whole)
+                .ok()
+                .and_then(crate::protocol::decode_state)
+            {
                 apply_or_resync(world, state);
             }
         }
@@ -209,7 +220,12 @@ fn apply_or_resync(world: &mut World, state: GameState) {
     let tick = state.to;
     let last_input = state.last_input;
     world.raise_broadcast(&mut StateApplying { tick });
-    match apply_state(world, state) {
+    // Родителя сущностей в состоянии задаёт сервер: переход между гридами на это время
+    // приостановлен.
+    world.resource_mut::<GridTraversal>().suspended += 1;
+    let applied = apply_state(world, state);
+    world.resource_mut::<GridTraversal>().suspended -= 1;
+    match applied {
         Ok(()) => {
             let mut net = world.resource_mut::<ClientNet>();
             net.applied = tick;

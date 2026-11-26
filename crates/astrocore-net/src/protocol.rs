@@ -46,6 +46,53 @@ pub enum ServerMessage {
         id: u16,
         bytes: Vec<u8>,
     },
+    /// Сжатое состояние: после распаковки — закодированное `ServerMessage::State`.
+    Packed {
+        /// Размер после распаковки.
+        size: u32,
+        bytes: Vec<u8>,
+    },
+}
+
+/// Наибольший размер состояния после распаковки: столько же, сколько вмещают части.
+pub const MAX_STATE_BYTES: usize = MAX_STATE_PARTS as usize * STATE_PART_BYTES;
+
+/// Кодирует состояние для отправки. Состояние, которое не помещается в один пакет,
+/// сжимается (LZ4): вход в игру и большие изменения состоят из повторяющихся данных —
+/// тайлов и одинаковых компонентов.
+pub fn encode_state(state: GameState) -> Vec<u8> {
+    let raw = postcard::to_allocvec(&ServerMessage::State(state)).unwrap_or_default();
+    if raw.len() <= MAX_UNRELIABLE_BYTES {
+        return raw;
+    }
+    let packed = ServerMessage::Packed {
+        size: raw.len() as u32,
+        bytes: lz4_flex::block::compress(&raw),
+    };
+    match postcard::to_allocvec(&packed) {
+        Ok(message) if message.len() < raw.len() => message,
+        _ => raw,
+    }
+}
+
+/// Состояние из сообщения сервера: обычное или сжатое. `None` — сообщение не состояние
+/// или сжатые данные испорчены.
+pub fn decode_state(message: ServerMessage) -> Option<GameState> {
+    match message {
+        ServerMessage::State(state) => Some(state),
+        ServerMessage::Packed { size, bytes } => {
+            // Размер приходит от сервера, но память под него выделяет клиент.
+            if size as usize > MAX_STATE_BYTES {
+                return None;
+            }
+            let raw = lz4_flex::block::decompress(&bytes, size as usize).ok()?;
+            match postcard::from_bytes(&raw).ok()? {
+                ServerMessage::State(state) => Some(state),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Состояние мира для одного клиента (`GameState` Robust).

@@ -6,7 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use astrocore_ecs::{GameTick, GameTime, MetaData};
+use astrocore_ecs::{GameTick, GameTime};
+use astrocore_loc::EntityNameWorldExt;
 use astrocore_map::{
     CHUNK_SIZE, ChunkPos, Map, MapGrid, TileCoord, TileDefinitions, Transform as GameTransform,
     TransformWorldExt, WorldTransform,
@@ -543,14 +544,7 @@ pub(crate) fn sync_chunks(
     });
 }
 
-/// Имя сущности для отладочных надписей.
+/// Название сущности для надписей интерфейса: на языке клиента.
 pub fn entity_label(world: &bevy_ecs::world::World, entity: bevy_ecs::entity::Entity) -> String {
-    world
-        .get::<MetaData>(entity)
-        .and_then(|meta| {
-            meta.name
-                .clone()
-                .or(meta.prototype.as_ref().map(|p| p.to_string()))
-        })
-        .unwrap_or_else(|| format!("{entity}"))
+    world.entity_name(entity)
 }

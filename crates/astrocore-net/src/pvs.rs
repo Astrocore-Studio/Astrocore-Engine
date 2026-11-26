@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use astrocore_ecs::EventWorldExt;
 use astrocore_map::{Map, MapGrid, MoveEvent, Transform, TransformWorldExt};
+
+use crate::visibility::VisibilityLayers;
 use astrocore_math::Vec2;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -129,6 +131,10 @@ pub struct View {
     pub level: i16,
     /// Полуширина квадрата видимости в тайлах.
     pub range: f32,
+    /// Слои видимости, которые видит сессия.
+    pub mask: u32,
+    /// Сущность игрока: её сессия видит всегда, в каком бы слое она ни была.
+    pub viewer: Option<Entity>,
 }
 
 /// Видимые сущности: группами «сущность верхнего уровня и все её потомки», родитель всегда
@@ -146,8 +152,8 @@ impl Visible {
         self.groups.clear();
     }
 
-    fn push_group(&mut self, world: &World, root: Entity, descend: bool) {
-        if world.get::<Transform>(root).is_none() {
+    fn push_group(&mut self, world: &World, root: Entity, descend: bool, sight: &Sight) {
+        if world.get::<Transform>(root).is_none() || !sight.sees(root) {
             return;
         }
         self.groups.push(self.entities.len() as u32);
@@ -160,7 +166,8 @@ impl Visible {
         let mut next = start;
         while next < self.entities.len() {
             if let Some(children) = world.get::<Children>(self.entities[next]) {
-                self.entities.extend(children.iter().copied());
+                self.entities
+                    .extend(children.iter().copied().filter(|child| sight.sees(*child)));
             }
             next += 1;
         }
@@ -178,8 +185,25 @@ impl Visible {
     }
 }
 
+/// Что видит сессия по слоям видимости.
+struct Sight<'a> {
+    layers: Option<&'a VisibilityLayers>,
+    mask: u32,
+    viewer: Option<Entity>,
+}
+
+impl Sight<'_> {
+    fn sees(&self, entity: Entity) -> bool {
+        self.layers
+            .is_none_or(|layers| layers.visible(entity, self.mask))
+            || self.viewer == Some(entity)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_cells(
     world: &World,
+    sight: &Sight,
     index: &PvsIndex,
     root: Entity,
     center: Vec2,
@@ -198,7 +222,7 @@ fn push_cells(
     cells.sort_by_key(|(x, y)| (x - middle.x).abs().max((y - middle.y).abs()));
     for (x, y) in cells {
         for &entity in index.cell(PvsCell { root, x, y, z }) {
-            out.push_group(world, entity, true);
+            out.push_group(world, entity, true, sight);
         }
     }
 }
@@ -209,12 +233,18 @@ pub fn collect_visible(world: &World, index: &PvsIndex, view: &View, out: &mut V
     let Some(map) = world.get::<Map>(view.map) else {
         return;
     };
-    out.push_group(world, view.map, false);
+    let sight = Sight {
+        layers: world.get_resource::<VisibilityLayers>(),
+        mask: view.mask,
+        viewer: view.viewer,
+    };
+    out.push_group(world, view.map, false, &sight);
     for &grid in map.grids() {
-        out.push_group(world, grid, false);
+        out.push_group(world, grid, false, &sight);
     }
     push_cells(
         world,
+        &sight,
         index,
         view.map,
         view.position,
@@ -234,6 +264,7 @@ pub fn collect_visible(world: &World, index: &PvsIndex, view: &View, out: &mut V
         };
         push_cells(
             world,
+            &sight,
             index,
             grid,
             placement.to_local(view.position),

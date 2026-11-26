@@ -630,6 +630,20 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
                 Some(body.rotation),
             );
         }
+        // Тело перешло на другой грид: скорость хранится в осях родителя, поэтому
+        // поворачивается на разницу поворотов старого и нового родителя.
+        let mut body_velocity = body.velocity;
+        if let Some(new_root) = world.parent(body.entity).filter(|root| *root != body.root) {
+            let turn = |root| world.world_transform(root).map_or(0.0, |t| t.rotation.0);
+            let angle = turn(body.root) - turn(new_root);
+            if angle != 0.0 {
+                let (sin, cos) = angle.sin_cos();
+                body_velocity = Vec2::new(
+                    body_velocity.x * cos - body_velocity.y * sin,
+                    body_velocity.x * sin + body_velocity.y * cos,
+                );
+            }
+        }
         let Some(mut state) = world.get_mut::<Physics>(body.entity) else {
             continue;
         };
@@ -640,7 +654,7 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
         let (velocity, angular, awake) = if falls_asleep {
             (Vec2::ZERO, 0.0, false)
         } else {
-            (body.velocity, body.angular, true)
+            (body_velocity, body.angular, true)
         };
         // Неизменившееся тело не помечается изменённым: оно не уходит клиентам заново.
         if state.linear_velocity != velocity

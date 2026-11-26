@@ -562,3 +562,119 @@ fn appearance_reaches_client_and_raises_change() {
     let player = link.player;
     assert!(!link.server.set_appearance(player, "key", 1));
 }
+
+#[test]
+fn visibility_layers_hide_entities_from_eyes_without_the_mask() {
+    const GHOST: u32 = 2;
+    let mut link = Link::new();
+    link.join();
+    let ghost = link.spawn("Crowbar", 4.5, 2.5);
+    link.server.set_visibility_layer(ghost, GHOST);
+    let tool = link.spawn("Crowbar", 5.5, 2.5);
+    link.pump(3);
+    // Обычный глаз получает обычные сущности и не получает призрака.
+    assert!(link.on_client(tool).is_some());
+    assert!(link.on_client(ghost).is_none());
+
+    // Глаз с маской призраков получает его.
+    let player = link.player;
+    link.server.entity_mut(player).insert(Eye {
+        draw_fov: false,
+        vis_mask: VisibilityMask(DEFAULT_VISIBILITY | GHOST),
+    });
+    link.pump(3);
+    let seen = link.on_client(ghost).expect("призрак виден глазу с маской");
+    assert!(link.client.get::<Detached>(seen).is_none());
+    // Глаз своей сущности приходит клиенту: по нему он рисует поле зрения.
+    let own = link.on_client(player).unwrap();
+    assert_eq!(
+        link.client.get::<Eye>(own).map(|eye| eye.draw_fov),
+        Some(false)
+    );
+
+    // Маска снята: призрак уходит из видимости, как ушедший далеко.
+    link.server.entity_mut(player).insert(Eye::default());
+    link.pump(3);
+    assert!(link.client.get::<Detached>(seen).is_some());
+
+    // Игрок сам стал призраком: свою сущность он видит и без маски, а вернувшийся в
+    // обычный слой инструмент снова виден всем.
+    link.server.set_visibility_layer(player, GHOST);
+    link.server.set_visibility_layer(ghost, DEFAULT_VISIBILITY);
+    link.pump(3);
+    assert!(link.client.get::<Detached>(own).is_none());
+    assert!(link.client.get::<Detached>(seen).is_none());
+}
+
+#[test]
+fn visibility_masks_read_ss14_data() {
+    use astrocore_data::{from_node, parse_yaml};
+    register_visibility_layer("Normal", 1);
+    register_visibility_layer("Ghost", 2);
+    let eye: Eye = from_node(&parse_yaml("visMask:\n- Normal\n- Ghost\n").unwrap()).unwrap();
+    assert_eq!((eye.vis_mask.0, eye.draw_fov), (3, true));
+    let layer: Visibility = from_node(&parse_yaml("layer: 2").unwrap()).unwrap();
+    assert_eq!(layer.layer.0, 2);
+    assert_eq!(
+        from_node::<Eye>(&parse_yaml("visMask: Normal, Ghost").unwrap())
+            .unwrap()
+            .vis_mask
+            .0,
+        3
+    );
+    assert!(from_node::<Eye>(&parse_yaml("visMask: [Nowhere]").unwrap()).is_err());
+}
+
+#[test]
+fn large_states_travel_compressed() {
+    use crate::protocol::{decode_state, encode_state};
+    // Вход на большой грид: тысячи одинаковых тайлов сжимаются в разы.
+    let mut link = Link::new();
+    let grid = link.grid;
+    let floor =
+        (0..96).flat_map(|x| (8..104).map(move |y| (TileCoord::new(x, y, 0), Tile::new(1))));
+    link.server.set_tiles(grid, floor);
+    link.client.net_connect("Urist");
+    link.pump(1);
+    let session = link.server.resource::<ServerNet>().session(CONN).unwrap();
+    link.server.attach_player(session, link.player);
+    let before = link.server.resource::<ServerNet>().outgoing.len();
+    assert_eq!(before, 0);
+    // Один такт сервера вручную: смотрим, что ушло клиенту.
+    link.server.run_tick();
+    let sent: usize = link
+        .server
+        .resource::<ServerNet>()
+        .outgoing
+        .iter()
+        .map(|packet| packet.bytes.len())
+        .sum();
+    assert!(sent < 20_000, "вход весит {sent} байт");
+    // Клиент распаковывает состояние и получает все тайлы.
+    link.pump(4);
+    let client_grid = link.on_client(grid).unwrap();
+    assert_eq!(
+        link.client
+            .get::<MapGrid>(client_grid)
+            .unwrap()
+            .tile_count(),
+        96 * 96 + 64 * 8
+    );
+
+    // Малое состояние не сжимается; испорченные сжатые данные клиент отвергает.
+    let small = encode_state(GameState::default());
+    assert!(matches!(
+        postcard::from_bytes(&small),
+        Ok(ServerMessage::State(_))
+    ));
+    let broken = ServerMessage::Packed {
+        size: u32::MAX,
+        bytes: vec![1, 2, 3],
+    };
+    assert_eq!(decode_state(broken), None);
+    let lying = ServerMessage::Packed {
+        size: 64,
+        bytes: vec![0xFF; 8],
+    };
+    assert_eq!(decode_state(lying), None);
+}

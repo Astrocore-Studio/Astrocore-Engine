@@ -83,7 +83,9 @@ fn world_coordinates_follow_parent_chain_with_rotation_and_level() {
     assert_eq!(world.get::<Transform>(item).unwrap().map(), Some(map));
     assert!(world.is_ancestor(grid, item) && !world.is_ancestor(item, grid));
 
-    // Смена родителя сохраняет мировое положение.
+    // Смена родителя сохраняет мировое положение. Переход между гридами приостановлен:
+    // иначе сущность над тайлом грида сразу вернулась бы к нему.
+    world.resource_mut::<GridTraversal>().suspended += 1;
     world.set_parent(item, map).unwrap();
     let after = world.world_transform(item).unwrap();
     assert!(close(after.position, Vec2::new(9.0, 1.0)));
@@ -759,4 +761,73 @@ fn loads_map_file_with_grid_entities_and_containers() {
         world.load_map(&parse_yaml("entities: []").unwrap(), true),
         Err(MapLoadError::Format(_))
     ));
+}
+
+#[test]
+fn entities_change_grid_when_they_walk_off_and_on() {
+    let mut world = world();
+    let (map, station) = station(&mut world, true);
+    // Шаттл: второй грид в десяти тайлах правее, повёрнутый на четверть оборота.
+    let shuttle = world.create_grid(map);
+    world
+        .set_coordinates(
+            shuttle,
+            EntityCoordinates::new(map, Vec2::new(10.0, 0.0)),
+            Some(Angle(std::f32::consts::FRAC_PI_2)),
+        )
+        .unwrap();
+    world.set_tiles(
+        shuttle,
+        (0..2).flat_map(|x| (0..2).map(move |y| (TileCoord::new(x, y, 0), FLOOR))),
+    );
+
+    let walker = place(&mut world, station, Vec2::new(3.5, 1.5));
+    let chair = place(&mut world, station, Vec2::new(2.5, 1.5));
+    assert!(world.anchor(chair));
+    assert_eq!(world.parent(walker), Some(station));
+
+    // Шаг за край станции: родителем становится карта, место на карте то же.
+    world
+        .set_local_position(walker, Vec2::new(5.5, 1.5))
+        .unwrap();
+    assert_eq!(world.parent(walker), Some(map));
+    assert_eq!(
+        world.map_coordinates(walker).unwrap().position,
+        Vec2::new(5.5, 1.5)
+    );
+
+    // Шаг на шаттл: родителем становится он, положение пересчитано в его оси.
+    world
+        .set_local_position(walker, Vec2::new(9.5, 0.5))
+        .unwrap();
+    assert_eq!(world.parent(walker), Some(shuttle));
+    let on_map = world.map_coordinates(walker).unwrap().position;
+    assert!((on_map - Vec2::new(9.5, 0.5)).length() < 1e-4, "{on_map:?}");
+    let local = world.get::<Transform>(walker).unwrap().local_position();
+    assert!((local - Vec2::new(0.5, 0.5)).length() < 1e-4, "{local:?}");
+
+    // Обратно на станцию одним переносом.
+    world
+        .set_coordinates(
+            walker,
+            EntityCoordinates::new(map, Vec2::new(1.5, 1.5)),
+            None,
+        )
+        .unwrap();
+    assert_eq!(world.parent(walker), Some(station));
+
+    // Приостановленный переход родителя не меняет; сущность в контейнере не переходит.
+    world.resource_mut::<GridTraversal>().suspended += 1;
+    world
+        .set_local_position(walker, Vec2::new(7.5, 1.5))
+        .unwrap();
+    assert_eq!(world.parent(walker), Some(station));
+    world.resource_mut::<GridTraversal>().suspended -= 1;
+    world
+        .set_local_position(walker, Vec2::new(7.6, 1.5))
+        .unwrap();
+    assert_eq!(world.parent(walker), Some(map));
+    let item = place(&mut world, walker, Vec2::ZERO);
+    world.set_local_position(item, Vec2::new(0.1, 0.0)).unwrap();
+    assert_eq!(world.parent(item), Some(walker));
 }

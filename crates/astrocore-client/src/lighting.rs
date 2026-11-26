@@ -373,7 +373,11 @@ pub(crate) fn update_lighting(
 
     // Поле зрения: пересчитывается, когда глаз перешёл на другую точку или изменились
     // преграды.
-    if lighting.fov {
+    // Глаз сущности игрока может видеть без поля зрения (призрак).
+    let draw_fov = world
+        .get::<astrocore_net::Eye>(player)
+        .is_none_or(|eye| eye.draw_fov);
+    if lighting.fov && draw_fov {
         let eye_point = astrocore_math::Vec2::new(eye.position.x, eye.position.y);
         let key = hash_of((
             (eye_point.x * scale).floor() as i32,

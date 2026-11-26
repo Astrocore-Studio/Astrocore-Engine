@@ -25,6 +25,7 @@ use crate::protocol::{
 };
 use crate::pvs::{PvsIndex, PvsOverrides, View, Visible, collect_visible};
 use crate::registry::{NetRegistry, WriteContext};
+use crate::visibility::VisibilityWorldExt;
 
 /// Полуширина квадрата видимости в тайлах (`net.pvs_range` Robust).
 pub const PVS_RANGE: CVarDef<f32> = CVarDef::new(
@@ -430,6 +431,8 @@ fn view_of(world: &World, attached: Option<Entity>, range: f32) -> Option<View> 
         position: placement.position,
         level: placement.level,
         range,
+        mask: world.eye_mask(entity),
+        viewer: Some(entity),
     })
 }
 
@@ -605,7 +608,7 @@ fn build(
         .and_then(|e| world.get::<NetEntity>(e).copied());
     let attached = (sync.attached_sent != Some(attached)).then_some(attached);
     Built {
-        bytes: postcard::to_allocvec(&ServerMessage::State(state)).unwrap_or_default(),
+        bytes: crate::protocol::encode_state(state),
         visible: sent_entities,
         attached,
     }

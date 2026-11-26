@@ -7,6 +7,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+astrocore-ecs.workspace = true
+astrocore-prototypes.workspace = true
 astrocore-resources.workspace = true
 bevy_ecs.workspace = true
 fluent-bundle = "0.16"
@@ -15,6 +17,7 @@ thiserror.workspace = true
 unic-langid = "0.9"
 
 [dev-dependencies]
+astrocore-data.workspace = true
 tempfile.workspace = true
 
 [lints]

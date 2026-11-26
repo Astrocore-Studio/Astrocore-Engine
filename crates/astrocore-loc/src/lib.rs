@@ -4,6 +4,10 @@
 //! Сообщение ищется в основном языке, затем в запасном. Ненайденное сообщение возвращает свой
 //! идентификатор — так пропуски видны в игре и ничего не падает.
 
+mod names;
+
+pub use names::{EntityNameWorldExt, EntityNames, EntityText};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

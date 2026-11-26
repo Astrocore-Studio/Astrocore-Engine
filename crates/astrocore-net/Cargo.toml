@@ -13,6 +13,7 @@ astrocore-map.workspace = true
 astrocore-math.workspace = true
 astrocore-prototypes.workspace = true
 bevy_ecs.workspace = true
+lz4_flex.workspace = true
 postcard.workspace = true
 rayon.workspace = true
 serde.workspace = true
