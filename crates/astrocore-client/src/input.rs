@@ -39,6 +39,11 @@ impl Default for Bindings {
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KeyboardFocus(pub bool);
 
+/// Мышь занята инструментом клиента (размещение при маппинге): нажатия кнопок мыши не
+/// становятся функциями ввода. Клавиатура работает как обычно.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PointerCapture(pub bool);
+
 /// Курсор в мире игры: точка на карте глаза.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct Cursor {
@@ -274,6 +279,7 @@ pub(crate) fn read_input(
     layers: Query<(&Transform, &Sprite), Without<EntityView>>,
     ui_hover: Res<crate::windows::UiHover>,
     focus: Res<KeyboardFocus>,
+    pointer: Res<PointerCapture>,
     mut bindings: ResMut<Bindings>,
     mut game: ResMut<Game>,
 ) {
@@ -284,6 +290,7 @@ pub(crate) fn read_input(
         changes.extend(bindings.keys.release_all());
     }
     let typing = focus.0;
+    let captured = pointer.0;
     let released = keys
         .get_just_released()
         .filter(|_| !typing)
@@ -296,7 +303,12 @@ pub(crate) fn read_input(
         .get_just_pressed()
         .filter(|_| !typing)
         .filter_map(|key| key_name(*key))
-        .chain(mouse.get_just_pressed().filter_map(|b| mouse_name(*b)));
+        .chain(
+            mouse
+                .get_just_pressed()
+                .filter(|_| !captured)
+                .filter_map(|b| mouse_name(*b)),
+        );
     for key in pressed {
         changes.extend(bindings.keys.key_down(&key, &bindings.contexts));
     }
