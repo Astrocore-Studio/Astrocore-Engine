@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/astrocore-core",
+    "crates/astrocore-data",
     "crates/astrocore-transport",
     "crates/astrocore-grid2d",
 ]
@@ -14,6 +15,7 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 astrocore-core = { path = "crates/astrocore-core" }
+astrocore-data = { path = "crates/astrocore-data" }
 astrocore-transport = { path = "crates/astrocore-transport" }
 astrocore-grid2d = { path = "crates/astrocore-grid2d" }
 bevy = { version = "=0.20.1", default-features = false }

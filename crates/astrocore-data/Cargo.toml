@@ -1,0 +1,15 @@
+[package]
+name = "astrocore-data"
+description = "Дерево данных Astrocore: разбор YAML и RON, запись и мост к serde"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+saphyr-parser = "0.4.1"
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
