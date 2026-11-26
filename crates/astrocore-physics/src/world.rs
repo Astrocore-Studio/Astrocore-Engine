@@ -13,7 +13,7 @@ use astrocore_math::{Angle, Box2, Vec2};
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::Without;
+use bevy_ecs::query::Has;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::world::World;
 use smallvec::SmallVec;
@@ -597,10 +597,12 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
     let mut entities: Vec<Entity> = match only {
         Some(entity) => vec![entity],
         None => world
-            .query_filtered::<(Entity, &Physics), Without<Paused>>()
+            .query::<(Entity, &Physics, Has<Paused>)>()
             .iter(world)
-            .filter(|(_, body)| body.awake && body.body_type != BodyType::Static)
-            .map(|(entity, _)| entity)
+            .filter(|(_, body, paused)| {
+                (!paused || body.ignore_paused) && body.awake && body.body_type != BodyType::Static
+            })
+            .map(|(entity, ..)| entity)
             .collect(),
     };
     entities.sort_unstable();

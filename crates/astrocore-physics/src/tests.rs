@@ -634,3 +634,19 @@ fn distance_joint_drags_a_free_body_like_a_rope() {
     scene.world.delete_entity(mob);
     assert!(scene.world.joint(crate_, "pull").is_none());
 }
+
+#[test]
+fn paused_bodies_stand_still_unless_they_ignore_pause() {
+    use astrocore_ecs::LifecycleWorldExt;
+
+    let scene = &mut Scene::new();
+    let still = scene.spawn("Mob", 2.5, 2.5);
+    let ghost = scene.spawn("Mob", 2.5, 6.5);
+    scene.world.set_entity_paused(still, true);
+    scene.world.set_entity_paused(ghost, true);
+    scene.world.get_mut::<Physics>(ghost).unwrap().ignore_paused = true;
+    scene.walk(still, Vec2::new(4.0, 0.0), 10);
+    scene.walk(ghost, Vec2::new(4.0, 0.0), 10);
+    assert_eq!(scene.position(still).x, 2.5);
+    assert!(scene.position(ghost).x > 3.5, "{}", scene.position(ghost));
+}

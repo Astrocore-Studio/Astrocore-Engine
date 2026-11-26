@@ -25,7 +25,7 @@ use astrocore_net::{
 use astrocore_physics::{Physics, PhysicsWorldExt, step_physics};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::query::Without;
+use bevy_ecs::query::Has;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::world::World;
@@ -252,11 +252,12 @@ fn apply_queued_input(world: &mut World) {
 fn move_all(world: &mut World) {
     let dt = world.resource::<GameTime>().frame_time();
     let movers: Vec<Entity> = world
-        .query_filtered::<(Entity, &InputMover, &Physics), Without<Paused>>()
+        .query::<(Entity, &InputMover, &Physics, Has<Paused>)>()
         .iter(world)
         // Стоящие без ввода сущности пропускаются: их большинство.
-        .filter(|(_, mover, body)| {
-            mover.held != MoveButtons::NONE || body.linear_velocity != Vec2::ZERO
+        .filter(|(_, mover, body, paused)| {
+            (!paused || body.ignore_paused)
+                && (mover.held != MoveButtons::NONE || body.linear_velocity != Vec2::ZERO)
         })
         .map(|(entity, ..)| entity)
         .collect();

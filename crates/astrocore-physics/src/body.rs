@@ -189,6 +189,10 @@ pub struct Physics {
     /// Тело участвует в расчёте.
     #[serde(default)]
     pub awake: bool,
+    /// Тело движется и на паузе (`IgnorePaused` Robust): так админ-призрак ходит по карте,
+    /// которую мапят.
+    #[serde(default)]
+    pub ignore_paused: bool,
     /// Сколько секунд тело почти неподвижно.
     #[serde(skip)]
     pub sleep_time: f32,
@@ -213,6 +217,7 @@ impl Default for Physics {
             linear_velocity: Vec2::ZERO,
             angular_velocity: 0.0,
             awake: false,
+            ignore_paused: false,
             sleep_time: 0.0,
             mass: 0.0,
             inertia: 0.0,
