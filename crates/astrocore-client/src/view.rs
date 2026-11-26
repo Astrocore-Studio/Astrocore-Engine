@@ -103,6 +103,8 @@ pub struct Views {
     chunks: HashMap<(bevy_ecs::entity::Entity, ChunkPos), (Entity, astrocore_ecs::GameTick)>,
     /// Декодированные картинки тайлов: номер определения → пиксели RGBA и ширина.
     tiles: HashMap<u16, Option<(Vec<u8>, u32)>>,
+    /// Картинки краёв тайлов: путь → пиксели RGBA и ширина.
+    edges: HashMap<String, Option<(Vec<u8>, u32)>>,
 }
 
 impl Views {
@@ -415,7 +417,12 @@ fn tile_pixels(
     type_id: u16,
 ) -> Option<(Vec<u8>, u32)> {
     let sprite = definitions.get(type_id)?.sprite.as_ref()?;
-    let bytes = resources.read(sprite.trim_start_matches('/')).ok()?;
+    png_pixels(resources, sprite)
+}
+
+/// Пиксели картинки PNG: RGBA и ширина.
+fn png_pixels(resources: &Resources, path: &str) -> Option<(Vec<u8>, u32)> {
+    let bytes = resources.read(path.trim_start_matches('/')).ok()?;
     let image = Image::from_buffer(
         &bytes,
         bevy::image::ImageType::Extension("png"),
@@ -427,6 +434,37 @@ fn tile_pixels(
     .ok()?;
     let image = image.convert(TextureFormat::Rgba8UnormSrgb)?;
     Some((image.data?, image.texture_descriptor.size.width))
+}
+
+/// Накладывает картинку размером в клетку на клетку `(tx, ty)` картинки чанка с учётом
+/// прозрачности.
+fn blend_tile(
+    pixels: &mut [u8],
+    side: u32,
+    tx: u32,
+    ty: u32,
+    source: &[u8],
+    width: u32,
+    tile_px: u32,
+) {
+    for row in 0..tile_px {
+        let dest_row = (CHUNK_SIZE as u32 - 1 - ty) * tile_px + row;
+        for column in 0..tile_px.min(width) {
+            let from = ((row * width + column) * 4) as usize;
+            let to = ((dest_row * side + tx * tile_px + column) * 4) as usize;
+            if from + 4 > source.len() || to + 4 > pixels.len() {
+                continue;
+            }
+            let alpha = u32::from(source[from + 3]);
+            for channel in 0..3 {
+                let src = u32::from(source[from + channel]);
+                let dst = u32::from(pixels[to + channel]);
+                pixels[to + channel] = ((src * alpha + dst * (255 - alpha)) / 255) as u8;
+            }
+            let dst_alpha = u32::from(pixels[to + 3]);
+            pixels[to + 3] = (alpha + dst_alpha * (255 - alpha) / 255) as u8;
+        }
+    }
 }
 
 /// Рисует чанки гридов карты глаза: по картинке на чанк, собранной из картинок тайлов.
@@ -446,6 +484,7 @@ pub(crate) fn sync_chunks(
         .map(|map| map.grids().to_vec())
         .unwrap_or_default();
     let definitions = world.resource::<TileDefinitions>();
+    let any_edges = definitions.any_edges();
     let side = CHUNK_SIZE as u32 * PIXELS_PER_TILE as u32;
     for grid in grids {
         let (Some(tiles), Some(placement)) =
@@ -469,8 +508,25 @@ pub(crate) fn sync_chunks(
             let center = placement.to_world(local);
             let target = Transform::from_xyz(center.x, center.y, TILE_DEPTH)
                 .with_rotation(Quat::from_rotation_z(placement.rotation.0));
-            if let Some((view, modified)) = views.chunks.get(&(grid, position)).copied()
-                && modified == chunk.last_modified
+            // Края зависят от соседних чанков: картинка обновляется и при их изменении.
+            let modified = if any_edges {
+                (-1..=1)
+                    .flat_map(|dx| (-1..=1).map(move |dy| (dx, dy)))
+                    .filter_map(|(dx, dy)| {
+                        tiles.chunk(ChunkPos {
+                            x: position.x + dx,
+                            y: position.y + dy,
+                            z: position.z,
+                        })
+                    })
+                    .map(|c| c.last_modified)
+                    .max()
+                    .unwrap_or(chunk.last_modified)
+            } else {
+                chunk.last_modified
+            };
+            if let Some((view, drawn)) = views.chunks.get(&(grid, position)).copied()
+                && drawn == modified
             {
                 commands.entity(view).insert(target);
                 continue;
@@ -506,6 +562,32 @@ pub(crate) fn sync_chunks(
                     }
                 }
             }
+            // Края соседних тайлов поверх клеток чанка, с прозрачностью.
+            if any_edges {
+                for index in 0..chunk.tiles().len() {
+                    let coord: TileCoord = position.tile(index);
+                    for (neighbor, direction) in definitions.edges_onto(tiles, coord) {
+                        let Some(path) = definitions
+                            .get(neighbor)
+                            .and_then(|d| d.edges[direction].clone())
+                        else {
+                            continue;
+                        };
+                        let source = views
+                            .edges
+                            .entry(path.clone())
+                            .or_insert_with(|| png_pixels(&resources.0, &path));
+                        let Some((source, width)) = source else {
+                            continue;
+                        };
+                        let (tx, ty) = (
+                            coord.x.rem_euclid(CHUNK_SIZE) as u32,
+                            coord.y.rem_euclid(CHUNK_SIZE) as u32,
+                        );
+                        blend_tile(&mut pixels, side, tx, ty, source, *width, tile_px);
+                    }
+                }
+            }
             let mut image = Image::new(
                 Extent3d {
                     width: side,
@@ -530,9 +612,7 @@ pub(crate) fn sync_chunks(
                 }
                 None => commands.spawn((sprite, target, ChunkView)).id(),
             };
-            views
-                .chunks
-                .insert((grid, position), (view, chunk.last_modified));
+            views.chunks.insert((grid, position), (view, modified));
         }
     }
     views.chunks.retain(|key, (view, _)| {

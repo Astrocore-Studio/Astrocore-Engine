@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use astrocore_ecs::GameTick;
-use astrocore_math::Box2;
+use astrocore_math::{Box2, IVec2};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::resource::Resource;
@@ -344,6 +344,18 @@ pub struct TileDefinition {
     pub sprite: Option<String>,
     /// Число вариантов рисунка.
     pub variants: u8,
+    /// Края, которые тайл рисует на соседних клетках другого вида (`EdgeSprites` SS14):
+    /// рисунок по направлению от тайла к соседу в порядке `Direction` Robust (юг, юго-восток,
+    /// восток, северо-восток, север, северо-запад, запад, юго-запад).
+    pub edges: [Option<String>; 8],
+    /// Край рисуется только на соседе с меньшим приоритетом (`EdgeSpritePriority`).
+    pub edge_priority: i32,
+}
+
+impl TileDefinition {
+    pub fn has_edges(&self) -> bool {
+        self.edges.iter().any(Option::is_some)
+    }
 }
 
 /// Определения тайлов: идентификатор прототипа ↔ номер в сетке
@@ -384,9 +396,62 @@ impl TileDefinitions {
             type_id,
             sprite,
             variants: variants.max(1),
+            edges: Default::default(),
+            edge_priority: 0,
         });
         self.by_id.insert(id.to_owned(), type_id);
         type_id
+    }
+
+    /// Края соседей, которые рисуются на клетке (`Clyde.GridRendering` Robust @ 1afd692):
+    /// сосед другого вида с краями и большим приоритетом даёт свой рисунок края в сторону
+    /// клетки. Возвращает номер определения соседа и направление края.
+    pub fn edges_onto(&self, grid: &MapGrid, coord: TileCoord) -> Vec<(u16, usize)> {
+        // Смещения к соседям в порядке направлений Robust.
+        const OFFSETS: [(i32, i32); 8] = [
+            (0, -1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+            (0, 1),
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+        ];
+        let own = grid.tile(coord).type_id;
+        let own_priority = self.get(own).map_or(0, |d| d.edge_priority);
+        let mut found = Vec::new();
+        for (direction, (dx, dy)) in OFFSETS.iter().enumerate() {
+            let neighbor = grid.tile(coord.offset(IVec2::new(*dx, *dy))).type_id;
+            if neighbor == own {
+                continue;
+            }
+            let Some(definition) = self.get(neighbor).filter(|d| d.has_edges()) else {
+                continue;
+            };
+            if definition.edge_priority <= own_priority {
+                continue;
+            }
+            // Край соседа смотрит от него к клетке: направление, противоположное смещению.
+            let toward = (direction + 4) % 8;
+            if definition.edges[toward].is_some() {
+                found.push((neighbor, toward));
+            }
+        }
+        found
+    }
+
+    /// Есть ли хоть у одного тайла края: без них чанки собираются без проверки соседей.
+    pub fn any_edges(&self) -> bool {
+        self.list.iter().any(TileDefinition::has_edges)
+    }
+
+    /// Задаёт края тайла и их приоритет.
+    pub fn set_edges(&mut self, type_id: u16, edges: [Option<String>; 8], priority: i32) {
+        if let Some(definition) = self.list.get_mut(usize::from(type_id)) {
+            definition.edges = edges;
+            definition.edge_priority = priority;
+        }
     }
 
     pub fn get(&self, type_id: u16) -> Option<&TileDefinition> {
@@ -462,6 +527,37 @@ mod tests {
         grid.set_tile_raw(TileCoord::new(0, 0, 1), Tile::EMPTY, GameTick(6));
         assert_eq!(grid.levels().collect::<Vec<_>>(), [0]);
         assert_eq!(grid.tiles_on_level(0).count(), 1);
+    }
+
+    #[test]
+    fn higher_priority_neighbors_draw_their_edges_onto_a_cell() {
+        let mut definitions = TileDefinitions::default();
+        let plating = definitions.register("Plating", None, 1);
+        let basalt = definitions.register("FloorBasalt", None, 1);
+        let edges =
+            ["S", "SE", "E", "NE", "N", "NW", "W", "SW"].map(|d| Some(format!("edge_{d}.png")));
+        definitions.set_edges(basalt, edges, 5);
+        let mut grid = MapGrid::new();
+        // Базальт севернее и восточнее клетки (0, 0) с обшивкой.
+        grid.set_tile_raw(TileCoord::new(0, 0, 0), Tile::new(plating), GameTick(1));
+        grid.set_tile_raw(TileCoord::new(0, 1, 0), Tile::new(basalt), GameTick(1));
+        grid.set_tile_raw(TileCoord::new(1, 0, 0), Tile::new(basalt), GameTick(1));
+        let mut onto = definitions.edges_onto(&grid, TileCoord::new(0, 0, 0));
+        onto.sort_unstable();
+        // Сосед на севере рисует край «юг», сосед на востоке — «запад».
+        assert_eq!(onto, [(basalt, 0), (basalt, 6)]);
+        // Сам базальт рядом с базальтом и обшивкой краёв не получает.
+        assert!(
+            definitions
+                .edges_onto(&grid, TileCoord::new(0, 1, 0))
+                .is_empty()
+        );
+        // Пустая клетка севернее базальта получает его край «север».
+        assert_eq!(
+            definitions.edges_onto(&grid, TileCoord::new(0, 2, 0)),
+            [(basalt, 4)]
+        );
+        assert!(definitions.any_edges());
     }
 
     #[test]
