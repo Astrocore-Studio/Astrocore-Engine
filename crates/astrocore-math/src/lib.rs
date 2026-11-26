@@ -203,7 +203,7 @@ impl Direction {
     }
 
     pub const fn is_cardinal(self) -> bool {
-        self as u8 % 2 == 0
+        (self as u8).is_multiple_of(2)
     }
 
     /// Угол направления в пределах `(-π, π]`.
