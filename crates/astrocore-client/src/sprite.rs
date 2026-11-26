@@ -23,6 +23,18 @@ pub fn register_draw_depth(name: &str, depth: i32) {
     }
 }
 
+/// Глубина отрисовки по имени константы или числу (`DrawDepth.X`).
+pub fn draw_depth_named(name: &str) -> Option<DrawDepth> {
+    if let Ok(depth) = name.trim().parse() {
+        return Some(DrawDepth(depth));
+    }
+    depths()
+        .read()
+        .ok()
+        .and_then(|map| map.get(name.trim()).copied())
+        .map(DrawDepth)
+}
+
 /// Глубина отрисовки: большее значение рисуется поверх меньшего. В данных — имя или число.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct DrawDepth(pub i32);
@@ -113,6 +125,11 @@ pub struct SpriteLayer {
     /// набора нужный угол.
     #[serde(default)]
     pub direction: Option<u8>,
+    /// Номер запуска анимации состояния: при каждом увеличении анимация начинается с
+    /// первого кадра (`AnimationTrackSpriteFlick`, `LayerSetAnimationTime(0)`). Ноль —
+    /// анимация идёт по общим часам.
+    #[serde(skip)]
+    pub animation_restart: u32,
 }
 
 impl Default for SpriteLayer {
@@ -129,6 +146,7 @@ impl Default for SpriteLayer {
             shader: None,
             map: Vec::new(),
             direction: None,
+            animation_restart: 0,
         }
     }
 }
@@ -198,6 +216,10 @@ pub struct ResolvedLayer {
     pub scale: Vec2,
     pub offset: Vec2,
     pub rotation: Angle,
+    /// Номер слоя в спрайте.
+    pub index: usize,
+    /// Номер запуска анимации слоя ([`SpriteLayer::animation_restart`]).
+    pub animation_restart: u32,
 }
 
 /// Путь ресурса картинки: пути спрайтов в данных отсчитываются от каталога `Textures`.
@@ -228,6 +250,8 @@ impl Sprite {
             scale: self.scale,
             offset: self.offset,
             rotation: self.rotation,
+            index: 0,
+            animation_restart: 0,
         };
         if self.layers.is_empty() {
             return match (&self.sprite, &self.state) {
@@ -240,8 +264,9 @@ impl Sprite {
         }
         self.layers
             .iter()
-            .filter(|layer| layer.visible)
-            .filter_map(|layer| {
+            .enumerate()
+            .filter(|(_, layer)| layer.visible)
+            .filter_map(|(index, layer)| {
                 let source = match (&layer.texture, &layer.state) {
                     (Some(texture), _) => LayerSource::Texture(texture_path(texture)),
                     (None, Some(state)) => LayerSource::Rsi {
@@ -257,6 +282,8 @@ impl Sprite {
                     scale: self.scale * layer.scale,
                     offset: self.offset + layer.offset,
                     rotation: self.rotation + layer.rotation,
+                    index,
+                    animation_restart: layer.animation_restart,
                 })
             })
             .collect()
@@ -293,6 +320,8 @@ mod tests {
                 scale: Vec2::ONE,
                 offset: Vec2::ZERO,
                 rotation: Angle::ZERO,
+                index: 0,
+                animation_restart: 0,
             }]
         );
         assert!(from_node::<Sprite>(&parse_yaml("drawdepth: Nowhere").unwrap()).is_err());

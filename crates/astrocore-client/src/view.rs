@@ -90,6 +90,8 @@ pub(crate) struct LayerView {
     order: f32,
     /// Направление набора, заданное слоем.
     direction: Option<u8>,
+    /// Время начала анимации слоя, секунды часов кадра.
+    start: f32,
 }
 
 /// Картинка чанка грида.
@@ -105,6 +107,8 @@ pub struct Views {
     tiles: HashMap<u16, Option<(Vec<u8>, u32)>>,
     /// Картинки краёв тайлов: путь → пиксели RGBA и ширина.
     edges: HashMap<String, Option<(Vec<u8>, u32)>>,
+    /// Перезапуски анимаций слоёв: (сущность, слой) → (номер запуска, время начала).
+    restarts: HashMap<(bevy_ecs::entity::Entity, usize), (u32, f32)>,
 }
 
 impl Views {
@@ -217,6 +221,7 @@ pub(crate) fn sync_entities(
     mut images: ResMut<Assets<Image>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
     fixed: Res<Time<Fixed>>,
+    clock: Res<Time>,
     mut placed: Query<(&mut Transform, &mut EntityView, &mut Visibility)>,
 ) {
     let world = &game.0;
@@ -313,6 +318,19 @@ pub(crate) fn sync_entities(
                         else {
                             continue;
                         };
+                        let start = if layer.animation_restart == 0 {
+                            0.0
+                        } else {
+                            let now = clock.elapsed_secs();
+                            let entry = views
+                                .restarts
+                                .entry((entity, layer.index))
+                                .or_insert((layer.animation_restart, now));
+                            if entry.0 != layer.animation_restart {
+                                *entry = (layer.animation_restart, now);
+                            }
+                            entry.1
+                        };
                         commands.spawn((
                             ChildOf(view),
                             Sprite {
@@ -332,6 +350,7 @@ pub(crate) fn sync_entities(
                                 offset: layer.offset,
                                 order,
                                 direction: layer.direction,
+                                start,
                             },
                         ));
                     }
@@ -357,6 +376,9 @@ pub(crate) fn sync_entities(
         }
     }
     // Сущности, которых больше не видно.
+    views
+        .restarts
+        .retain(|(entity, _), _| alive.contains(entity));
     views.entities.retain(|entity, view| {
         let keep = alive.contains(entity);
         if !keep {
@@ -384,7 +406,7 @@ pub(crate) fn animate_layers(
             Some(fixed) => usize::from(fixed).min(directions - 1),
             None => rsi_direction(directions, facing),
         };
-        let frame = layer.texture.state.frame_at(direction, now);
+        let frame = layer.texture.state.frame_at(direction, now - layer.start);
         let index = layer.texture.state.sheet_index(direction, frame);
         if let Some(atlas) = &mut sprite.texture_atlas
             && atlas.index != index

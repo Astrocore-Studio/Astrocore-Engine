@@ -21,7 +21,8 @@ use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::world::World;
 
 pub use body::{
-    BodyStatus, BodyType, CollisionGroups, Fixture, Fixtures, Physics, register_collision_group,
+    BodyStatus, BodyType, CollisionGroups, Fixture, Fixtures, Physics, group_bits,
+    register_collision_group,
 };
 pub use joint::{DistanceJoint, Joint, JointAdded, JointKind, JointRemoved, JointWorldExt, Joints};
 pub use ray::{DistanceWorldExt, Ray, RayHit, RayWorldExt, shape_distance};

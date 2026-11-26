@@ -25,7 +25,8 @@ pub fn register_collision_group(name: &str, bits: i32) {
     }
 }
 
-fn group_bits(name: &str) -> Option<i32> {
+/// Биты группы столкновений по имени (`CollisionGroup.X`).
+pub fn group_bits(name: &str) -> Option<i32> {
     groups().read().ok()?.get(name).copied()
 }
 
