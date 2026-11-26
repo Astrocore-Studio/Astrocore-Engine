@@ -181,11 +181,47 @@ impl Grid {
         movement: [i8; 2],
         blocked: impl Fn(Cell) -> bool,
     ) -> Position {
+        self.move_body_at_speed(position, movement, 1.0, blocked)
+    }
+
+    pub fn move_body_at_speed(
+        &self,
+        position: Position,
+        movement: [i8; 2],
+        speed_ratio: f32,
+        blocked: impl Fn(Cell) -> bool,
+    ) -> Position {
         let [x, y] = movement.map(|axis| f32::from(axis.clamp(-1, 1)));
-        let distance = WALK_SPEED / session::TICK_HZ as f32;
-        let scale = distance / x.hypot(y).max(1.0);
+        let scale = WALK_STEP * speed_ratio.clamp(0.0, 1.0) / x.hypot(y).max(1.0);
+        self.slide_body(position, [x * scale, y * scale], blocked)
+    }
+
+    /// Сдвиг тела к другому на том же этаже с заданным зазором и обычной проверкой коллизий.
+    pub fn move_body_towards(
+        &self,
+        position: Position,
+        target: Position,
+        spacing: f32,
+        blocked: impl Fn(Cell) -> bool,
+    ) -> Position {
+        let dx = target.x - position.x;
+        let dy = target.y - position.y;
+        let distance = dx.hypot(dy);
+        if position.z != target.z || !distance.is_finite() || distance <= spacing.max(0.0) {
+            return position;
+        }
+        let scale = (distance - spacing.max(0.0)).min(WALK_STEP) / distance;
+        self.slide_body(position, [dx * scale, dy * scale], blocked)
+    }
+
+    fn slide_body(
+        &self,
+        position: Position,
+        [dx, dy]: [f32; 2],
+        blocked: impl Fn(Cell) -> bool,
+    ) -> Position {
         let mut result = position;
-        for (dx, dy) in [(x * scale, 0.0), (0.0, y * scale)] {
+        for (dx, dy) in [(dx, 0.0), (0.0, dy)] {
             // Оси проверяются по очереди для скольжения вдоль стены.
             let next = Position {
                 x: result.x + dx,
@@ -214,6 +250,7 @@ pub struct Position {
 
 pub const BODY_RADIUS: f32 = 0.27;
 const WALK_SPEED: f32 = 3.4;
+const WALK_STEP: f32 = WALK_SPEED / session::TICK_HZ as f32;
 
 impl Position {
     pub fn cell(self) -> Cell {
