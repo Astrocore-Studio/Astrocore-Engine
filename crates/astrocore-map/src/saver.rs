@@ -616,19 +616,20 @@ impl MapSaveWorldExt for World {
         let mut entities = Vec::new();
         saver.collect(map, &mut entities);
         // Сущности вне карт, загруженные с ней из одного файла.
-        let mut outside: Vec<(u32, Entity)> = {
-            let mut query = world
-                .try_query::<(Entity, &MapFileEntity)>()
-                .expect("компонент зарегистрирован");
-            query
-                .iter(world)
-                .filter(|(entity, file)| {
-                    file.nullspace_of == Some(map)
-                        && world.get::<bevy_ecs::hierarchy::ChildOf>(*entity).is_none()
-                })
-                .map(|(entity, file)| (file.uid, entity))
-                .collect()
-        };
+        // Компонента нет в мире, пока не загружалась ни одна карта из файла.
+        let mut outside: Vec<(u32, Entity)> = world
+            .try_query::<(Entity, &MapFileEntity)>()
+            .map(|mut query| {
+                query
+                    .iter(world)
+                    .filter(|(entity, file)| {
+                        file.nullspace_of == Some(map)
+                            && world.get::<bevy_ecs::hierarchy::ChildOf>(*entity).is_none()
+                    })
+                    .map(|(entity, file)| (file.uid, entity))
+                    .collect()
+            })
+            .unwrap_or_default();
         outside.sort_unstable();
         let mut nullspace = Vec::new();
         for (_, entity) in outside {

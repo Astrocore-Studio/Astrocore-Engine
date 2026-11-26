@@ -980,3 +980,14 @@ fn maps_load_under_a_chosen_id_and_take_their_nullspace_along() {
     assert!(world.map_entity(MapId(7)).is_none());
     assert!(world.get_entity(outside).is_err());
 }
+
+#[test]
+fn map_made_in_game_saves_without_any_file_loaded_before() {
+    let mut world = world();
+    load_prototypes(&mut world);
+    let (map, _) = world.create_map(false);
+    let grid = world.create_grid(map);
+    world.set_tiles(grid, [(TileCoord::new(0, 0, 0), Tile::new(1))]);
+    let saved = world.save_map(map, MapSaveOptions::default()).unwrap();
+    assert_eq!(saved.entities, 2);
+}
