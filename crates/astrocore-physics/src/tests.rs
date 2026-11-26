@@ -558,3 +558,39 @@ fn inertia_of_shapes() {
     };
     assert!((circle.unit_inertia() - std::f32::consts::PI / 2.0).abs() < 1e-5);
 }
+
+#[test]
+fn bodies_report_falling_asleep_and_runtime_fixtures_count() {
+    let mut scene = Scene::new();
+    let crate_ = scene.spawn("Crate", 5.5, 5.5);
+    scene
+        .world
+        .subscribe::<Physics, PhysicsSleep>(|world, entity, _| {
+            world
+                .resource_mut::<Log>()
+                .0
+                .push(format!("sleep {entity:?}"));
+        });
+    scene.world.set_linear_velocity(crate_, Vec2::new(0.5, 0.0));
+    scene
+        .world
+        .get_mut::<Physics>(crate_)
+        .unwrap()
+        .linear_damping = 20.0;
+    scene.run(40);
+    assert_eq!(
+        scene.world.resource::<Log>().0,
+        [format!("sleep {crate_:?}")]
+    );
+
+    // Фикстура, добавленная во время игры, учитывается после пересчёта.
+    let mass = scene.world.get::<Physics>(crate_).unwrap().mass;
+    scene
+        .world
+        .get_mut::<Fixtures>(crate_)
+        .unwrap()
+        .fixtures
+        .insert("extra".into(), Fixture::default());
+    scene.world.refresh_fixtures(crate_);
+    assert!(scene.world.get::<Physics>(crate_).unwrap().mass > mass);
+}

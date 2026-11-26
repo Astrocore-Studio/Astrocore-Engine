@@ -25,8 +25,8 @@ pub use body::{
 pub use ray::{DistanceWorldExt, Ray, RayHit, RayWorldExt, shape_distance};
 pub use shapes::{Manifold, Pose, Shape, WorldShape, collide};
 pub use world::{
-    Broadphase, EndCollide, LINEAR_SLOP, PhysicsWorldExt, PreventCollide, SLEEP_SPEED,
-    StartCollide, TIME_TO_SLEEP, step_physics,
+    Broadphase, EndCollide, LINEAR_SLOP, PhysicsSleep, PhysicsWorldExt, PreventCollide,
+    SLEEP_SPEED, StartCollide, TIME_TO_SLEEP, step_physics,
 };
 
 /// Подключает физику: компоненты `Physics` и `Fixtures`, сетку поиска столкновений и шаг
@@ -90,7 +90,7 @@ impl GamePlugin for PhysicsPlugin {
 }
 
 /// Масса и момент инерции тела по его фикстурам.
-fn update_mass(world: &mut World, entity: Entity) {
+pub(crate) fn update_mass(world: &mut World, entity: Entity) {
     let (mass, inertia) = world
         .get::<Fixtures>(entity)
         .map_or((0.0, 0.0), |fixtures| (fixtures.mass(), fixtures.inertia()));

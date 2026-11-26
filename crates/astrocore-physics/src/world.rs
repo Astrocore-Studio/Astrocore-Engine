@@ -124,6 +124,13 @@ pub struct PreventCollide {
     pub cancelled: bool,
 }
 
+/// Тело уснуло: перестало двигаться и выпало из расчёта (`PhysicsSleepEvent`).
+/// Поднимается на теле.
+#[derive(Debug, Clone, Copy)]
+pub struct PhysicsSleep {
+    pub entity: Entity,
+}
+
 /// Положение тела в его гриде или космосе карты: корень, этаж и поза. `None` — тело не
 /// стоит прямо на гриде или карте (лежит в контейнере) и в столкновениях не участвует.
 pub(crate) fn placement(world: &World, entity: Entity) -> Option<(Entity, i16, Pose)> {
@@ -681,6 +688,7 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
     }
 
     // Запись результата в мир.
+    let mut asleep = Vec::new();
     for body in &bodies {
         if world.get_entity(body.entity).is_err() {
             continue;
@@ -733,6 +741,12 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
         if state.sleep_time != sleep_time {
             state.bypass_change_detection().sleep_time = sleep_time;
         }
+        if falls_asleep {
+            asleep.push(body.entity);
+        }
+    }
+    for entity in asleep {
+        world.raise(entity, &mut PhysicsSleep { entity });
     }
 }
 
@@ -762,6 +776,9 @@ pub trait PhysicsWorldExt {
 
     /// Задаёт затухание скорости тела.
     fn set_damping(&mut self, entity: Entity, linear: f32, angular: f32);
+
+    /// Пересчитывает массу и место в сетке поиска после изменения фикстур во время игры.
+    fn refresh_fixtures(&mut self, entity: Entity);
 
     /// Меняет вид тела.
     fn set_body_type(&mut self, entity: Entity, body_type: BodyType);
@@ -839,6 +856,11 @@ impl PhysicsWorldExt for World {
             body.linear_damping = linear;
             body.angular_damping = angular;
         }
+    }
+
+    fn refresh_fixtures(&mut self, entity: Entity) {
+        crate::update_mass(self, entity);
+        update_proxy(self, entity);
     }
 
     fn set_body_type(&mut self, entity: Entity, body_type: BodyType) {
