@@ -7,9 +7,16 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+astrocore-net.workspace = true
+bevy_ecs.workspace = true
 bevy = { workspace = true, features = ["std"] }
 lightyear = { version = "=0.31.0", default-features = false, features = ["std", "client", "server", "netcode", "udp"] }
 serde.workspace = true
+
+[dev-dependencies]
+astrocore-ecs.workspace = true
+astrocore-map.workspace = true
+astrocore-math.workspace = true
 
 [lints]
 workspace = true

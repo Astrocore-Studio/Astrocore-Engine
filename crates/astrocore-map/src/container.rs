@@ -305,6 +305,11 @@ pub trait ContainerWorldExt {
 
     /// Вынимает всё содержимое контейнера рядом с владельцем; возвращает вынутые сущности.
     fn empty_container(&mut self, owner: Entity, id: &str) -> Vec<Entity>;
+
+    /// Приводит контейнер к заданному содержимому: так клиент принимает сетевое состояние.
+    /// Лишние сущности перестают числиться в контейнере (их место задаст их собственное
+    /// состояние), недостающие вставляются без событий попытки.
+    fn set_container_contents(&mut self, owner: Entity, id: &str, entities: &[Entity]);
 }
 
 fn insert(
@@ -534,6 +539,23 @@ impl ContainerWorldExt for World {
         }
         raise_removed(self, entity, marker);
         Ok(())
+    }
+
+    fn set_container_contents(&mut self, owner: Entity, id: &str, entities: &[Entity]) {
+        let current: Vec<Entity> = self
+            .container(owner, id)
+            .map(|container| container.entities.clone())
+            .unwrap_or_default();
+        for entity in current {
+            if !entities.contains(&entity)
+                && let Some(marker) = forget(self, entity)
+            {
+                raise_removed(self, entity, marker);
+            }
+        }
+        for &entity in entities {
+            let _ = self.force_insert_into_container(entity, owner, id);
+        }
     }
 
     fn empty_container(&mut self, owner: Entity, id: &str) -> Vec<Entity> {

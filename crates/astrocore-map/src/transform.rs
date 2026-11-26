@@ -260,6 +260,23 @@ pub trait TransformWorldExt {
 
     /// Сущность `ancestor` — предок `entity` в иерархии.
     fn is_ancestor(&self, ancestor: Entity, entity: Entity) -> bool;
+
+    /// Задаёт положение целиком, как оно записано в источнике: сетевом состоянии или файле
+    /// карты. `parent: None` убирает сущность из иерархии. Привязка к клетке приводится
+    /// к `placement.anchored`.
+    fn set_placement(&mut self, entity: Entity, placement: Placement)
+    -> Result<(), TransformError>;
+}
+
+/// Полное положение сущности для [`TransformWorldExt::set_placement`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub parent: Option<Entity>,
+    pub position: Vec2,
+    pub rotation: Angle,
+    pub level: i16,
+    pub anchored: bool,
+    pub no_rot: bool,
 }
 
 fn unanchor_inner(world: &mut World, entity: Entity, detaching: bool) {
@@ -605,6 +622,44 @@ impl TransformWorldExt for World {
         if let Some(mut transform) = self.get_mut::<Transform>(entity) {
             transform.anchored = false;
         }
+    }
+
+    fn set_placement(
+        &mut self,
+        entity: Entity,
+        placement: Placement,
+    ) -> Result<(), TransformError> {
+        let mut transform = self
+            .get_mut::<Transform>(entity)
+            .ok_or(TransformError::NoTransform)?;
+        transform.no_rot = placement.no_rot;
+        let initialized = self
+            .get::<MetaData>(entity)
+            .is_none_or(MetaData::initialized);
+        match placement.parent {
+            Some(parent) => self.set_coordinates(
+                entity,
+                EntityCoordinates::on_level(parent, placement.position, placement.level),
+                Some(placement.rotation),
+            )?,
+            None => {
+                self.detach_to_null(entity);
+                if let Some(mut transform) = self.get_mut::<Transform>(entity) {
+                    transform.local_position = placement.position;
+                    transform.local_rotation = placement.rotation;
+                    transform.z = placement.level;
+                }
+            }
+        }
+        if !placement.anchored {
+            self.unanchor(entity);
+        } else if initialized {
+            self.anchor(entity);
+        } else if let Some(mut transform) = self.get_mut::<Transform>(entity) {
+            // До инициализации привязку запишет `ComponentInit`.
+            transform.anchored = true;
+        }
+        Ok(())
     }
 
     fn is_ancestor(&self, ancestor: Entity, entity: Entity) -> bool {

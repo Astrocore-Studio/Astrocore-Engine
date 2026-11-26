@@ -28,8 +28,8 @@ pub use grid::{
 pub use map::{Map, MapCreated, MapError, MapRemoved, MapWorldExt, Maps};
 pub use spawn::{PlaceError, SpawnWorldExt};
 pub use transform::{
-    AnchorStateChanged, EntParentChanged, MoveEvent, Transform, TransformError, TransformWorldExt,
-    WorldTransform,
+    AnchorStateChanged, EntParentChanged, MoveEvent, Placement, Transform, TransformError,
+    TransformWorldExt, WorldTransform,
 };
 
 /// Подключает пространство к миру: компоненты данных, ресурсы и подписки.

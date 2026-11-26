@@ -497,6 +497,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-net"
+version = "0.1.0"
+dependencies = [
+ "astrocore-console",
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-prototypes",
+ "bevy_ecs",
+ "postcard",
+ "rayon",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-prototypes"
 version = "0.1.0"
 dependencies = [
@@ -513,7 +531,12 @@ dependencies = [
 name = "astrocore-transport"
 version = "0.1.0"
 dependencies = [
+ "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-net",
  "bevy",
+ "bevy_ecs",
  "lightyear",
  "serde",
 ]

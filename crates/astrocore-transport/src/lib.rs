@@ -1,3 +1,7 @@
+mod game;
+
+pub use game::{ClientLink, GAME_PROTOCOL_ID, ServerLink};
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 

@@ -107,6 +107,10 @@ pub trait MapWorldExt {
     /// Создаёт карту с заданным номером.
     fn create_map_with_id(&mut self, id: MapId, initialized: bool) -> Result<Entity, MapError>;
 
+    /// Делает существующую сущность картой с заданным номером и флагами: так клиент
+    /// принимает карту из сетевого состояния. Повторный вызов обновляет флаги.
+    fn adopt_map(&mut self, entity: Entity, id: MapId, initialized: bool, paused: bool);
+
     /// Сущность карты по номеру.
     fn map_entity(&self, id: MapId) -> Option<Entity>;
 
@@ -125,6 +129,10 @@ pub trait MapWorldExt {
 
     /// Создаёт пустой грид в начале координат карты.
     fn create_grid(&mut self, map: Entity) -> Entity;
+
+    /// Делает существующую сущность гридом (сетевое состояние, загрузка карты) и вносит её
+    /// в список гридов её карты. Повторный вызов безвреден.
+    fn ensure_grid(&mut self, entity: Entity);
 
     /// Меняет тайл и поднимает [`TileChanged`]. `false` — у сущности нет грида или тайл
     /// не изменился.
@@ -198,6 +206,29 @@ impl MapWorldExt for World {
         Ok(map)
     }
 
+    fn adopt_map(&mut self, entity: Entity, id: MapId, initialized: bool, paused: bool) {
+        if let Some(mut map) = self.get_mut::<Map>(entity) {
+            map.initialized = initialized;
+            map.paused = paused;
+            return;
+        }
+        let mut maps = self.get_resource_or_insert_with(Maps::default);
+        maps.last_id = maps.last_id.max(id.0);
+        maps.by_id.insert(id, entity);
+        if let Some(mut transform) = self.get_mut::<Transform>(entity) {
+            transform.map = Some(entity);
+        }
+        self.add_comp(
+            entity,
+            Map {
+                id,
+                initialized,
+                paused,
+                grids: Vec::new(),
+            },
+        );
+    }
+
     fn map_entity(&self, id: MapId) -> Option<Entity> {
         self.get_resource::<Maps>()?.entity(id)
     }
@@ -252,6 +283,21 @@ impl MapWorldExt for World {
         let initialized = self.is_on_initialized_map(grid);
         self.initialize_and_start(grid, initialized);
         grid
+    }
+
+    fn ensure_grid(&mut self, entity: Entity) {
+        if self.get::<MapGrid>(entity).is_none() {
+            self.add_comp(entity, MapGrid::new());
+        }
+        if let Some(mut transform) = self.get_mut::<Transform>(entity) {
+            transform.grid = Some(entity);
+            if let Some(map) = transform.map
+                && let Some(mut map) = self.get_mut::<Map>(map)
+                && !map.grids.contains(&entity)
+            {
+                map.grids.push(entity);
+            }
+        }
     }
 
     fn set_tile(&mut self, grid: Entity, coord: TileCoord, tile: Tile) -> bool {

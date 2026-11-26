@@ -15,7 +15,7 @@ mod timing;
 pub use bevy_ecs;
 
 pub use event::{BroadcastHandler, DirectedHandler, EventBus, EventWorldExt, Order};
-pub use game::{GamePlugin, GameWorldExt, PostUpdate, PreUpdate, Update};
+pub use game::{ChangeHistory, GamePlugin, GameWorldExt, PostUpdate, PreUpdate, Sync, Update};
 pub use lifecycle::{
     ComponentAdd, ComponentInit, ComponentRemove, ComponentShutdown, ComponentStartup,
     DeletionQueue, EntityDeleted, EntityPaused, EntityTerminating, EntityUnpaused,

@@ -1,9 +1,13 @@
 //! Игровой мир и такт симуляции.
 //!
-//! Такт: `PreUpdate → Update → PostUpdate`, затем отложенные удаления и переход к следующему
+//! Такт: `PreUpdate → Update → PostUpdate`, отложенные удаления, `Sync` и переход к следующему
 //! тику. Системы внутри этапа расписание Bevy исполняет параллельно, если их данные не
 //! пересекаются; системы с `&mut World` исполняются по одной.
 
+use std::collections::VecDeque;
+
+use bevy_ecs::change_detection::{ComponentTicks, Tick};
+use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Schedules};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::world::World;
@@ -13,7 +17,7 @@ use crate::event::EventBus;
 use crate::lifecycle::{DeletionQueue, LifecycleWorldExt};
 use crate::random::GameRng;
 use crate::registry::ComponentRegistry;
-use crate::timing::GameTime;
+use crate::timing::{GameTick, GameTime};
 
 /// Этап перед обновлением: ввод игроков, сетевые сообщения.
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +30,49 @@ pub struct Update;
 /// Этап после обновления: физика, итоги тика, подготовка сетевых состояний.
 #[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PostUpdate;
+
+/// Этап после удалений: мир за тик больше не меняется, собираются сетевые состояния.
+#[derive(ScheduleLabel, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Sync;
+
+/// Граница тика в счётчике изменений Bevy: по ней определяется, менялся ли компонент после
+/// заданного игрового тика. Ресурс `World`.
+#[derive(Resource, Debug, Default)]
+pub struct ChangeHistory {
+    /// Игровой тик → значение счётчика изменений на его конец; по возрастанию тиков.
+    boundaries: VecDeque<(GameTick, Tick)>,
+}
+
+/// Сколько тиков хранится в истории границ (около минуты при 30 Гц).
+const HISTORY_TICKS: usize = 2048;
+
+impl ChangeHistory {
+    fn record(&mut self, tick: GameTick, boundary: Tick) {
+        if self.boundaries.len() == HISTORY_TICKS {
+            self.boundaries.pop_front();
+        }
+        self.boundaries.push_back((tick, boundary));
+    }
+
+    /// Значение счётчика изменений на конец игрового тика, если он ещё в истории.
+    pub fn boundary(&self, tick: GameTick) -> Option<Tick> {
+        let (first, _) = *self.boundaries.front()?;
+        let index = tick.0.checked_sub(first.0)? as usize;
+        self.boundaries
+            .get(index)
+            .filter(|(recorded, _)| *recorded == tick)
+            .map(|(_, boundary)| *boundary)
+    }
+
+    /// Компонент менялся после конца тика `since`. Для тика вне истории ответ — «да»:
+    /// лишняя отправка безвредна, пропущенная — нет.
+    pub fn changed_since(&self, ticks: ComponentTicks, since: GameTick, now: Tick) -> bool {
+        match self.boundary(since) {
+            Some(boundary) => ticks.changed.is_newer_than(boundary, now),
+            None => true,
+        }
+    }
+}
 
 /// Часть движка или игры, которая добавляет в мир компоненты, подписки и системы
 /// (`EntitySystem.Initialize` в Robust).
@@ -67,12 +114,14 @@ impl GameWorldExt for World {
         self.init_resource::<GameTime>();
         self.init_resource::<GameRng>();
         self.init_resource::<DeletionQueue>();
+        self.init_resource::<ChangeHistory>();
         self.init_resource::<Schedules>();
         let mut schedules = self.resource_mut::<Schedules>();
         if !schedules.contains(PreUpdate) {
             schedules.insert(Schedule::new(PreUpdate));
             schedules.insert(Schedule::new(Update));
             schedules.insert(Schedule::new(PostUpdate));
+            schedules.insert(Schedule::new(Sync));
         }
     }
 
@@ -98,8 +147,14 @@ impl GameWorldExt for World {
         self.run_schedule(Update);
         self.run_schedule(PostUpdate);
         self.flush_deletions();
-        let mut time = self.resource_mut::<GameTime>();
-        time.tick = time.tick.next();
+        self.run_schedule(Sync);
+        // Изменения следующего тика получат отметку строго больше границы этого.
+        let tick = self.resource::<GameTime>().tick;
+        let boundary = self.change_tick();
+        self.resource_mut::<ChangeHistory>().record(tick, boundary);
+        self.increment_change_tick();
+        self.clear_trackers();
+        self.resource_mut::<GameTime>().tick = tick.next();
     }
 }
 
@@ -161,5 +216,48 @@ mod tests {
         world.resource_mut::<GameTime>().paused = true;
         world.run_tick();
         assert_eq!(world.resource::<GameTime>().tick, GameTick(32));
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use bevy_ecs::component::Component;
+
+    use super::*;
+    use crate::timing::GameTick;
+
+    #[derive(Component)]
+    struct Health(u32);
+
+    #[test]
+    fn change_history_tells_ticks_apart() {
+        let mut world = World::new();
+        world.init_game();
+        let entity = world.spawn(Health(10)).id();
+        let changed_since = |world: &World, since: u32| {
+            let ticks = world.entity(entity).get_change_ticks::<Health>().unwrap();
+            world.resource::<ChangeHistory>().changed_since(
+                ticks,
+                GameTick(since),
+                world.read_change_tick(),
+            )
+        };
+        world.run_tick(); // тик 1: компонент добавлен
+        world.run_tick(); // тик 2: без изменений
+        world.get_mut::<Health>(entity).unwrap().0 = 5; // начало тика 3
+        world.run_tick();
+        world.run_tick(); // тик 4
+        assert!(changed_since(&world, 1));
+        assert!(changed_since(&world, 2));
+        assert!(!changed_since(&world, 3));
+        assert!(!changed_since(&world, 4));
+        // Тика 0 в истории нет: считается изменённым.
+        assert!(changed_since(&world, 0));
+        assert!(
+            world
+                .resource::<ChangeHistory>()
+                .boundary(GameTick(9))
+                .is_none()
+        );
     }
 }

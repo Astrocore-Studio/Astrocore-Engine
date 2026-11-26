@@ -1,0 +1,26 @@
+[package]
+name = "astrocore-net"
+description = "Сеть Astrocore: состояния компонентов, PVS, сессии игроков и сетевые события"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+astrocore-console.workspace = true
+astrocore-ecs.workspace = true
+astrocore-map.workspace = true
+astrocore-math.workspace = true
+astrocore-prototypes.workspace = true
+bevy_ecs.workspace = true
+postcard.workspace = true
+rayon.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+astrocore-data.workspace = true
+
+[lints]
+workspace = true

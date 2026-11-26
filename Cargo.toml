@@ -8,6 +8,7 @@ members = [
     "crates/astrocore-prototypes",
     "crates/astrocore-map",
     "crates/astrocore-console",
+    "crates/astrocore-net",
     "crates/astrocore-transport",
     "crates/astrocore-grid2d",
 ]
@@ -26,6 +27,7 @@ astrocore-ecs = { path = "crates/astrocore-ecs" }
 astrocore-prototypes = { path = "crates/astrocore-prototypes" }
 astrocore-map = { path = "crates/astrocore-map" }
 astrocore-console = { path = "crates/astrocore-console" }
+astrocore-net = { path = "crates/astrocore-net" }
 astrocore-transport = { path = "crates/astrocore-transport" }
 astrocore-grid2d = { path = "crates/astrocore-grid2d" }
 bevy = { version = "=0.20.1", default-features = false }

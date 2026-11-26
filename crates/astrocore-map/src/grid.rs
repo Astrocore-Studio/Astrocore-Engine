@@ -119,6 +119,8 @@ pub struct MapGrid {
     /// Этаж → число чанков и границы; `None` — границы надо пересчитать.
     levels: BTreeMap<i16, (u32, Option<LevelBounds>)>,
     tile_count: u32,
+    /// Опустевшие и удалённые чанки → тик удаления: клиенту нужно узнать, что чанка нет.
+    emptied: HashMap<ChunkPos, GameTick>,
 }
 
 impl MapGrid {
@@ -152,6 +154,7 @@ impl MapGrid {
             (true, false) => {
                 chunk.filled += 1;
                 self.tile_count += 1;
+                self.emptied.remove(&position);
                 // Новый тайл границы только расширяет.
                 if let Some((_, Some(bounds))) = self.levels.get_mut(&coord.z) {
                     bounds.min_x = bounds.min_x.min(coord.x);
@@ -166,6 +169,9 @@ impl MapGrid {
                 chunk.filled -= 1;
                 self.tile_count -= 1;
                 let remove_chunk = chunk.filled == 0 && chunk.anchored.is_empty();
+                if chunk.filled == 0 {
+                    self.emptied.insert(position, tick);
+                }
                 if remove_chunk {
                     self.chunks.remove(&position);
                 }
@@ -206,6 +212,25 @@ impl MapGrid {
         self.chunks
             .iter()
             .map(|(position, chunk)| (*position, chunk))
+    }
+
+    /// Чанки, тайлы которых менялись после тика `since`: `Some` — текущие тайлы,
+    /// `None` — чанк опустел. `since == GameTick::ZERO` даёт все непустые чанки.
+    pub fn chunks_modified_since(
+        &self,
+        since: GameTick,
+    ) -> impl Iterator<Item = (ChunkPos, Option<&[Tile; CHUNK_TILES]>)> {
+        let live = self
+            .chunks
+            .iter()
+            .filter(move |(_, chunk)| chunk.filled > 0 && chunk.last_modified > since)
+            .map(|(position, chunk)| (*position, Some(&*chunk.tiles)));
+        let gone = self
+            .emptied
+            .iter()
+            .filter(move |(_, tick)| since > GameTick::ZERO && **tick > since)
+            .map(|(position, _)| (*position, None));
+        live.chain(gone)
     }
 
     /// Непустые тайлы этажа.
