@@ -1,0 +1,20 @@
+[package]
+name = "astrocore-map"
+description = "Пространство Astrocore: координаты, иерархия Transform, карты, гриды с этажами, тайлы и контейнеры"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+astrocore-data.workspace = true
+astrocore-ecs.workspace = true
+astrocore-math.workspace = true
+astrocore-prototypes.workspace = true
+bevy_ecs.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

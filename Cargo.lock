@@ -464,6 +464,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrocore-map"
+version = "0.1.0"
+dependencies = [
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-math",
+ "astrocore-prototypes",
+ "bevy_ecs",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "astrocore-math"
 version = "0.1.0"
 dependencies = [
