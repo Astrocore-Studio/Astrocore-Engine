@@ -34,6 +34,11 @@ impl Default for Bindings {
     }
 }
 
+/// Клавиатура занята полем ввода (консоль, поиск в меню): нажатия клавиш не становятся
+/// функциями ввода, нажатое отпускается. Мышь работает как обычно.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyboardFocus(pub bool);
+
 /// Курсор в мире игры: точка на карте глаза.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct Cursor {
@@ -268,17 +273,20 @@ pub(crate) fn read_input(
     shown: Query<(&Transform, &Children), With<EntityView>>,
     layers: Query<(&Transform, &Sprite), Without<EntityView>>,
     ui_hover: Res<crate::windows::UiHover>,
+    focus: Res<KeyboardFocus>,
     mut bindings: ResMut<Bindings>,
     mut game: ResMut<Game>,
 ) {
     let bindings = &mut *bindings;
     let mut changes: Vec<FunctionChange> = Vec::new();
     // Окно без фокуса не получает отпусканий: всё нажатое отпускается.
-    if window.is_some_and(|window| !window.focused) {
+    if window.is_some_and(|window| !window.focused) || (focus.0 && focus.is_changed()) {
         changes.extend(bindings.keys.release_all());
     }
+    let typing = focus.0;
     let released = keys
         .get_just_released()
+        .filter(|_| !typing)
         .filter_map(|key| key_name(*key))
         .chain(mouse.get_just_released().filter_map(|b| mouse_name(*b)));
     for key in released {
@@ -286,6 +294,7 @@ pub(crate) fn read_input(
     }
     let pressed = keys
         .get_just_pressed()
+        .filter(|_| !typing)
         .filter_map(|key| key_name(*key))
         .chain(mouse.get_just_pressed().filter_map(|b| mouse_name(*b)));
     for key in pressed {

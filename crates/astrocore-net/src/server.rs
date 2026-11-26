@@ -68,6 +68,8 @@ pub struct Outgoing {
 pub struct ServerNet {
     pub incoming: Vec<Incoming>,
     pub outgoing: Vec<Outgoing>,
+    /// Адреса соединений: их сообщает транспорт.
+    pub addresses: HashMap<ConnId, std::net::SocketAddr>,
     by_conn: HashMap<ConnId, Entity>,
     next_part: u32,
 }
@@ -81,6 +83,11 @@ impl ServerNet {
     /// Сессии сервера.
     pub fn sessions(&self) -> impl Iterator<Item = Entity> + '_ {
         self.by_conn.values().copied()
+    }
+
+    /// Адрес соединения, если транспорт его сообщил.
+    pub fn address(&self, conn: ConnId) -> Option<std::net::SocketAddr> {
+        self.addresses.get(&conn).copied()
     }
 
     pub(crate) fn send(&mut self, conn: ConnId, reliable: bool, message: &ServerMessage) {
@@ -335,6 +342,7 @@ pub fn receive(world: &mut World) {
 }
 
 fn disconnect(world: &mut World, conn: ConnId) {
+    world.resource_mut::<ServerNet>().addresses.remove(&conn);
     let Some(session) = world.resource_mut::<ServerNet>().by_conn.remove(&conn) else {
         return;
     };

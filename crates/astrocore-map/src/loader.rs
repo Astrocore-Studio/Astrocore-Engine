@@ -30,6 +30,20 @@ pub enum MapLoadError {
     Format(String),
     #[error("версия формата карты {0} не поддерживается")]
     Version(u32),
+    #[error("карта {} уже существует", .0.0)]
+    MapExists(MapId),
+    #[error("номер карты 0 занят под «нигде»")]
+    Nullspace,
+}
+
+/// Как загружать файл карты.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MapLoadOptions {
+    /// Карты получают `MapInit` и снимаются с паузы; иначе остаются на паузе и без
+    /// `MapInit`, как при маппинге.
+    pub initialize: bool,
+    /// Номер первой карты файла (`loadmap <id>`); `None` — следующий свободный.
+    pub map_id: Option<MapId>,
 }
 
 /// Переименования прототипов сущностей (`migration.yml` SS14): старый идентификатор →
@@ -263,15 +277,40 @@ pub trait MapLoadWorldExt {
         &mut self,
         root: &DataNode,
         initialize: bool,
+    ) -> Result<MapLoadReport, MapLoadError> {
+        self.load_map_with(
+            root,
+            MapLoadOptions {
+                initialize,
+                map_id: None,
+            },
+        )
+    }
+
+    /// То же с выбором номера карты.
+    fn load_map_with(
+        &mut self,
+        root: &DataNode,
+        options: MapLoadOptions,
     ) -> Result<MapLoadReport, MapLoadError>;
 }
 
 impl MapLoadWorldExt for World {
-    fn load_map(
+    fn load_map_with(
         &mut self,
         root: &DataNode,
-        initialize: bool,
+        options: MapLoadOptions,
     ) -> Result<MapLoadReport, MapLoadError> {
+        let initialize = options.initialize;
+        if let Some(id) = options.map_id {
+            if id.0 == 0 {
+                return Err(MapLoadError::Nullspace);
+            }
+            if self.map_entity(id).is_some() {
+                return Err(MapLoadError::MapExists(id));
+            }
+        }
+        let mut wanted_id = options.map_id;
         let mut report = MapLoadReport::default();
         let format: u32 = root
             .get("meta")
@@ -478,7 +517,9 @@ impl MapLoadWorldExt for World {
             let entry = &pending[index];
             if component(entry, "Map").is_some() {
                 let maps = self.get_resource_or_insert_with(crate::map::Maps::default);
-                let id = MapId(maps.iter().map(|(id, _)| id.0).max().unwrap_or(0) + 1);
+                let id = wanted_id.take().unwrap_or_else(|| {
+                    MapId(maps.iter().map(|(id, _)| id.0).max().unwrap_or(0) + 1)
+                });
                 // Карта для маппинга стоит на паузе; её сущности встают на паузу при размещении.
                 self.adopt_map(entity, id, initialize, !initialize);
                 self.set_entity_paused(entity, !initialize);

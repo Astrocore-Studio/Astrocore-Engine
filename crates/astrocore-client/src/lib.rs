@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub use audio::MasterVolume;
-pub use input::{Bindings, Cursor, Hovered, key_name, mouse_name};
+pub use input::{Bindings, Cursor, Hovered, KeyboardFocus, key_name, mouse_name};
 pub use lighting::{Lighting, TEXELS_PER_TILE};
 pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, register_draw_depth};
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
@@ -104,6 +104,7 @@ impl Plugin for ClientPlugin {
             .init_resource::<audio::Sounds>()
             .init_resource::<audio::AmbientPlaying>()
             .init_resource::<Cursor>()
+            .init_resource::<KeyboardFocus>()
             .init_resource::<Hovered>()
             .init_resource::<Textures>()
             .init_resource::<Eye>()

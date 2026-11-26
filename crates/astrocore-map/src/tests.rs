@@ -951,3 +951,32 @@ fn saved_map_loads_back_into_the_same_map() {
         Some(MapSaveError::Initialized)
     );
 }
+
+#[test]
+fn maps_load_under_a_chosen_id_and_take_their_nullspace_along() {
+    use astrocore_data::parse_yaml;
+    use astrocore_ecs::LifecycleWorldExt;
+
+    let mut world = world();
+    load_prototypes(&mut world);
+    let file = map_file().replace(
+        "- proto: NoSuchThing\n",
+        "  - uid: 12\n    components:\n    - type: Transform\n- proto: NoSuchThing\n",
+    );
+    let node = parse_yaml(&file).unwrap();
+    let options = MapLoadOptions {
+        initialize: false,
+        map_id: Some(MapId(7)),
+    };
+    let report = world.load_map_with(&node, options).unwrap();
+    assert_eq!(report.maps[0].1, MapId(7));
+    assert_eq!(
+        world.load_map_with(&node, options).err(),
+        Some(MapLoadError::MapExists(MapId(7)))
+    );
+    let outside = report.uids[&12];
+    world.delete_entity(report.maps[0].0);
+    world.run_tick();
+    assert!(world.map_entity(MapId(7)).is_none());
+    assert!(world.get_entity(outside).is_err());
+}

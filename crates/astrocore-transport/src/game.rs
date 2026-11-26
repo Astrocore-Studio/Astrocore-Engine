@@ -36,7 +36,16 @@ impl ServerLink {
     pub fn receive(&mut self, world: &mut World) {
         self.transport.step();
         let live: BTreeSet<ConnKey> = self.transport.connections().into_iter().collect();
+        let arrived: Vec<(ConnKey, Option<SocketAddr>)> = live
+            .difference(&self.live)
+            .map(|conn| (*conn, self.transport.peer_addr(*conn)))
+            .collect();
         let mut net = world.resource_mut::<ServerNet>();
+        for (conn, address) in arrived {
+            if let Some(address) = address {
+                net.addresses.insert(ConnId(u64::from(conn.0)), address);
+            }
+        }
         for gone in self.live.difference(&live) {
             net.incoming
                 .push(Incoming::Disconnected(ConnId(u64::from(gone.0))));

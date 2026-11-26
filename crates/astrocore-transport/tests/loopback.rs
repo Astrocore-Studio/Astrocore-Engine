@@ -54,6 +54,10 @@ fn client_joins_over_udp_and_follows_server() {
         server_link.receive(&mut server);
         let session = server.resource::<ServerNet>().sessions().next();
         if !attached && let Some(session) = session {
+            // Транспорт сообщает адрес клиента: консоль по нему узнаёт хоста.
+            let conn = server.get::<astrocore_net::Session>(session).unwrap().conn;
+            let address = server.resource::<ServerNet>().address(conn).unwrap();
+            assert!(address.ip().is_loopback(), "{address}");
             server.attach_player(session, player);
             attached = true;
         }

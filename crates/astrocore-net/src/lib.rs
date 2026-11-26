@@ -12,6 +12,7 @@ mod ids;
 mod protocol;
 mod pvs;
 mod registry;
+mod remote_console;
 mod server;
 mod sync;
 mod visibility;
@@ -36,6 +37,10 @@ pub use protocol::{
 pub use pvs::{PVS_CHUNK_SIZE, PvsCell, PvsIndex, PvsOverrides, View, Visible, collect_visible};
 pub use registry::{
     NetComponent, NetComponentInfo, NetError, NetRegistry, NetRegistryWorldExt, WriteContext,
+};
+pub use remote_console::{
+    CONSOLE_LOG_LINES, ConsoleLine, ConsoleLog, RemoteCommand, RemoteCommandOutput,
+    RemoteConsoleWorldExt,
 };
 pub use server::{
     Actor, ConnId, Incoming, Outgoing, PVS_ENTITY_BUDGET, PVS_RANGE, PlayerAttached,
@@ -69,6 +74,7 @@ fn register_engine_components(world: &mut World) {
     world.register_net_component::<Appearance>();
     visibility::register(world);
     world.init_resource::<NetEvents>();
+    remote_console::register(world);
     world
         .resource_mut::<Schedules>()
         .configure_sets(Sync, (NetSet::Assign, NetSet::Mark, NetSet::Send).chain());
@@ -82,6 +88,7 @@ impl GamePlugin for NetServerPlugin {
         register_engine_components(world);
         pvs::register(world);
         server::register(world);
+        remote_console::register_server(world);
         world.add_game_systems(PreUpdate, server::receive);
         world.add_game_systems(Sync, server::assign_net_entities.in_set(NetSet::Assign));
         world.add_game_systems(Sync, server::send.in_set(NetSet::Send));
@@ -95,6 +102,7 @@ impl GamePlugin for NetClientPlugin {
     fn build(&self, world: &mut World) {
         register_engine_components(world);
         client::register(world);
+        remote_console::register_client(world);
         world.add_game_systems(PreUpdate, client::receive);
     }
 }

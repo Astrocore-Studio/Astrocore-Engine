@@ -439,6 +439,35 @@ fn net_events_travel_both_ways() {
 }
 
 #[test]
+fn remote_commands_run_on_server_with_permission() {
+    use astrocore_console::{Console, ConsoleCommand, ConsoleWorldExt};
+
+    let mut link = Link::new();
+    link.server.register_command(ConsoleCommand {
+        name: "echo",
+        description: "повторяет аргументы",
+        help: "echo <слова>",
+        execute: |_, shell, args| shell.write_line(args.join(" ")),
+        complete: None,
+    });
+    link.join();
+
+    // Без проверки прав игроку команды запрещены.
+    link.client.execute_remote_command("echo раз");
+    link.pump(2);
+    let log = &link.client.resource::<ConsoleLog>().lines;
+    assert_eq!(log[0].text, "> echo раз");
+    assert!(log[1].error, "{log:?}");
+
+    link.server.resource_mut::<Console>().permission = Some(|_, _, name| name == "echo");
+    link.client.execute_remote_command("echo два  три");
+    link.pump(2);
+    let log = &link.client.resource::<ConsoleLog>().lines;
+    assert_eq!(log[3].text, "два три");
+    assert!(!log[3].error);
+}
+
+#[test]
 fn sessions_connect_attach_and_disconnect() {
     #[derive(Resource, Default)]
     struct Log(Vec<&'static str>);

@@ -155,6 +155,15 @@ impl LyServer {
         v
     }
 
+    /// Адрес клиента соединения.
+    pub fn peer_addr(&mut self, conn: ConnKey) -> Option<SocketAddr> {
+        let world = self.app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &PeerAddr), With<LinkOf>>();
+        q.iter(world)
+            .find(|(e, _)| e.index_u32() == conn.0)
+            .map(|(_, addr)| addr.0)
+    }
+
     /// Принятые пакеты протокола с момента прошлого вызова.
     pub fn take_packets(&mut self) -> Vec<(ConnKey, Vec<u8>)> {
         let mut inbox = self.app.world_mut().resource_mut::<Inbox>();

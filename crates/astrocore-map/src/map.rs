@@ -408,6 +408,16 @@ pub(crate) fn register(world: &mut World) {
         if let Some(mut maps) = world.get_resource_mut::<Maps>() {
             maps.by_id.remove(&id);
         }
+        // Сущности вне карт, загруженные с картой из её файла, уходят вместе с ней.
+        let outside: Vec<Entity> = world
+            .query::<(Entity, &crate::loader::MapFileEntity)>()
+            .iter(world)
+            .filter(|(_, file)| file.nullspace_of == Some(map))
+            .map(|(entity, _)| entity)
+            .collect();
+        for entity in outside {
+            world.queue_delete(entity);
+        }
     });
     world.subscribe::<MapGrid, EntityTerminating>(|world, grid, _| {
         let map = world.get::<Transform>(grid).and_then(|t| t.map);
