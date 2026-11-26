@@ -44,6 +44,7 @@ const PROTOTYPES: &str = r#"
   - type: Transform
     anchored: true
   - type: Door
+  - type: Appearance
 - type: entity
   id: Locker
   components:
@@ -494,4 +495,70 @@ fn mismatched_component_sets_are_rejected() {
         .incoming
         .push(Incoming::Packet(CONN, vec![0xff; 5]));
     link.pump(1);
+}
+
+#[derive(Resource, Default)]
+struct AppearanceChanges(u32);
+
+#[test]
+fn appearance_reaches_client_and_raises_change() {
+    let mut link = Link::new();
+    link.client.init_resource::<AppearanceChanges>();
+    link.client
+        .subscribe::<Appearance, AppearanceChange>(|world, _, _| {
+            world.resource_mut::<AppearanceChanges>().0 += 1;
+        });
+    link.join();
+    let door = link.spawn("Airlock", 4.5, 2.5);
+    link.pump(3);
+    let on_client = link.on_client(door).unwrap();
+    assert_eq!(
+        link.client.appearance(on_client, "enum.DoorVisuals.State"),
+        None
+    );
+    assert_eq!(link.client.resource::<AppearanceChanges>().0, 0);
+
+    assert!(
+        link.server
+            .set_appearance(door, "enum.DoorVisuals.State", "Open")
+    );
+    assert!(
+        link.server
+            .set_appearance(door, "enum.DoorVisuals.Powered", true)
+    );
+    // То же значение ничего не меняет и клиентам не уходит.
+    assert!(
+        !link
+            .server
+            .set_appearance(door, "enum.DoorVisuals.Powered", true)
+    );
+    link.pump(3);
+    assert_eq!(
+        link.client
+            .appearance(on_client, "enum.DoorVisuals.State")
+            .map(ToString::to_string),
+        Some("Open".to_owned())
+    );
+    assert_eq!(
+        link.client
+            .appearance(on_client, "enum.DoorVisuals.Powered")
+            .map(ToString::to_string),
+        Some("True".to_owned())
+    );
+    assert_eq!(link.client.resource::<AppearanceChanges>().0, 1);
+
+    assert!(
+        link.server
+            .remove_appearance(door, "enum.DoorVisuals.Powered")
+    );
+    link.pump(3);
+    assert_eq!(
+        link.client
+            .appearance(on_client, "enum.DoorVisuals.Powered"),
+        None
+    );
+    assert_eq!(link.client.resource::<AppearanceChanges>().0, 2);
+    // Сущность без компонента значения не принимает.
+    let player = link.player;
+    assert!(!link.server.set_appearance(player, "key", 1));
 }

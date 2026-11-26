@@ -4,6 +4,7 @@
 //! Крейт не знает о транспорте: сервер и клиент обмениваются пакетами через ресурсы
 //! [`ServerNet`] и [`ClientNet`], а доставляет их `astrocore-transport` или тест.
 
+mod appearance;
 mod client;
 mod components;
 mod events;
@@ -15,11 +16,12 @@ mod server;
 mod sync;
 
 use astrocore_console::ConsolePlugin;
-use astrocore_ecs::{GamePlugin, GameWorldExt, MetaData, PreUpdate, Sync};
+use astrocore_ecs::{GamePlugin, GameWorldExt, MetaData, PreUpdate, RegistryWorldExt, Sync};
 use astrocore_map::{ContainerManager, Map, MapGrid, MapPlugin, Transform};
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedules};
 use bevy_ecs::world::World;
 
+pub use appearance::{Appearance, AppearanceChange, AppearanceValue, AppearanceWorldExt};
 pub use client::{
     ClientNet, ClientStatus, ClientTransport, ClientWorldExt, Detached, LocalPlayerAttached,
     StateApplied, StateApplying, apply_state,
@@ -58,6 +60,8 @@ fn register_engine_components(world: &mut World) {
     world.register_net_component::<Map>();
     world.register_net_component::<MapGrid>();
     world.register_net_component::<ContainerManager>();
+    world.register_data_component::<Appearance>();
+    world.register_net_component::<Appearance>();
     world.init_resource::<NetEvents>();
     world
         .resource_mut::<Schedules>()

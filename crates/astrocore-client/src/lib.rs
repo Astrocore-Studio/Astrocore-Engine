@@ -5,6 +5,7 @@
 mod sprite;
 mod textures;
 mod view;
+mod visualizer;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,6 +19,7 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, register_draw_depth};
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
 pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
+pub use visualizer::{GenericVisualizer, SpriteLayerData};
 
 /// Мир игры клиента. Ресурс приложения Bevy.
 #[derive(Resource)]
@@ -34,9 +36,10 @@ pub struct Capture {
     pub after_frames: u32,
 }
 
-/// Регистрирует в мире игры компоненты данных клиента.
+/// Регистрирует в мире игры компоненты данных клиента и системы внешнего вида.
 pub fn register_client_components(world: &mut bevy_ecs::world::World) {
     world.register_data_component::<Sprite>();
+    visualizer::install(world);
 }
 
 /// Такт мира игры: приём пакетов, такт, отправка. Идёт с частотой сервера.
@@ -119,6 +122,7 @@ impl Plugin for ClientPlugin {
                     view::follow_player,
                     view::sync_chunks,
                     view::sync_entities,
+                    view::follow_view,
                     view::animate_layers,
                 )
                     .chain(),

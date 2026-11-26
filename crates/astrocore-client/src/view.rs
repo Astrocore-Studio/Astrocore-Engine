@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use astrocore_ecs::MetaData;
+use astrocore_ecs::{GameTick, GameTime, MetaData};
 use astrocore_map::{
     CHUNK_SIZE, ChunkPos, Map, MapGrid, TileCoord, TileDefinitions, Transform as GameTransform,
     TransformWorldExt, WorldTransform,
@@ -36,6 +36,46 @@ const TILE_DEPTH: f32 = -500.0;
 pub(crate) struct EntityView {
     /// Отметка изменения компонента `Sprite`, по которой построены слои.
     built: Option<Tick>,
+    /// Положение на прошлом такте мира и на текущем: между ними кадры сглаживают движение.
+    from: Vec2,
+    to: Vec2,
+    /// Такт мира, на котором записано положение `to`.
+    tick: GameTick,
+}
+
+/// Сдвиг за один такт, после которого сущность считается перенесённой, а не пришедшей:
+/// сглаживание такого сдвига выглядело бы как полёт через карту.
+const TELEPORT_DISTANCE: f32 = 2.0;
+
+impl EntityView {
+    fn new(target: &Transform, tick: GameTick) -> Self {
+        let position = target.translation.truncate();
+        Self {
+            built: None,
+            from: position,
+            to: position,
+            tick,
+        }
+    }
+
+    /// Положение для кадра: `alpha` — доля такта, прошедшая с его начала.
+    fn interpolate(&mut self, target: &Transform, tick: GameTick, alpha: f32) -> Transform {
+        let to = target.translation.truncate();
+        if self.tick != tick {
+            self.tick = tick;
+            self.from = if self.to.distance(to) > TELEPORT_DISTANCE {
+                to
+            } else {
+                self.to
+            };
+            self.to = to;
+        }
+        let position = self.from.lerp(self.to, alpha);
+        Transform {
+            translation: position.extend(target.translation.z),
+            ..*target
+        }
+    }
 }
 
 /// Слой спрайта с состоянием RSI: выбор кадра по направлению и времени.
@@ -99,6 +139,7 @@ pub(crate) fn spawn_camera(mut commands: Commands) {
 /// Глаз следует за сущностью игрока, камера — за глазом.
 pub(crate) fn follow_player(
     game: Res<Game>,
+    views: Res<Views>,
     mut eye: ResMut<Eye>,
     mut camera: Single<&mut Transform, With<Camera2d>>,
 ) {
@@ -117,8 +158,30 @@ pub(crate) fn follow_player(
         position: Vec2::new(placement.position.x, placement.position.y),
         level: placement.level,
     };
-    camera.translation.x = eye.position.x;
-    camera.translation.y = eye.position.y;
+    // Пока у сущности игрока нет изображения, камера стоит в точке глаза; дальше её ведёт
+    // `follow_view` по сглаженному положению.
+    if !views.entities.contains_key(&entity) {
+        camera.translation.x = eye.position.x;
+        camera.translation.y = eye.position.y;
+    }
+}
+
+/// Камера следует за изображением сущности игрока: оно движется плавно между тактами.
+pub(crate) fn follow_view(
+    game: Res<Game>,
+    views: Res<Views>,
+    shown: Query<&Transform, (With<EntityView>, Without<Camera2d>)>,
+    mut camera: Single<&mut Transform, With<Camera2d>>,
+) {
+    let Some(entity) = game.0.resource::<ClientNet>().attached else {
+        return;
+    };
+    if let Some(view) = views.entities.get(&entity)
+        && let Ok(transform) = shown.get(*view)
+    {
+        camera.translation.x = transform.translation.x;
+        camera.translation.y = transform.translation.y;
+    }
 }
 
 fn bevy_color(color: astrocore_math::Color) -> Color {
@@ -145,9 +208,18 @@ pub(crate) fn sync_entities(
     mut textures: ResMut<Textures>,
     mut images: ResMut<Assets<Image>>,
     mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+    fixed: Res<Time<Fixed>>,
     mut placed: Query<(&mut Transform, &mut EntityView, &mut Visibility)>,
 ) {
     let world = &game.0;
+    let time = world.resource::<GameTime>();
+    let tick = time.tick;
+    // На паузе мир стоит: кадры показывают текущее положение.
+    let alpha = if time.paused {
+        1.0
+    } else {
+        fixed.overstep_fraction()
+    };
     let mut alive: HashSet<bevy_ecs::entity::Entity> = HashSet::with_capacity(views.entities.len());
     let Some(sprite_id) = world.component_id::<GameSprite>() else {
         return;
@@ -193,7 +265,11 @@ pub(crate) fn sync_entities(
                 Some(view) => view,
                 None => {
                     let view = commands
-                        .spawn((target, Visibility::Inherited, EntityView { built: None }))
+                        .spawn((
+                            target,
+                            Visibility::Inherited,
+                            EntityView::new(&target, tick),
+                        ))
                         .id();
                     views.entities.insert(entity, view);
                     view
@@ -201,8 +277,9 @@ pub(crate) fn sync_entities(
             };
             let rebuild = match placed.get_mut(view) {
                 Ok((mut current, mut state, mut visibility)) => {
-                    if *current != target {
-                        *current = target;
+                    let shown = state.interpolate(&target, tick, alpha);
+                    if *current != shown {
+                        *current = shown;
                     }
                     if *visibility != Visibility::Inherited {
                         *visibility = Visibility::Inherited;
