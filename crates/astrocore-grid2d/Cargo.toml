@@ -1,0 +1,16 @@
+[package]
+name = "astrocore-grid2d"
+description = "Тайловый мир Astrocore 2D, коллизии и серверные сессии"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+astrocore-lightyear.workspace = true
+astrocore-protocol.workspace = true
+postcard.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

@@ -7,29 +7,14 @@ members = [
     "crates/astrocore-world",
     "crates/astrocore-geometry",
     "crates/astrocore-spatial",
-    "crates/astrocore-navigation",
-    "crates/astrocore-sprites",
-    "crates/astrocore-voxels",
-    "crates/astrocore-prefabs",
     "crates/astrocore-runtime",
     "crates/astrocore-physics",
-    "crates/astrocore-physics-avian",
     "crates/astrocore-lightyear",
+    "crates/astrocore-grid2d",
     "crates/astrocore-network",
-    "crates/astrocore-editor",
-    "crates/astrocore-render",
     "crates/astrocore-terrain",
     "crates/astrocore-assets",
-    "crates/astrocore-world-compiler",
-    "crates/astrocore-persistence",
     "crates/astrocore-protocol",
-    "crates/astrocore-bevy",
-    "apps/astrocore-server",
-    "apps/astrocore-client",
-    "apps/astrocore-studio",
-    "tools/astrocore-tools",
-    "examples/vertical-slice",
-    "examples/spatial-topology",
 ]
 
 [workspace.package]
@@ -40,34 +25,19 @@ license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi"] }
-# Внутренние крейты
 astrocore-math = { path = "crates/astrocore-math" }
 astrocore-api = { path = "crates/astrocore-api" }
-astrocore-vertical-slice = { path = "examples/vertical-slice" }
 astrocore-core = { path = "crates/astrocore-core" }
 astrocore-world = { path = "crates/astrocore-world" }
 astrocore-geometry = { path = "crates/astrocore-geometry" }
 astrocore-spatial = { path = "crates/astrocore-spatial" }
-astrocore-navigation = { path = "crates/astrocore-navigation" }
-astrocore-sprites = { path = "crates/astrocore-sprites" }
-astrocore-voxels = { path = "crates/astrocore-voxels" }
-astrocore-prefabs = { path = "crates/astrocore-prefabs" }
 astrocore-runtime = { path = "crates/astrocore-runtime" }
 astrocore-physics = { path = "crates/astrocore-physics" }
-astrocore-physics-avian = { path = "crates/astrocore-physics-avian" }
 astrocore-lightyear = { path = "crates/astrocore-lightyear" }
 astrocore-network = { path = "crates/astrocore-network" }
-astrocore-editor = { path = "crates/astrocore-editor" }
-astrocore-render = { path = "crates/astrocore-render" }
 astrocore-terrain = { path = "crates/astrocore-terrain" }
 astrocore-assets = { path = "crates/astrocore-assets" }
-astrocore-world-compiler = { path = "crates/astrocore-world-compiler" }
-astrocore-persistence = { path = "crates/astrocore-persistence" }
 astrocore-protocol = { path = "crates/astrocore-protocol" }
-astrocore-bevy = { path = "crates/astrocore-bevy" }
-
-# Внешние. Версии Bevy-семейства закреплены по ADR-0002.
 bevy = { version = "=0.20.1", default-features = false }
 glam = { version = "0.33", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -75,7 +45,6 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 thiserror = "2"
 postcard = { version = "1", features = ["use-std"] }
-crc32fast = "1"
 chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"

@@ -2,7 +2,7 @@ mod host;
 
 pub use host::LyGameHost;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use bevy::prelude::*;
@@ -80,6 +80,15 @@ pub struct LyServer {
 impl LyServer {
     /// `key` — 32-байтовый секрет netcode (токены подключения); `tick_hz` — частота тика Lightyear.
     pub fn start(addr: SocketAddr, key: [u8; 32], tick_hz: u32) -> Self {
+        Self::start_with_protocol(addr, key, tick_hz, PROTOCOL_ID)
+    }
+
+    pub fn start_with_protocol(
+        addr: SocketAddr,
+        key: [u8; 32],
+        tick_hz: u32,
+        protocol_id: u64,
+    ) -> Self {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -93,7 +102,7 @@ impl LyServer {
             .spawn((
                 NetcodeServer::new(
                     lightyear::netcode::server_plugin::NetcodeConfig::default()
-                        .with_protocol_id(PROTOCOL_ID)
+                        .with_protocol_id(protocol_id)
                         .with_key(key),
                 ),
                 LocalAddr(addr),
@@ -111,6 +120,10 @@ impl LyServer {
     /// Адрес, на котором слушает сервер (с реальным портом, если запрошен 0).
     pub fn local_addr(&self) -> SocketAddr {
         self.local
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.app.world().get::<Linked>(self.server).is_some()
     }
 
     /// Один кадр Lightyear: сетевой ввод-вывод, рукопожатия, доставка.
@@ -172,6 +185,16 @@ impl LyClient {
         key: [u8; 32],
         tick_hz: u32,
     ) -> Result<Self, String> {
+        Self::connect_with_protocol(server, client_id, key, tick_hz, PROTOCOL_ID)
+    }
+
+    pub fn connect_with_protocol(
+        server: SocketAddr,
+        client_id: u64,
+        key: [u8; 32],
+        tick_hz: u32,
+        protocol_id: u64,
+    ) -> Result<Self, String> {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -184,19 +207,24 @@ impl LyClient {
             server_addr: server,
             client_id,
             private_key: key,
-            protocol_id: PROTOCOL_ID,
+            protocol_id,
         };
         let netcode = NetcodeClient::new(
             auth,
             lightyear::netcode::client_plugin::NetcodeConfig::default(),
         )
         .map_err(|e| e.to_string())?;
+        let bind_ip = if server.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
         let client = app
             .world_mut()
             .spawn((
                 netcode,
                 UdpIo::default(),
-                LocalAddr(SocketAddr::from(([127, 0, 0, 1], 0))),
+                LocalAddr(SocketAddr::new(bind_ip, 0)),
                 PeerAddr(server),
             ))
             .id();
