@@ -11,6 +11,7 @@ astrocore-audio.workspace = true
 astrocore-data.workspace = true
 astrocore-ecs.workspace = true
 astrocore-input.workspace = true
+astrocore-light.workspace = true
 astrocore-map.workspace = true
 astrocore-math.workspace = true
 astrocore-movement.workspace = true

@@ -13,6 +13,7 @@ members = [
     "crates/astrocore-movement",
     "crates/astrocore-input",
     "crates/astrocore-audio",
+    "crates/astrocore-light",
     "crates/astrocore-resources",
     "crates/astrocore-loc",
     "crates/astrocore-client",
@@ -39,6 +40,7 @@ astrocore-physics = { path = "crates/astrocore-physics" }
 astrocore-movement = { path = "crates/astrocore-movement" }
 astrocore-input = { path = "crates/astrocore-input" }
 astrocore-audio = { path = "crates/astrocore-audio" }
+astrocore-light = { path = "crates/astrocore-light" }
 astrocore-resources = { path = "crates/astrocore-resources" }
 astrocore-loc = { path = "crates/astrocore-loc" }
 astrocore-client = { path = "crates/astrocore-client" }

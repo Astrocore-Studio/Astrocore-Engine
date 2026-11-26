@@ -459,6 +459,7 @@ dependencies = [
  "astrocore-data",
  "astrocore-ecs",
  "astrocore-input",
+ "astrocore-light",
  "astrocore-map",
  "astrocore-math",
  "astrocore-movement",
@@ -530,6 +531,19 @@ dependencies = [
  "astrocore-math",
  "astrocore-net",
  "astrocore-prototypes",
+ "bevy_ecs",
+ "serde",
+]
+
+[[package]]
+name = "astrocore-light"
+version = "0.1.0"
+dependencies = [
+ "astrocore-data",
+ "astrocore-ecs",
+ "astrocore-map",
+ "astrocore-math",
+ "astrocore-net",
  "bevy_ecs",
  "serde",
 ]

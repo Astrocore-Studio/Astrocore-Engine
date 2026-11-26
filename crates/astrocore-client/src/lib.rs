@@ -4,6 +4,7 @@
 
 mod audio;
 mod input;
+mod lighting;
 mod sprite;
 mod textures;
 mod view;
@@ -19,6 +20,7 @@ use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 pub use audio::MasterVolume;
 pub use input::{Bindings, Cursor, key_name, mouse_name};
+pub use lighting::{Lighting, TEXELS_PER_TILE};
 pub use sprite::{DrawDepth, LayerSource, ResolvedLayer, Sprite, SpriteLayer, register_draw_depth};
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
 pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
@@ -44,6 +46,7 @@ pub fn register_client_components(world: &mut bevy_ecs::world::World) {
     world.register_data_component::<Sprite>();
     world.add_plugin(astrocore_input::InputPlugin);
     world.add_plugin(astrocore_audio::AudioPlugin);
+    world.add_plugin(astrocore_light::LightPlugin);
     visualizer::install(world);
 }
 
@@ -90,6 +93,7 @@ pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        lighting::build(app);
         app.init_resource::<Views>()
             .init_resource::<Bindings>()
             .init_resource::<MasterVolume>()
@@ -112,6 +116,7 @@ impl Plugin for ClientPlugin {
                     view::sync_chunks,
                     view::sync_entities,
                     view::follow_view,
+                    lighting::update_lighting,
                     view::animate_layers,
                 )
                     .chain(),

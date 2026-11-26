@@ -253,6 +253,7 @@ fn main() {
     // Наборы сетевых событий сервера и клиента совпадают: ввод и звук есть у обоих.
     server.add_plugin(astrocore_input::InputPlugin);
     server.add_plugin(astrocore_audio::AudioPlugin);
+    server.add_plugin(astrocore_light::LightPlugin);
     load_content(&mut server, &resources, &root);
     if let Ok(text) = resources.read_to_string("migration.yml")
         && let Ok(node) = astrocore_data::parse_yaml(&text)
