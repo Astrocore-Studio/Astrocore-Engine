@@ -9,7 +9,7 @@ use astrocore_protocol::MAX_PACKET_BYTES;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-const PROTOCOL_ID: u64 = 0x4153_5452_3244_0005;
+const PROTOCOL_NAMESPACE: u64 = 0x4153_5452_3244_0000;
 const MOVEMENT_TIMEOUT_TICKS: u64 = 5;
 pub const TICK_HZ: u32 = 20;
 pub const TICK_PERIOD: Duration = Duration::from_millis(1000 / TICK_HZ as u64);
@@ -24,6 +24,8 @@ pub struct Input<A> {
 }
 
 pub trait Simulation {
+    const WIRE_VERSION: u16;
+
     type Layout: Serialize;
     type State: Serialize;
     type Action: DeserializeOwned;
@@ -87,7 +89,12 @@ pub struct Host<S: Simulation> {
 
 impl<S: Simulation> Host<S> {
     pub fn start(address: SocketAddr, key: [u8; 32], simulation: S) -> Result<Self, String> {
-        let transport = LyServer::start_with_protocol(address, key, TICK_HZ, PROTOCOL_ID);
+        let transport = LyServer::start_with_protocol(
+            address,
+            key,
+            TICK_HZ,
+            PROTOCOL_NAMESPACE | u64::from(S::WIRE_VERSION),
+        );
         if !transport.is_bound() {
             return Err(format!("не удалось открыть UDP-сокет {address}"));
         }
@@ -210,14 +217,19 @@ pub struct Client<Layout, State, Action> {
 impl<Layout: DeserializeOwned, State: DeserializeOwned, Action: Serialize>
     Client<Layout, State, Action>
 {
-    pub fn connect(address: SocketAddr, client_id: u64, key: [u8; 32]) -> Result<Self, String> {
+    pub fn connect(
+        address: SocketAddr,
+        client_id: u64,
+        key: [u8; 32],
+        wire_version: u16,
+    ) -> Result<Self, String> {
         Ok(Self {
             transport: LyClient::connect_with_protocol(
                 address,
                 client_id,
                 key,
                 TICK_HZ,
-                PROTOCOL_ID,
+                PROTOCOL_NAMESPACE | u64::from(wire_version),
             )?,
             session: None,
             action: PhantomData,
