@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use astrocore_data::{DataMap, DataNode, from_node};
-use astrocore_ecs::{LifecycleWorldExt, MetaData};
+use astrocore_ecs::{EventWorldExt, LifecycleWorldExt, MetaData};
 use astrocore_math::{Angle, IVec2, Vec2};
 use astrocore_prototypes::{EntityOverrides, PrototypeWorldExt};
 use bevy_ecs::entity::Entity;
@@ -131,6 +131,16 @@ pub struct MapFileEntity {
 /// пишет тайлы под прежними номерами, и чанки неизменённой карты не меняются.
 #[derive(bevy_ecs::component::Component, Debug, Clone, Default, PartialEq, Eq)]
 pub struct MapFileTilemap(pub BTreeMap<u16, u32>);
+
+/// Файл карты загружен: сущности созданы и размещены. Широковещательно. Игра здесь
+/// разбирает данные, которые движок сохранил как были (`MapPreserved`), — например, декали.
+#[derive(Debug, Clone)]
+pub struct MapLoaded {
+    pub maps: Vec<Entity>,
+    pub grids: Vec<Entity>,
+    /// Номер сущности в файле → сущность мира.
+    pub uids: HashMap<u32, Entity>,
+}
 
 /// Итог загрузки карты.
 #[derive(Debug, Default)]
@@ -692,6 +702,11 @@ impl MapLoadWorldExt for World {
                 }
             }
         }
+        self.raise_broadcast(&mut MapLoaded {
+            maps: report.maps.iter().map(|(entity, _)| *entity).collect(),
+            grids: report.grids.clone(),
+            uids: report.uids.clone(),
+        });
         Ok(report)
     }
 }

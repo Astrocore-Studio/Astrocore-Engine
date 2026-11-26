@@ -30,7 +30,7 @@ pub use grid::{
 };
 pub use loader::{
     EntityMigrations, MAP_FORMAT_RANGE, MapFileEntity, MapFileTilemap, MapLoadError,
-    MapLoadOptions, MapLoadReport, MapLoadWorldExt, MapPreserved,
+    MapLoadOptions, MapLoadReport, MapLoadWorldExt, MapLoaded, MapPreserved,
 };
 pub use map::{Map, MapCreated, MapError, MapRemoved, MapWorldExt, Maps};
 pub use saver::{MAP_FORMAT_VERSION, MapSave, MapSaveError, MapSaveOptions, MapSaveWorldExt};

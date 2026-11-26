@@ -991,3 +991,24 @@ fn map_made_in_game_saves_without_any_file_loaded_before() {
     let saved = world.save_map(map, MapSaveOptions::default()).unwrap();
     assert_eq!(saved.entities, 2);
 }
+
+#[test]
+fn loading_raises_map_loaded_with_file_uids() {
+    use astrocore_data::parse_yaml;
+    use astrocore_ecs::EventWorldExt;
+
+    #[derive(bevy_ecs::resource::Resource, Default)]
+    struct Seen(Vec<(usize, usize, usize)>);
+
+    let mut world = world();
+    load_prototypes(&mut world);
+    world.init_resource::<Seen>();
+    world.subscribe_broadcast::<MapLoaded>(|world, event| {
+        let seen = (event.maps.len(), event.grids.len(), event.uids.len());
+        world.resource_mut::<Seen>().0.push(seen);
+    });
+    let report = world
+        .load_map(&parse_yaml(&map_file()).unwrap(), false)
+        .unwrap();
+    assert_eq!(world.resource::<Seen>().0, [(1, 1, report.uids.len())]);
+}
