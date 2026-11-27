@@ -299,9 +299,22 @@ fn prevent_collide_lets_bodies_pass() {
         .subscribe::<Physics, PreventCollide>(|_, _, event: &mut PreventCollide| {
             event.cancelled = true;
         });
+    scene.world.init_resource::<Log>();
+    scene
+        .world
+        .subscribe::<Fixtures, StartCollide>(|world, _, _: &mut StartCollide| {
+            world.resource_mut::<Log>().0.push("start".into());
+        });
+    scene
+        .world
+        .subscribe::<Fixtures, EndCollide>(|world, _, _: &mut EndCollide| {
+            world.resource_mut::<Log>().0.push("end".into());
+        });
     let mob = scene.spawn("Mob", 4.5, 5.5);
     scene.walk(mob, Vec2::new(4.0, 0.0), 45);
     assert!(scene.position(mob).x > 8.0);
+    // Запрещённое касание не начинается и не заканчивается.
+    assert!(scene.world.resource::<Log>().0.is_empty());
 }
 
 #[test]

@@ -242,8 +242,11 @@ pub(crate) fn update_proxy(world: &mut World, entity: Entity) {
                 .remove(&entity)
                 .unwrap_or_default();
             for pair in pairs {
+                let prevented = world.resource::<Broadphase>().contacts.get(&pair) == Some(&true);
                 world.resource_mut::<Broadphase>().forget_pair(pair);
-                raise_end(world, pair);
+                if !prevented {
+                    raise_end(world, pair);
+                }
             }
             if let Ok(mut target) = world.get_entity_mut(entity) {
                 target.remove::<Proxy>();
@@ -467,6 +470,10 @@ fn admit(world: &mut World, pair: Pair) -> bool {
     broadphase.contacts.insert(pair, prevented);
     broadphase.pairs_of.entry(a).or_default().push(pair);
     broadphase.pairs_of.entry(b).or_default().push(pair);
+    // Запрещённое касание не начинается (`PreventCollideEvent` Robust).
+    if prevented {
+        return prevented;
+    }
     for (our, other, our_fixture, other_fixture) in
         [(a, b, &name_a, &name_b), (b, a, &name_b, &name_a)]
     {
@@ -825,8 +832,11 @@ pub fn step_physics(world: &mut World, dt: f32, only: Option<Entity>) {
             .collect()
     };
     for pair in ended {
+        let prevented = world.resource::<Broadphase>().contacts.get(&pair) == Some(&true);
         world.resource_mut::<Broadphase>().forget_pair(pair);
-        raise_end(world, pair);
+        if !prevented {
+            raise_end(world, pair);
+        }
     }
 
     // Запись результата в мир.
