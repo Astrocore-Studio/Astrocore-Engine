@@ -25,6 +25,8 @@ use bevy_ecs::change_detection::Tick;
 use crate::Game;
 use crate::sprite::{LayerSource, Sprite as GameSprite};
 use crate::textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
+use crate::unshaded::UNSHADED_LAYER;
+use bevy::camera::visibility::RenderLayers;
 
 /// Сколько тайлов помещается в окне по вертикали (`ViewportSize` SS14).
 pub const VIEW_TILES: f32 = 15.0;
@@ -80,7 +82,7 @@ impl EntityView {
 }
 
 /// Слой спрайта с состоянием RSI: выбор кадра по направлению и времени.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub(crate) struct LayerView {
     texture: StateTexture,
     /// Поворот самого слоя.
@@ -109,6 +111,11 @@ pub struct Views {
     edges: HashMap<String, Option<(Vec<u8>, u32)>>,
     /// Перезапуски анимаций слоёв: (сущность, слой) → (номер запуска, время начала).
     restarts: HashMap<(bevy_ecs::entity::Entity, usize), (u32, f32)>,
+    /// Наименьшая глубина, на которой встретился светящийся слой: обычные слои с глубиной
+    /// не ниже получают двойников в маске светящегося (ADR-0016).
+    unshaded_depth: Option<i32>,
+    /// Глубина опустилась: в следующем кадре слои всех сущностей строятся заново.
+    rebuild_all: bool,
 }
 
 impl Views {
@@ -136,16 +143,22 @@ pub struct Eye {
     pub level: i16,
 }
 
+/// Камера мира, которую видит игрок (в отличие от камеры маски светящегося).
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct WorldCamera;
+
+/// Проекция камеры мира: окно по вертикали вмещает [`VIEW_TILES`] тайлов.
+pub(crate) fn world_projection() -> Projection {
+    Projection::Orthographic(OrthographicProjection {
+        scaling_mode: ScalingMode::FixedVertical {
+            viewport_height: VIEW_TILES,
+        },
+        ..OrthographicProjection::default_2d()
+    })
+}
+
 pub(crate) fn spawn_camera(mut commands: Commands) {
-    commands.spawn((
-        Camera2d,
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::FixedVertical {
-                viewport_height: VIEW_TILES,
-            },
-            ..OrthographicProjection::default_2d()
-        }),
-    ));
+    commands.spawn((WorldCamera, Camera2d, world_projection()));
 }
 
 /// Глаз следует за сущностью игрока, камера — за глазом.
@@ -153,7 +166,7 @@ pub(crate) fn follow_player(
     game: Res<Game>,
     views: Res<Views>,
     mut eye: ResMut<Eye>,
-    mut camera: Single<&mut Transform, With<Camera2d>>,
+    mut camera: Single<&mut Transform, With<WorldCamera>>,
 ) {
     let world = &game.0;
     let Some(entity) = world.resource::<ClientNet>().attached else {
@@ -182,8 +195,8 @@ pub(crate) fn follow_player(
 pub(crate) fn follow_view(
     game: Res<Game>,
     views: Res<Views>,
-    shown: Query<&Transform, (With<EntityView>, Without<Camera2d>)>,
-    mut camera: Single<&mut Transform, With<Camera2d>>,
+    shown: Query<&Transform, (With<EntityView>, Without<WorldCamera>)>,
+    mut camera: Single<&mut Transform, With<WorldCamera>>,
 ) {
     let Some(entity) = game.0.resource::<ClientNet>().attached else {
         return;
@@ -234,6 +247,7 @@ pub(crate) fn sync_entities(
         fixed.overstep_fraction()
     };
     let mut alive: HashSet<bevy_ecs::entity::Entity> = HashSet::with_capacity(views.entities.len());
+    let rebuild_all = std::mem::take(&mut views.rebuild_all);
     let Some(sprite_id) = world.component_id::<GameSprite>() else {
         return;
     };
@@ -297,7 +311,7 @@ pub(crate) fn sync_entities(
                     if *visibility != Visibility::Inherited {
                         *visibility = Visibility::Inherited;
                     }
-                    let rebuild = state.built != changed;
+                    let rebuild = state.built != changed || rebuild_all;
                     state.built = changed;
                     rebuild
                 }
@@ -308,9 +322,27 @@ pub(crate) fn sync_entities(
                 continue;
             }
             commands.entity(view).despawn_related::<Children>();
-            for (order, layer) in sprite.resolved_layers().into_iter().enumerate() {
+            let layers = sprite.resolved_layers();
+            let depth = sprite.drawdepth.0;
+            if layers.iter().any(|layer| layer.unshaded)
+                && views.unshaded_depth.is_none_or(|lowest| depth < lowest)
+            {
+                // Обычные слои ниже прежней границы теперь могут закрывать светящиеся.
+                views.rebuild_all |= views.unshaded_depth.is_some();
+                views.unshaded_depth = Some(depth);
+            }
+            let masked = views.unshaded_depth.is_some_and(|lowest| depth >= lowest);
+            for (order, layer) in layers.into_iter().enumerate() {
                 let order = order as f32 * 1e-3;
                 let color = bevy_color(layer.color);
+                // Двойник в маске светящегося: свой цвет или чёрный с той же прозрачностью.
+                let twin = (layer.unshaded || masked).then(|| {
+                    if layer.unshaded {
+                        color
+                    } else {
+                        Color::BLACK.with_alpha(layer.color.a)
+                    }
+                });
                 match &layer.source {
                     LayerSource::Rsi { rsi, state } => {
                         let Some(texture) =
@@ -331,45 +363,64 @@ pub(crate) fn sync_entities(
                             }
                             entry.1
                         };
-                        commands.spawn((
-                            ChildOf(view),
-                            Sprite {
-                                image: texture.image.clone(),
-                                texture_atlas: Some(TextureAtlas {
-                                    layout: texture.layout.clone(),
-                                    index: 0,
-                                }),
-                                color,
-                                custom_size: Some(texture.size * layer.scale),
-                                ..default()
-                            },
-                            Transform::from_xyz(layer.offset.x, layer.offset.y, order),
-                            LayerView {
-                                texture,
-                                rotation: layer.rotation,
-                                offset: layer.offset,
-                                order,
-                                direction: layer.direction,
-                                start,
-                            },
-                        ));
+                        let sprite = Sprite {
+                            image: texture.image.clone(),
+                            texture_atlas: Some(TextureAtlas {
+                                layout: texture.layout.clone(),
+                                index: 0,
+                            }),
+                            color,
+                            custom_size: Some(texture.size * layer.scale),
+                            ..default()
+                        };
+                        let place = Transform::from_xyz(layer.offset.x, layer.offset.y, order);
+                        let layer_view = LayerView {
+                            texture,
+                            rotation: layer.rotation,
+                            offset: layer.offset,
+                            order,
+                            direction: layer.direction,
+                            start,
+                        };
+                        if let Some(twin) = twin {
+                            commands.spawn((
+                                ChildOf(view),
+                                Sprite {
+                                    color: twin,
+                                    ..sprite.clone()
+                                },
+                                place,
+                                layer_view.clone(),
+                                RenderLayers::layer(UNSHADED_LAYER),
+                            ));
+                        }
+                        commands.spawn((ChildOf(view), sprite, place, layer_view));
                     }
                     LayerSource::Texture(path) => {
                         let Some((image, size)) = textures.single(&resources.0, &mut images, path)
                         else {
                             continue;
                         };
-                        commands.spawn((
-                            ChildOf(view),
-                            Sprite {
-                                image,
-                                color,
-                                custom_size: Some(size * layer.scale),
-                                ..default()
-                            },
-                            Transform::from_xyz(layer.offset.x, layer.offset.y, order)
-                                .with_rotation(Quat::from_rotation_z(layer.rotation.0)),
-                        ));
+                        let sprite = Sprite {
+                            image,
+                            color,
+                            custom_size: Some(size * layer.scale),
+                            ..default()
+                        };
+                        let place = Transform::from_xyz(layer.offset.x, layer.offset.y, order)
+                            .with_rotation(Quat::from_rotation_z(layer.rotation.0));
+                        if let Some(twin) = twin {
+                            commands.spawn((
+                                ChildOf(view),
+                                Sprite {
+                                    color: twin,
+                                    ..sprite.clone()
+                                },
+                                place,
+                                RenderLayers::layer(UNSHADED_LAYER),
+                            ));
+                        }
+                        commands.spawn((ChildOf(view), sprite, place));
                     }
                 }
             }

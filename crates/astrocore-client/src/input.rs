@@ -112,7 +112,7 @@ pub fn mouse_name(button: MouseButton) -> Option<String> {
 /// Курсор окна → точка мира.
 pub(crate) fn track_cursor(
     window: Option<Single<&Window, With<PrimaryWindow>>>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Single<(&Camera, &GlobalTransform), With<crate::view::WorldCamera>>,
     mut cursor: ResMut<Cursor>,
 ) {
     let (camera, transform) = *camera;

@@ -7,6 +7,7 @@ mod input;
 mod lighting;
 mod sprite;
 mod textures;
+mod unshaded;
 mod view;
 mod visualizer;
 mod windows;
@@ -27,7 +28,8 @@ pub use sprite::{
     register_draw_depth,
 };
 pub use textures::{PIXELS_PER_TILE, StateTexture, Textures, rsi_direction};
-pub use view::{Eye, GameResources, VIEW_TILES, Views, entity_label};
+pub use unshaded::{UNSHADED_LAYER, UnshadedCamera, UnshadedMaterial};
+pub use view::{Eye, GameResources, VIEW_TILES, Views, WorldCamera, entity_label};
 pub use visualizer::{GenericVisualizer, SpriteLayerData};
 pub use windows::{Tooltip, UiAction, UiHover, UiStyle, WindowKinds, spawn_button, spawn_label};
 
@@ -100,6 +102,7 @@ pub struct ClientPlugin;
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         lighting::build(app);
+        unshaded::build(app);
         windows::build(app);
         app.init_resource::<Views>()
             .init_resource::<Bindings>()
@@ -127,6 +130,7 @@ impl Plugin for ClientPlugin {
                     view::sync_chunks,
                     view::sync_entities,
                     view::follow_view,
+                    unshaded::follow_world_camera,
                     lighting::update_lighting,
                     view::animate_layers,
                 )

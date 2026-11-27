@@ -220,7 +220,12 @@ pub struct ResolvedLayer {
     pub index: usize,
     /// Номер запуска анимации слоя ([`SpriteLayer::animation_restart`]).
     pub animation_restart: u32,
+    /// Слой светится сам и не затемняется освещением (`shader: unshaded`, ADR-0016).
+    pub unshaded: bool,
 }
+
+/// Шейдер слоя без освещения (`unshaded` в прототипах SS14).
+pub const UNSHADED: &str = "unshaded";
 
 /// Путь ресурса картинки: пути спрайтов в данных отсчитываются от каталога `Textures`.
 fn texture_path(path: &str) -> String {
@@ -252,6 +257,7 @@ impl Sprite {
             rotation: self.rotation,
             index: 0,
             animation_restart: 0,
+            unshaded: false,
         };
         if self.layers.is_empty() {
             return match (&self.sprite, &self.state) {
@@ -284,6 +290,7 @@ impl Sprite {
                     rotation: self.rotation + layer.rotation,
                     index,
                     animation_restart: layer.animation_restart,
+                    unshaded: layer.shader.as_deref() == Some(UNSHADED),
                 })
             })
             .collect()
@@ -322,6 +329,7 @@ mod tests {
                 rotation: Angle::ZERO,
                 index: 0,
                 animation_restart: 0,
+                unshaded: false,
             }]
         );
         assert!(from_node::<Sprite>(&parse_yaml("drawdepth: Nowhere").unwrap()).is_err());
@@ -347,6 +355,7 @@ layers:
   color: "#FF000080"
   scale: 0.5,0.5
   offset: 1,0
+  shader: unshaded
 - texture: /Textures/Interface/icon.png
 "##,
             )
@@ -372,6 +381,7 @@ layers:
         assert_eq!(layers[1].scale, Vec2::ONE);
         assert_eq!(layers[1].offset, Vec2::new(1.0, 0.5));
         assert_eq!(layers[1].color.to_bytes(), [128, 0, 0, 128]);
+        assert!(layers[1].unshaded && !layers[0].unshaded);
         assert_eq!(
             layers[2].source,
             LayerSource::Texture("Textures/Interface/icon.png".into())

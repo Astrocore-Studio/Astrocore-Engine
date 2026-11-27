@@ -27,6 +27,8 @@ use bevy::sprite_render::{
 use bevy::window::PrimaryWindow;
 
 use crate::Game;
+use crate::unshaded::{UnshadedMaterial, UnshadedTarget};
+use crate::view::WorldCamera;
 use crate::view::{Eye, VIEW_TILES};
 
 /// Точек карты освещения на сторону тайла.
@@ -131,6 +133,8 @@ pub(crate) struct LightState {
     /// Ключ и маска поля зрения последнего кадра.
     fov: Option<(u64, Vec<bool>)>,
     overlay: Option<(Entity, Handle<Image>, Handle<LightMaterial>)>,
+    /// Прямоугольник сложения светящегося (ADR-0016) и его материал.
+    unshaded: Option<(Entity, Handle<UnshadedMaterial>)>,
 }
 
 /// Источник света кадра.
@@ -263,11 +267,13 @@ pub(crate) fn update_lighting(
     lighting: Res<Lighting>,
     resources: Res<crate::view::GameResources>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
-    camera: Single<&Transform, (With<Camera2d>, Without<LightOverlay>)>,
+    camera: Single<&Transform, (With<WorldCamera>, Without<LightOverlay>)>,
     mut state: ResMut<LightState>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LightMaterial>>,
+    mut unshaded_materials: ResMut<Assets<UnshadedMaterial>>,
+    unshaded: Option<Res<UnshadedTarget>>,
     mut overlays: Query<(&mut Transform, &mut Visibility), With<LightOverlay>>,
 ) {
     let world = &mut game.0;
@@ -468,6 +474,7 @@ pub(crate) fn update_lighting(
     let draw_fov = world
         .get::<astrocore_net::Eye>(player)
         .is_none_or(|eye| eye.draw_fov);
+    let mut hidden: Option<&Vec<bool>> = None;
     if lighting.fov && draw_fov {
         let eye_point = astrocore_math::Vec2::new(eye.position.x, eye.position.y);
         let key = hash_of((
@@ -495,6 +502,7 @@ pub(crate) fn update_lighting(
                     *texel = [0.0; 3];
                 }
             }
+            hidden = Some(mask);
         }
     }
 
@@ -507,6 +515,10 @@ pub(crate) fn update_lighting(
             for channel in 0..3 {
                 data[row + x * 4 + channel] =
                     (texel[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            // Прозрачность — видимость из глаза: её читает сложение светящегося.
+            if hidden.is_some_and(|mask| !mask[y * width + x]) {
+                data[row + x * 4 + 3] = 0;
             }
         }
     }
@@ -529,7 +541,7 @@ pub(crate) fn update_lighting(
         OVERLAY_DEPTH,
     )
     .with_scale(Vec3::new(size.x as f32 / scale, size.y as f32 / scale, 1.0));
-    match &state.overlay {
+    let light_image = match &state.overlay {
         Some((overlay, image_handle, material)) => {
             let _ = images.insert(image_handle, image);
             // Материал помечается изменённым, чтобы отрисовка взяла новую картинку.
@@ -538,6 +550,7 @@ pub(crate) fn update_lighting(
                 *transform = target;
                 *visibility = Visibility::Inherited;
             }
+            image_handle.clone()
         }
         None => {
             let image_handle = images.add(image);
@@ -552,7 +565,43 @@ pub(crate) fn update_lighting(
                     LightOverlay,
                 ))
                 .id();
-            state.overlay = Some((overlay, image_handle, material));
+            state.overlay = Some((overlay, image_handle.clone(), material));
+            image_handle
+        }
+    };
+
+    // Светящееся поверх света (ADR-0016).
+    let Some(unshaded) = unshaded else {
+        return;
+    };
+    let screen = Vec4::new(unshaded.size.x as f32, unshaded.size.y as f32, 0.0, 0.0);
+    let above = target.with_translation(target.translation.with_z(OVERLAY_DEPTH + 1.0));
+    match &state.unshaded {
+        Some((overlay, material)) => {
+            if let Some(mut material) = unshaded_materials.get_mut(material) {
+                material.screen = screen;
+                material.mask = unshaded.image.clone();
+            }
+            if let Ok((mut transform, mut visibility)) = overlays.get_mut(*overlay) {
+                *transform = above;
+                *visibility = Visibility::Inherited;
+            }
+        }
+        None => {
+            let material = unshaded_materials.add(UnshadedMaterial {
+                light: light_image,
+                mask: unshaded.image.clone(),
+                screen,
+            });
+            let overlay = commands
+                .spawn((
+                    Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
+                    MeshMaterial2d(material.clone()),
+                    above,
+                    LightOverlay,
+                ))
+                .id();
+            state.unshaded = Some((overlay, material));
         }
     }
 }
