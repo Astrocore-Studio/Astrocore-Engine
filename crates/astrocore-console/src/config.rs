@@ -78,7 +78,7 @@ impl CVarValue {
     }
 
     /// Приводит значение к виду образца: целое к дробному, текст — разбором.
-    fn coerce(self, like: &CVarValue) -> Result<CVarValue, ConfigError> {
+    pub fn coerce(self, like: &CVarValue) -> Result<CVarValue, ConfigError> {
         let mismatch = |value: &CVarValue| ConfigError::WrongType {
             expected: like.kind(),
             found: value.to_string(),

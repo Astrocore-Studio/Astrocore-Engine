@@ -132,6 +132,7 @@ fn handle(world: &mut World, message: ServerMessage) {
             if let Some(mut time) = world.get_resource_mut::<astrocore_ecs::GameTime>() {
                 time.tick_rate = tick_rate.max(1);
             }
+            world.raise_broadcast(&mut crate::cvars::ConnectedToServer);
         }
         ServerMessage::Rejected(reason) => {
             world.resource_mut::<ClientNet>().status = ClientStatus::Rejected(reason);

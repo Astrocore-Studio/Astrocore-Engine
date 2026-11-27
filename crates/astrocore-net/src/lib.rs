@@ -7,6 +7,7 @@
 mod appearance;
 mod client;
 mod components;
+mod cvars;
 mod events;
 mod ids;
 mod protocol;
@@ -27,6 +28,9 @@ pub use appearance::{Appearance, AppearanceChange, AppearanceValue, AppearanceWo
 pub use client::{
     ClientNet, ClientStatus, ClientTransport, ClientWorldExt, Detached, LocalPlayerAttached,
     StateApplied, StateApplying, apply_state,
+};
+pub use cvars::{
+    CVarWire, CVarsMessage, ClientCVarWorldExt, ClientCVars, ConnectedToServer, replicated_vars,
 };
 pub use events::{NetEvent, NetEventWorldExt, NetEvents, NetTarget};
 pub use ids::{DeletionLog, NetEntities, NetEntity, NetSync};
@@ -75,6 +79,7 @@ fn register_engine_components(world: &mut World) {
     visibility::register(world);
     world.init_resource::<NetEvents>();
     remote_console::register(world);
+    cvars::register(world);
     world
         .resource_mut::<Schedules>()
         .configure_sets(Sync, (NetSet::Assign, NetSet::Mark, NetSet::Send).chain());
@@ -89,6 +94,7 @@ impl GamePlugin for NetServerPlugin {
         pvs::register(world);
         server::register(world);
         remote_console::register_server(world);
+        cvars::register_server(world);
         world.add_game_systems(PreUpdate, server::receive);
         world.add_game_systems(Sync, server::assign_net_entities.in_set(NetSet::Assign));
         world.add_game_systems(Sync, server::send.in_set(NetSet::Send));
@@ -103,6 +109,7 @@ impl GamePlugin for NetClientPlugin {
         register_engine_components(world);
         client::register(world);
         remote_console::register_client(world);
+        cvars::register_client(world);
         world.add_game_systems(PreUpdate, client::receive);
     }
 }

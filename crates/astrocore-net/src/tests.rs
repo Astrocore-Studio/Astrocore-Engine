@@ -836,3 +836,53 @@ fn without_deferral_players_get_random_user_ids() {
     let first = link.server.get::<Session>(session).unwrap().user_id;
     assert_ne!(first, NetUserId::random());
 }
+
+#[test]
+fn replicated_cvars_travel_between_server_and_client() {
+    use astrocore_console::{CVarDef, CVarFlags};
+    const TICKRATE: CVarDef<i32> = CVarDef::new(
+        "test.tickrate",
+        30,
+        CVarFlags::SERVER.union(CVarFlags::REPLICATED),
+        "",
+    );
+    const SECRET: CVarDef<&str> = CVarDef::new("test.secret", "", CVarFlags::SERVER, "");
+    const SCREEN: CVarDef<bool> = CVarDef::new(
+        "test.screen_shake",
+        true,
+        CVarFlags::CLIENT.union(CVarFlags::REPLICATED),
+        "",
+    );
+    let mut link = Link::new();
+    for world in [&mut link.server, &mut link.client] {
+        world.register_cvar(&TICKRATE);
+        world.register_cvar(&SECRET);
+        world.register_cvar(&SCREEN);
+    }
+    link.server.set_cvar(&TICKRATE, 60).unwrap();
+    link.server.set_cvar(&SECRET, "ключ").unwrap();
+    link.client.set_cvar(&SCREEN, false).unwrap();
+    // Клиент не может переписать серверную настройку своим значением.
+    link.client.set_cvar(&TICKRATE, 10).unwrap();
+    let session = link.join();
+    // При входе: клиент получает реплицируемые настройки сервера, сервер — клиента.
+    assert_eq!(link.client.cvar(&TICKRATE), 60);
+    assert_eq!(
+        link.client
+            .resource::<astrocore_console::Config>()
+            .get_text(&SECRET),
+        ""
+    );
+    assert!(!link.server.client_cvar(session, &SCREEN));
+    assert!(link.server.cvar(&SCREEN));
+    // Изменения передаются сразу.
+    link.server.set_cvar(&TICKRATE, 20).unwrap();
+    link.client.set_cvar(&SCREEN, true).unwrap();
+    link.pump(2);
+    assert_eq!(link.client.cvar(&TICKRATE), 20);
+    assert!(link.server.client_cvar(session, &SCREEN));
+    // Своё значение `CLIENT` клиент не отдаёт серверу на перезапись.
+    link.server.set_cvar(&SCREEN, false).unwrap();
+    link.pump(2);
+    assert!(link.client.cvar(&SCREEN));
+}
