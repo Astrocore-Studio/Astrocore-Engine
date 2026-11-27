@@ -13,6 +13,8 @@ astrocore-resources.workspace = true
 bevy_ecs.workspace = true
 fluent-bundle = "0.16"
 fluent-syntax = "0.12.0"
+intl-memoizer = "0.5.3"
+serde.workspace = true
 thiserror.workspace = true
 unic-langid = "0.9"
 

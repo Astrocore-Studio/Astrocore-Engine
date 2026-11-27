@@ -6,8 +6,10 @@
 //! идентификатор — так пропуски видны в игре и ничего не падает.
 
 mod compat;
+mod grammar;
 mod names;
 
+pub use grammar::{EntityArg, Grammar, escape_parameter, escape_text, indefinite_article};
 pub use names::{EntityNameWorldExt, EntityNames, EntityText};
 
 use std::collections::HashMap;
@@ -27,6 +29,14 @@ pub const DEFAULT_CULTURE: &str = "en-US";
 pub enum LocArg {
     Text(String),
     Number(f64),
+    /// Сущность: название и грамматика для `THE`, `SUBJECT`, `GENDER` и других.
+    Entity(EntityArg),
+}
+
+impl From<EntityArg> for LocArg {
+    fn from(value: EntityArg) -> Self {
+        LocArg::Entity(value)
+    }
 }
 
 impl From<&str> for LocArg {
@@ -101,6 +111,7 @@ fn to_fluent(arg: &LocArg) -> FluentValue<'static> {
     match arg {
         LocArg::Text(text) => FluentValue::from(text.clone()),
         LocArg::Number(number) => FluentValue::from(*number),
+        LocArg::Entity(entity) => FluentValue::Custom(Box::new(entity.clone())),
     }
 }
 
@@ -108,17 +119,28 @@ fn from_fluent(value: &FluentValue<'_>) -> LocArg {
     match value {
         FluentValue::Number(number) => LocArg::Number(number.value),
         FluentValue::String(text) => LocArg::Text(text.to_string()),
+        FluentValue::Custom(custom) => custom.as_any().downcast_ref::<EntityArg>().map_or_else(
+            || LocArg::Text(String::new()),
+            |e| LocArg::Entity(e.clone()),
+        ),
         _ => LocArg::Text(String::new()),
+    }
+}
+
+impl LocArg {
+    /// Значение как текст: у сущности — название.
+    pub fn text(&self) -> String {
+        match self {
+            LocArg::Text(text) => text.clone(),
+            LocArg::Number(number) => number.to_string(),
+            LocArg::Entity(entity) => entity.name.clone(),
+        }
     }
 }
 
 /// `CAPITALIZE(текст)`: первая буква — заглавная.
 fn capitalize(args: &[LocArg]) -> LocArg {
-    let text = match args.first() {
-        Some(LocArg::Text(text)) => text.clone(),
-        Some(LocArg::Number(number)) => number.to_string(),
-        None => String::new(),
-    };
+    let text = args.first().map(LocArg::text).unwrap_or_default();
     let mut chars = text.chars();
     LocArg::Text(match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -128,11 +150,7 @@ fn capitalize(args: &[LocArg]) -> LocArg {
 
 /// `TOSTRING(значение)`: значение как текст.
 fn to_string(args: &[LocArg]) -> LocArg {
-    LocArg::Text(match args.first() {
-        Some(LocArg::Text(text)) => text.clone(),
-        Some(LocArg::Number(number)) => number.to_string(),
-        None => String::new(),
-    })
+    LocArg::Text(args.first().map(LocArg::text).unwrap_or_default())
 }
 
 fn install(bundle: &mut FluentBundle<FluentResource>, name: &'static str, function: LocFunction) {
@@ -162,9 +180,16 @@ impl Loc {
         let language: LanguageIdentifier = code
             .parse()
             .map_err(|_| LocError::BadCulture(code.to_owned()))?;
-        let mut bundle = FluentBundle::new_concurrent(vec![language]);
+        let mut bundle = FluentBundle::new_concurrent(vec![language.clone()]);
         // Знаки изоляции направления письма мешают сравнению и поиску строк.
         bundle.set_use_isolating(false);
+        // Грамматика по сущности: служебные сообщения языка поверх своей копии en-US.
+        let engine_lib = resources
+            .read_to_string(&format!("Locale/{code}/_engine_lib.ftl"))
+            .ok()
+            .map(|text| compat::strip_bom(&text).to_owned());
+        let grammar = grammar::grammar_bundle(&language, engine_lib);
+        grammar::install_grammar(&mut bundle, &grammar);
         for (name, function) in &self.functions {
             install(&mut bundle, name, *function);
         }
@@ -287,6 +312,31 @@ impl Loc {
         self.try_get(&format!("ent-{prototype}"), &[])
     }
 
+    /// Грамматические признаки прототипа: атрибуты сообщения `ent-<идентификатор>`, кроме
+    /// `.desc` и `.suffix` (`EntityLocData.Attributes`).
+    pub fn entity_attributes(&self, prototype: &str) -> std::collections::BTreeMap<String, String> {
+        let id = format!("ent-{prototype}");
+        let mut found = std::collections::BTreeMap::new();
+        for (_, culture) in &self.cultures {
+            let Some(message) = culture.bundle.get_message(&id) else {
+                continue;
+            };
+            for attribute in message.attributes() {
+                let name = attribute.id();
+                if name == "desc" || name == "suffix" || found.contains_key(name) {
+                    continue;
+                }
+                let mut errors = Vec::new();
+                let value = culture
+                    .bundle
+                    .format_pattern(attribute.value(), None, &mut errors);
+                found.insert(name.to_owned(), value.into_owned());
+            }
+            break;
+        }
+        found
+    }
+
     /// Описание прототипа сущности: атрибут `.desc` сообщения `ent-<идентификатор>`.
     pub fn entity_description(&self, prototype: &str) -> Option<String> {
         self.try_get(&format!("ent-{prototype}.desc"), &[])
@@ -326,6 +376,60 @@ mod tests {
         let mut resources = Resources::default();
         resources.mount(dir.path());
         (dir, resources)
+    }
+
+    #[test]
+    fn entity_arguments_carry_gender_and_proper_nouns() {
+        let dir = tempfile::tempdir().unwrap();
+        let locale = dir.path().join("Locale/en-US");
+        std::fs::create_dir_all(&locale).unwrap();
+        std::fs::write(
+            locale.join("grammar.ftl"),
+            "picks = { CAPITALIZE(THE($user)) } picks up { THE($item) }. { CAPITALIZE(SUBJECT($user)) } { CONJUGATE-BE($user) } happy with { POSS-ADJ($user) } { $item }.\nme = { PROPER($ent) ->\n    *[false] The { $ent } waves.\n     [true] { $ent } waves.\n}\nhave = { INDEFINITE($item) } { $item }; { ATTRIB($item, \"material\") }; { GENDER($item) }\n",
+        )
+        .unwrap();
+        let mut resources = Resources::default();
+        resources.mount(dir.path());
+        let mut loc = Loc::default();
+        loc.load_culture(&resources, "en-US").unwrap();
+        let urist = EntityArg::new("Urist")
+            .with("gender", "female")
+            .with("proper", "true");
+        let crowbar = EntityArg::new("crowbar").with("material", "steel");
+        let they = EntityArg::new("Alex")
+            .with("gender", "epicene")
+            .with("proper", "true");
+        let args = |user: &EntityArg| {
+            [
+                ("user", LocArg::from(user.clone())),
+                ("item", LocArg::from(crowbar.clone())),
+            ]
+        };
+        assert_eq!(
+            loc.format("picks", &args(&urist)),
+            "Urist picks up the crowbar. She is happy with her crowbar."
+        );
+        assert_eq!(
+            loc.format("picks", &args(&they)),
+            "Alex picks up the crowbar. They are happy with their crowbar."
+        );
+        assert_eq!(
+            loc.format("me", &[("ent", LocArg::from(crowbar.clone()))]),
+            "The crowbar waves."
+        );
+        assert_eq!(
+            loc.format("me", &[("ent", LocArg::from(urist.clone()))]),
+            "Urist waves."
+        );
+        assert_eq!(
+            loc.format("have", &[("item", LocArg::from(crowbar.clone()))]),
+            "a crowbar; steel; neuter"
+        );
+        let apple = EntityArg::new("apple").with("indefinite", "some");
+        assert_eq!(
+            loc.format("have", &[("item", LocArg::from(apple))]),
+            "some apple; other; neuter"
+        );
     }
 
     #[test]

@@ -19,6 +19,8 @@ use crate::Loc;
 pub struct EntityText {
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Грамматические признаки из атрибутов сообщения (`.gender`, `.proper`…), с родителей.
+    pub attributes: std::collections::BTreeMap<String, String>,
 }
 
 /// Названия прототипов сущностей на языке этого мира. Ресурс `World`.
@@ -63,14 +65,15 @@ fn resolve(
         description: loc
             .entity_description(id)
             .or_else(|| prototype.description.clone()),
+        attributes: loc.entity_attributes(id),
     };
     for parent in &prototype.parents {
-        if text.name.is_some() && text.description.is_some() {
-            break;
-        }
         let inherited = resolve(loc, prototypes, parent, done, walking);
         text.name = text.name.or(inherited.name);
         text.description = text.description.or(inherited.description);
+        for (key, value) in inherited.attributes {
+            text.attributes.entry(key).or_insert(value);
+        }
     }
     walking.remove(id);
     done.insert(id.to_owned(), text.clone());
@@ -88,6 +91,10 @@ pub trait EntityNameWorldExt {
 
     /// Описание сущности: своё, иначе описание прототипа.
     fn entity_description(&self, entity: Entity) -> Option<String>;
+
+    /// Сущность как аргумент сообщения: название и признаки прототипа, поверх них —
+    /// компонента `Grammar` (`TryGetEntityLocAttrib`).
+    fn entity_arg(&self, entity: Entity) -> crate::EntityArg;
 }
 
 impl EntityNameWorldExt for World {
@@ -119,6 +126,28 @@ impl EntityNameWorldExt for World {
         self.get_resource::<EntityNames>()
             .and_then(|names| names.get(prototype)?.name.clone())
             .unwrap_or_else(|| prototype.to_owned())
+    }
+
+    fn entity_arg(&self, entity: Entity) -> crate::EntityArg {
+        let mut arg = crate::EntityArg::new(self.entity_name(entity));
+        if let Some(prototype) = self
+            .get::<MetaData>(entity)
+            .and_then(|m| m.prototype.as_deref())
+            && let Some(text) = self
+                .get_resource::<EntityNames>()
+                .and_then(|n| n.get(prototype))
+        {
+            arg.attributes = text.attributes.clone();
+        }
+        if let Some(grammar) = self.get::<crate::Grammar>(entity) {
+            arg.attributes.extend(
+                grammar
+                    .attributes
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+        }
+        arg
     }
 
     fn entity_description(&self, entity: Entity) -> Option<String> {
@@ -162,6 +191,7 @@ mod tests {
 
     const LOCALE: &str = "ent-BaseWall = преграда
     .desc = Не пройти.
+    .gender = female
 ent-WallSolid = сплошная стена
 ent-WallSolidRust = { ent-WallSolid }
     .desc = Ржавая.
@@ -209,6 +239,16 @@ ent-WallSolidRust = { ent-WallSolid }
             world.entity_description(old).as_deref(),
             Some("описание из прототипа")
         );
+        // Признаки грамматики: из перевода с родителей, поверх — компонент `Grammar`.
+        let arg = world.entity_arg(rusty);
+        assert_eq!(arg.name, "сплошная стена");
+        assert_eq!(arg.gender(), "female");
+        world.entity_mut(rusty).insert(crate::Grammar {
+            attributes: [("proper".to_owned(), "true".to_owned())].into(),
+        });
+        let arg = world.entity_arg(rusty);
+        assert!(arg.proper());
+        assert_eq!(arg.gender(), "female");
         let mystery = world.spawn_prototype("Mystery").unwrap();
         assert_eq!(world.entity_name(mystery), "Mystery");
         assert_eq!(world.entity_description(mystery), None);
