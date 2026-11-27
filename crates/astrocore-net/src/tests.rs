@@ -331,6 +331,24 @@ fn container_contents_replicate_with_owner() {
 }
 
 #[test]
+fn contents_of_deleted_owner_survive_on_client() {
+    let mut link = Link::new();
+    let locker = link.spawn("Locker", 4.5, 4.5);
+    let crowbar = link.spawn("Crowbar", 4.5, 4.5);
+    link.server
+        .insert_into_container(crowbar, locker, "storage")
+        .unwrap();
+    link.join();
+    let item = link.on_client(crowbar).unwrap();
+    // Шкаф разрушен: вещь выпала на пол и шкаф удалён в одном такте.
+    link.server.remove_from_container(crowbar, None).unwrap();
+    link.server.delete_entity(locker);
+    link.pump(2);
+    assert!(link.client.get_entity(item).is_ok());
+    assert_eq!(link.client.parent(item), link.on_client(link.grid));
+}
+
+#[test]
 fn lost_packets_do_not_break_convergence() {
     let mut link = Link::new();
     let airlock = link.spawn("Airlock", 4.5, 2.5);

@@ -267,11 +267,35 @@ fn spawn_from_state(world: &mut World, net: NetEntity, prototype: Option<&str>) 
     entity
 }
 
+/// Сетевые потомки удаляемой сущности не удаляются вместе с ней: их судьбу — удаление или
+/// новое место (вещи, выпавшие из разрушенного шкафа) — пришлёт сервер. Без этого состояние
+/// выпавшей вещи приходило бы к уже удалённой сущности. Местные потомки (свет, рисунки)
+/// удаляются вместе с родителем. Образец — `ClientGameStateManager.ProcessDeletions`
+/// Robust @ 1afd692.
+fn detach_networked_children(world: &mut World, entity: Entity) {
+    let mut stack: Vec<Entity> = vec![entity];
+    while let Some(current) = stack.pop() {
+        let children: Vec<Entity> = world
+            .get::<bevy_ecs::hierarchy::Children>(current)
+            .map(|c| c.iter().copied().collect())
+            .unwrap_or_default();
+        for child in children {
+            if world.get::<NetEntity>(child).is_some() {
+                world.detach_to_null(child);
+                world.entity_mut(child).insert(Detached);
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+}
+
 /// Применяет состояние сервера к миру клиента.
 pub fn apply_state(world: &mut World, state: GameState) -> Result<(), NetError> {
     for net in &state.deleted {
         if let Some(entity) = world.resource::<NetEntities>().entity(*net) {
             world.resource_mut::<NetEntities>().remove(*net);
+            detach_networked_children(world, entity);
             world.delete_entity(entity);
         }
     }
