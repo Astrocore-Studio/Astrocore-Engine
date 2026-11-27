@@ -77,12 +77,26 @@ fn capture_frame(
     mut commands: Commands,
     capture: Res<Capture>,
     views: Res<Views>,
+    game: Option<Res<Game>>,
     mut frames: Local<u32>,
+    mut empty: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    // Отсчёт начинается, когда мир получен и нарисован.
+    // Отсчёт начинается, когда мир получен и нарисован. Подключённый клиент без сущностей
+    // (лобби) тоже снимается: после стольких же пустых кадров, сколько ждёт снимок.
     if views.entity_count() == 0 {
-        return;
+        let connected = game.as_ref().is_some_and(|game| {
+            game.0
+                .get_resource::<ClientNet>()
+                .is_some_and(|net| net.status == astrocore_net::ClientStatus::Connected)
+        });
+        if !connected {
+            return;
+        }
+        *empty += 1;
+        if *empty < capture.after_frames {
+            return;
+        }
     }
     *frames += 1;
     if *frames == capture.after_frames {
