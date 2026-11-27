@@ -186,6 +186,13 @@ impl DataNode {
         }
     }
 
+    pub fn as_seq_mut(&mut self) -> Option<&mut Vec<DataNode>> {
+        match &mut self.value {
+            Value::Seq(items) => Some(items),
+            _ => None,
+        }
+    }
+
     pub fn as_map(&self) -> Option<&DataMap> {
         match &self.value {
             Value::Map(map) => Some(map),

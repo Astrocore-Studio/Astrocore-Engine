@@ -988,8 +988,45 @@ fn map_made_in_game_saves_without_any_file_loaded_before() {
     let (map, _) = world.create_map(false);
     let grid = world.create_grid(map);
     world.set_tiles(grid, [(TileCoord::new(0, 0, 0), Tile::new(1))]);
-    let saved = world.save_map(map, MapSaveOptions::default()).unwrap();
+    let mut saved = world.save_map(map, MapSaveOptions::default()).unwrap();
     assert_eq!(saved.entities, 2);
+    // Номера сущностей документа доступны игре (ADR-0019): карта и грид записаны под ними.
+    assert_eq!(saved.uids.len(), 2);
+    let uid = |entity| saved.uids[&entity].to_string();
+    let map_uid = uid(map);
+    let grid_uid = uid(grid);
+    let root = saved.document.as_map().unwrap();
+    let listed = |key: &str| -> Vec<String> {
+        root.get(key)
+            .and_then(|n| n.as_seq())
+            .unwrap()
+            .iter()
+            .map(|n| n.as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(listed("maps"), [map_uid]);
+    assert_eq!(listed("grids"), [grid_uid]);
+    // Документ можно править на месте.
+    let section = saved
+        .document
+        .as_map_mut()
+        .unwrap()
+        .get_mut("entities")
+        .unwrap()
+        .as_seq_mut()
+        .unwrap();
+    section.clear();
+    assert!(
+        saved
+            .document
+            .as_map()
+            .unwrap()
+            .get("entities")
+            .unwrap()
+            .as_seq()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

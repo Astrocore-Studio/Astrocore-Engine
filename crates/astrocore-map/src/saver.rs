@@ -64,6 +64,9 @@ pub struct MapSaveOptions {
 pub struct MapSave {
     pub document: DataNode,
     pub entities: usize,
+    /// Номер каждой записанной сущности в документе (ADR-0019): по нему игра пишет ссылки
+    /// своих компонентов на другие сущности.
+    pub uids: HashMap<Entity, u32>,
 }
 
 fn plain(value: impl ToString) -> DataNode {
@@ -756,6 +759,7 @@ impl MapSaveWorldExt for World {
         Ok(MapSave {
             document: DataNode::map(root),
             entities: entities.len(),
+            uids: saver.uids,
         })
     }
 }
