@@ -34,6 +34,8 @@ pub enum MapLoadError {
     MapExists(MapId),
     #[error("номер карты 0 занят под «нигде»")]
     Nullspace,
+    #[error("карты {} нет", .0.0)]
+    MapMissing(MapId),
 }
 
 /// Как загружать файл карты.
@@ -303,6 +305,24 @@ pub trait MapLoadWorldExt {
         root: &DataNode,
         options: MapLoadOptions,
     ) -> Result<MapLoadReport, MapLoadError>;
+
+    /// Загружает файл с одним гридом и без карт на существующую карту (`TryLoadGrid`
+    /// Robust, ADR-0020): грид поворачивается вокруг начала карты и сдвигается.
+    fn load_grid(
+        &mut self,
+        root: &DataNode,
+        map: MapId,
+        offset: Vec2,
+        rotation: Angle,
+    ) -> Result<MapLoadReport, MapLoadError>;
+}
+
+/// Куда ставится грид файла грида.
+#[derive(Debug, Clone, Copy)]
+struct GridTarget {
+    map: Entity,
+    offset: Vec2,
+    rotation: Angle,
 }
 
 impl MapLoadWorldExt for World {
@@ -311,12 +331,61 @@ impl MapLoadWorldExt for World {
         root: &DataNode,
         options: MapLoadOptions,
     ) -> Result<MapLoadReport, MapLoadError> {
+        load(self, root, options, None)
+    }
+
+    fn load_grid(
+        &mut self,
+        root: &DataNode,
+        map: MapId,
+        offset: Vec2,
+        rotation: Angle,
+    ) -> Result<MapLoadReport, MapLoadError> {
+        let map_entity = self.map_entity(map).ok_or(MapLoadError::MapMissing(map))?;
+        let maps = root
+            .get("maps")
+            .and_then(DataNode::as_seq)
+            .map_or(0, <[_]>::len);
+        let grids = root
+            .get("grids")
+            .and_then(DataNode::as_seq)
+            .map_or(0, <[_]>::len);
+        if maps != 0 || grids != 1 {
+            return Err(MapLoadError::Format(format!(
+                "в файле грида должен быть один грид и ни одной карты (гридов {grids}, карт {maps})"
+            )));
+        }
+        let initialized = self.get::<Map>(map_entity).is_some_and(|m| m.initialized);
+        load(
+            self,
+            root,
+            MapLoadOptions {
+                initialize: initialized,
+                map_id: None,
+            },
+            Some(GridTarget {
+                map: map_entity,
+                offset,
+                rotation,
+            }),
+        )
+    }
+}
+
+fn load(
+    world: &mut World,
+    root: &DataNode,
+    options: MapLoadOptions,
+    target: Option<GridTarget>,
+) -> Result<MapLoadReport, MapLoadError> {
+    let this = world;
+    {
         let initialize = options.initialize;
         if let Some(id) = options.map_id {
             if id.0 == 0 {
                 return Err(MapLoadError::Nullspace);
             }
-            if self.map_entity(id).is_some() {
+            if this.map_entity(id).is_some() {
                 return Err(MapLoadError::MapExists(id));
             }
         }
@@ -333,13 +402,13 @@ impl MapLoadWorldExt for World {
 
         // Таблица тайлов файла → номера определений игры.
         let mut tile_ids: HashMap<i32, u16> = HashMap::new();
-        self.init_resource::<TileDefinitions>();
+        this.init_resource::<TileDefinitions>();
         if let Some(tilemap) = root.get("tilemap").and_then(DataNode::as_map) {
             for (key, name) in tilemap.iter() {
                 let (Ok(id), Some(name)) = (key.parse::<i32>(), name.as_str()) else {
                     return Err(MapLoadError::Format(format!("запись tilemap {key}")));
                 };
-                let mut definitions = self.resource_mut::<TileDefinitions>();
+                let mut definitions = this.resource_mut::<TileDefinitions>();
                 let type_id = match definitions.by_id(name) {
                     Some(definition) => definition.type_id,
                     None => {
@@ -357,7 +426,7 @@ impl MapLoadWorldExt for World {
             .get("entities")
             .and_then(DataNode::as_seq)
             .ok_or_else(|| MapLoadError::Format("нет списка entities".into()))?;
-        let migrations = self
+        let migrations = this
             .get_resource::<EntityMigrations>()
             .cloned()
             .unwrap_or_default();
@@ -429,8 +498,8 @@ impl MapLoadWorldExt for World {
                 missing: entry.missing.clone(),
             };
             let entity = if entry.prototype.is_empty() {
-                let entity = self.spawn_entity();
-                let registry = self.resource::<astrocore_ecs::ComponentRegistry>();
+                let entity = this.spawn_entity();
+                let registry = this.resource::<astrocore_ecs::ComponentRegistry>();
                 let parsed: Vec<_> = overrides
                     .components
                     .iter()
@@ -442,8 +511,8 @@ impl MapLoadWorldExt for World {
                 for (id, result) in parsed {
                     match result {
                         Ok(parsed) => {
-                            parsed.component.insert_clone(self, entity);
-                            self.notify_comp_added(entity, id);
+                            parsed.component.insert_clone(this, entity);
+                            this.notify_comp_added(entity, id);
                         }
                         Err(error) => report.errors.push(format!(
                             "строка {}: сущность {}: {error}",
@@ -453,7 +522,7 @@ impl MapLoadWorldExt for World {
                 }
                 entity
             } else {
-                match self.spawn_prototype_with(&entry.prototype, &overrides) {
+                match this.spawn_prototype_with(&entry.prototype, &overrides) {
                     Ok(entity) => entity,
                     Err(astrocore_prototypes::SpawnError::UnknownPrototype(id)) => {
                         *report.unknown_prototypes.entry(id).or_default() += 1;
@@ -468,11 +537,11 @@ impl MapLoadWorldExt for World {
                     }
                 }
             };
-            if self.get::<Transform>(entity).is_none() {
-                self.entity_mut(entity).insert(Transform::default());
+            if this.get::<Transform>(entity).is_none() {
+                this.entity_mut(entity).insert(Transform::default());
             }
             let preserved = {
-                let registry = self.resource::<astrocore_ecs::ComponentRegistry>();
+                let registry = this.resource::<astrocore_ecs::ComponentRegistry>();
                 let known = |name: &str| {
                     HANDLED.contains(&name)
                         || name == CONTAINER_COMPONENT
@@ -501,7 +570,7 @@ impl MapLoadWorldExt for World {
                 }
             };
             if !preserved.is_empty() {
-                self.entity_mut(entity).insert(preserved);
+                this.entity_mut(entity).insert(preserved);
             }
             if let Some(meta) = component(entry, "MetaData") {
                 let name = meta
@@ -512,7 +581,7 @@ impl MapLoadWorldExt for World {
                     .get("desc")
                     .and_then(DataNode::as_str)
                     .map(str::to_owned);
-                if let Some(mut data) = self.get_mut::<MetaData>(entity) {
+                if let Some(mut data) = this.get_mut::<MetaData>(entity) {
                     data.name = name.or(data.name.take());
                     data.description = description.or(data.description.take());
                 }
@@ -526,19 +595,19 @@ impl MapLoadWorldExt for World {
         for &(index, entity) in &created {
             let entry = &pending[index];
             if component(entry, "Map").is_some() {
-                let maps = self.get_resource_or_insert_with(crate::map::Maps::default);
+                let maps = this.get_resource_or_insert_with(crate::map::Maps::default);
                 let id = wanted_id.take().unwrap_or_else(|| {
                     MapId(maps.iter().map(|(id, _)| id.0).max().unwrap_or(0) + 1)
                 });
                 // Карта для маппинга стоит на паузе; её сущности встают на паузу при размещении.
-                self.adopt_map(entity, id, initialize, !initialize);
-                self.set_entity_paused(entity, !initialize);
+                this.adopt_map(entity, id, initialize, !initialize);
+                this.set_entity_paused(entity, !initialize);
                 report.maps.push((entity, id));
                 let tilemap = tile_ids
                     .iter()
                     .filter_map(|(file, type_id)| Some((*type_id, u32::try_from(*file).ok()?)))
                     .collect();
-                self.entity_mut(entity).insert(MapFileTilemap(tilemap));
+                this.entity_mut(entity).insert(MapFileTilemap(tilemap));
             }
         }
         for &(index, entity) in &created {
@@ -546,13 +615,13 @@ impl MapLoadWorldExt for World {
             let Some(grid) = component(entry, "MapGrid") else {
                 continue;
             };
-            self.ensure_grid(entity);
+            this.ensure_grid(entity);
             report.grids.push(entity);
             let chunks = grid.get("chunks").and_then(DataNode::as_map);
             for (_, chunk) in chunks.into_iter().flat_map(|map| map.iter()) {
                 match read_chunk(chunk, &tile_ids) {
                     Ok(tiles) => {
-                        self.set_tiles(entity, tiles);
+                        this.set_tiles(entity, tiles);
                     }
                     Err(error) => report.errors.push(format!(
                         "строка {}: грид {}: {error}",
@@ -566,7 +635,17 @@ impl MapLoadWorldExt for World {
         let mut placement: HashMap<Entity, (TransformData, u32)> = HashMap::new();
         for &(index, entity) in &created {
             let entry = &pending[index];
-            let data = match component(entry, "Transform") {
+            // `parent: invalid` у корня файла грида — «без родителя».
+            let cleaned_transform = component(entry, "Transform").map(|node| {
+                let mut node = node.clone();
+                if let Some(map) = node.as_map_mut()
+                    && map.get("parent").and_then(DataNode::as_str) == Some("invalid")
+                {
+                    map.remove("parent");
+                }
+                node
+            });
+            let data = match cleaned_transform.as_ref() {
                 Some(node) => match from_node::<TransformData>(node) {
                     Ok(data) => data,
                     Err(error) => {
@@ -611,6 +690,26 @@ impl MapLoadWorldExt for World {
                 continue;
             };
             let Some(parent_uid) = data.parent else {
+                // Грид файла грида — на карту, повёрнутым и сдвинутым (ADR-0020).
+                if let Some(target) = target
+                    && this.get::<MapGrid>(entity).is_some()
+                {
+                    let anchored = false;
+                    let no_rot = this.get::<Transform>(entity).is_some_and(Transform::no_rot);
+                    if let Err(error) = this.set_placement(
+                        entity,
+                        Placement {
+                            parent: Some(target.map),
+                            position: target.rotation.rotate(data.pos) + target.offset,
+                            rotation: Angle(data.rot.0 + target.rotation.0),
+                            level: data.z,
+                            anchored,
+                            no_rot,
+                        },
+                    ) {
+                        report.errors.push(format!("грид {uid}: {error}"));
+                    }
+                }
                 continue;
             };
             let Some(&parent) = report.uids.get(&parent_uid) else {
@@ -619,14 +718,14 @@ impl MapLoadWorldExt for World {
                     .push(format!("сущность {uid}: родителя {parent_uid} нет в файле"));
                 continue;
             };
-            let current = self.get::<Transform>(entity);
+            let current = this.get::<Transform>(entity);
             let anchored = data
                 .anchored
                 .unwrap_or_else(|| current.is_some_and(Transform::anchored));
             let no_rot = data
                 .no_rot
                 .unwrap_or_else(|| current.is_some_and(Transform::no_rot));
-            if let Err(error) = self.set_placement(
+            if let Err(error) = this.set_placement(
                 entity,
                 Placement {
                     parent: Some(parent),
@@ -643,26 +742,39 @@ impl MapLoadWorldExt for World {
 
         // Номера из файла; сущности без родителя, кроме карт и гридов, сохраняются с первой
         // картой файла.
-        let home = report.maps.first().map(|(entity, _)| *entity);
+        let home = match target {
+            // Сущности вне карт файла грида сохраняются вместе с гридом.
+            Some(_) => report.grids.first().copied(),
+            None => report.maps.first().map(|(entity, _)| *entity),
+        };
+        if target.is_some()
+            && let Some(&grid) = report.grids.first()
+        {
+            let tilemap = tile_ids
+                .iter()
+                .filter_map(|(file, type_id)| Some((*type_id, u32::try_from(*file).ok()?)))
+                .collect();
+            this.entity_mut(grid).insert(MapFileTilemap(tilemap));
+        }
         for (&entity, (data, uid)) in &placement {
             let nullspace = data.parent.is_none()
-                && self.get::<Map>(entity).is_none()
-                && self.get::<MapGrid>(entity).is_none();
-            self.entity_mut(entity).insert(MapFileEntity {
+                && this.get::<Map>(entity).is_none()
+                && this.get::<MapGrid>(entity).is_none();
+            this.entity_mut(entity).insert(MapFileEntity {
                 uid: *uid,
                 nullspace_of: if nullspace { home } else { None },
             });
             // Вне карт сущность не встаёт на паузу вместе с картой: до `MapInit` ставим сами,
             // как Robust ставит на паузу всё неинициализированное.
             if nullspace && !initialize {
-                self.set_entity_paused(entity, true);
+                this.set_entity_paused(entity, true);
             }
         }
 
         // Инициализация в том же порядке: родитель раньше потомка.
         for &entity in &order {
-            let map_init = initialize && self.is_on_initialized_map(entity);
-            self.initialize_and_start(entity, map_init);
+            let map_init = initialize && this.is_on_initialized_map(entity);
+            this.initialize_and_start(entity, map_init);
         }
         // Содержимое контейнеров.
         for &(index, entity) in &created {
@@ -678,10 +790,10 @@ impl MapLoadWorldExt for World {
                     Some("ContainerSlot") => ContainerKind::Slot,
                     _ => ContainerKind::List,
                 };
-                if self.get::<ContainerManager>(entity).is_none()
-                    || self.container(entity, id).is_none()
+                if this.get::<ContainerManager>(entity).is_none()
+                    || this.container(entity, id).is_none()
                 {
-                    self.ensure_container(entity, id, kind);
+                    this.ensure_container(entity, id, kind);
                 }
                 // Слот хранит одну сущность в поле `ent`, контейнер — список `ents`.
                 let single = container.get("ent").into_iter();
@@ -694,7 +806,7 @@ impl MapLoadWorldExt for World {
                     let Some(&item) = report.uids.get(&uid) else {
                         continue;
                     };
-                    if let Err(error) = self.force_insert_into_container(item, entity, id) {
+                    if let Err(error) = this.force_insert_into_container(item, entity, id) {
                         report
                             .errors
                             .push(format!("сущность {uid} в контейнере {id}: {error}"));
@@ -702,7 +814,7 @@ impl MapLoadWorldExt for World {
                 }
             }
         }
-        self.raise_broadcast(&mut MapLoaded {
+        this.raise_broadcast(&mut MapLoaded {
             maps: report.maps.iter().map(|(entity, _)| *entity).collect(),
             grids: report.grids.clone(),
             uids: report.uids.clone(),

@@ -50,6 +50,8 @@ pub enum MapSaveError {
     NotAMap,
     #[error("карта уже инициализирована: сохраняются только карты для маппинга")]
     Initialized,
+    #[error("сущность не грид")]
+    NotAGrid,
 }
 
 /// Настройки сохранения (`SerializationOptions`).
@@ -119,6 +121,10 @@ fn encode_base64(bytes: &[u8]) -> String {
 pub trait MapSaveWorldExt {
     /// Записывает карту со всеми её сущностями в документ формата SS14.
     fn save_map(&mut self, map: Entity, options: MapSaveOptions) -> Result<MapSave, MapSaveError>;
+
+    /// Записывает один грид со всеми его сущностями (`TrySaveGrid` Robust, ADR-0020).
+    fn save_grid(&mut self, grid: Entity, options: MapSaveOptions)
+    -> Result<MapSave, MapSaveError>;
 }
 
 struct Saver<'w> {
@@ -136,6 +142,8 @@ struct Saver<'w> {
     file_tiles: BTreeMap<u16, u32>,
     /// Последний номер, выданный тайлу, которого в том файле не было.
     next_tile: u32,
+    /// Сохраняется один грид: у него `parent: invalid` (ADR-0020).
+    grid_root: Option<Entity>,
 }
 
 impl Saver<'_> {
@@ -262,6 +270,8 @@ impl Saver<'_> {
             .and_then(|c| self.uid(c.parent()))
         {
             map.insert("parent", plain(parent));
+        } else if self.grid_root == Some(entity) {
+            map.insert("parent", plain("invalid"));
         }
         if let Some(transform) = self.world.get::<Transform>(entity) {
             let position = transform.local_position();
@@ -597,8 +607,33 @@ impl MapSaveWorldExt for World {
         if component.initialized && !options.allow_initialized {
             return Err(MapSaveError::Initialized);
         }
-        self.init_resource::<TileDefinitions>();
-        let world: &World = self;
+        save(self, map, false)
+    }
+
+    fn save_grid(
+        &mut self,
+        grid: Entity,
+        options: MapSaveOptions,
+    ) -> Result<MapSave, MapSaveError> {
+        if self.get::<MapGrid>(grid).is_none() {
+            return Err(MapSaveError::NotAGrid);
+        }
+        let initialized = self
+            .get::<MetaData>(grid)
+            .is_some_and(|m| m.stage == LifeStage::MapInitialized);
+        if initialized && !options.allow_initialized {
+            return Err(MapSaveError::Initialized);
+        }
+        save(self, grid, true)
+    }
+}
+
+/// Сохранение карты или одного грида (`root`).
+fn save(this: &mut World, map: Entity, grid_file: bool) -> Result<MapSave, MapSaveError> {
+    {
+        let self_ = this;
+        self_.init_resource::<TileDefinitions>();
+        let world: &World = self_;
         let mut saver = Saver {
             world,
             registry: world.resource::<ComponentRegistry>(),
@@ -609,6 +644,7 @@ impl MapSaveWorldExt for World {
             defaults: HashMap::new(),
             file_tiles: BTreeMap::new(),
             next_tile: 0,
+            grid_root: grid_file.then_some(map),
         };
         if let Some(file) = world.get::<MapFileTilemap>(map) {
             saver.file_tiles = file.0.clone();
@@ -732,10 +768,14 @@ impl MapSaveWorldExt for World {
         }
         let mut meta = DataMap::new();
         meta.insert("format", plain(MAP_FORMAT_VERSION));
-        meta.insert(
-            "category",
-            plain(if maps.len() == 1 { "Map" } else { "Unknown" }),
-        );
+        let category = if grid_file {
+            "Grid"
+        } else if maps.len() == 1 {
+            "Map"
+        } else {
+            "Unknown"
+        };
+        meta.insert("category", plain(category));
         meta.insert("engineVersion", text("astrocore"));
         meta.insert("forkId", DataNode::string(""));
         meta.insert("forkVersion", DataNode::string(""));
@@ -744,7 +784,13 @@ impl MapSaveWorldExt for World {
         root.insert("meta", DataNode::map(meta));
         root.insert("maps", DataNode::seq(maps));
         root.insert("grids", DataNode::seq(grids));
-        root.insert("orphans", DataNode::seq(Vec::new()));
+        // Корень файла грида — сам грид.
+        let orphans = if grid_file {
+            vec![plain(saver.uids[&map])]
+        } else {
+            Vec::new()
+        };
+        root.insert("orphans", DataNode::seq(orphans));
         root.insert(
             "nullspace",
             DataNode::seq(

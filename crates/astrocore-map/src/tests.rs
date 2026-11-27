@@ -1,4 +1,4 @@
-use astrocore_data::DataFormat;
+use astrocore_data::{DataFormat, DataNode};
 use astrocore_ecs::{
     ComponentRegistry, EventWorldExt, GameWorldExt, LifeStage, LifecycleWorldExt, MapInit,
     MetaData, Paused,
@@ -1048,4 +1048,93 @@ fn loading_raises_map_loaded_with_file_uids() {
         .load_map(&parse_yaml(&map_file()).unwrap(), false)
         .unwrap();
     assert_eq!(world.resource::<Seen>().0, [(1, 1, report.uids.len())]);
+}
+
+#[test]
+fn grids_save_alone_and_load_onto_another_map_moved_and_turned() {
+    let mut world = world();
+    load_prototypes(&mut world);
+    let floor = Tile::new(
+        world
+            .resource_mut::<TileDefinitions>()
+            .register("FloorSteel", None, 3),
+    );
+    let (map, _) = world.create_map(false);
+    let grid = world.create_grid(map);
+    world.set_tiles(
+        grid,
+        [
+            (TileCoord::new(0, 0, 0), floor),
+            (TileCoord::new(1, 0, 0), floor),
+        ],
+    );
+    let wall = world
+        .spawn_attached("Wall", EntityCoordinates::new(grid, Vec2::new(1.5, 0.5)))
+        .unwrap();
+    let saved = world.save_grid(grid, MapSaveOptions::default()).unwrap();
+    assert_eq!(saved.entities, 2);
+    assert!(!saved.uids.contains_key(&map));
+    let root = saved.document.as_map().unwrap();
+    let meta = root.get("meta").unwrap();
+    assert_eq!(meta.get("category").unwrap().as_str(), Some("Grid"));
+    assert!(root.get("maps").unwrap().as_seq().unwrap().is_empty());
+    let grid_uid = saved.uids[&grid].to_string();
+    let orphans: Vec<&str> = root
+        .get("orphans")
+        .unwrap()
+        .as_seq()
+        .unwrap()
+        .iter()
+        .filter_map(DataNode::as_str)
+        .collect();
+    assert_eq!(orphans, [grid_uid.as_str()]);
+    let text = astrocore_data::to_yaml_string(&saved.document);
+    assert!(text.contains("parent: invalid"), "{text}");
+    // Карта не грид.
+    assert!(matches!(
+        world.save_grid(map, MapSaveOptions::default()),
+        Err(MapSaveError::NotAGrid)
+    ));
+
+    // На другую карту: поворот на четверть оборота вокруг начала и сдвиг.
+    let (other, other_id) = world.create_map(false);
+    let report = world
+        .load_grid(
+            &saved.document,
+            other_id,
+            Vec2::new(10.0, 0.0),
+            Angle(std::f32::consts::FRAC_PI_2),
+        )
+        .unwrap();
+    assert_eq!(report.grids.len(), 1);
+    let loaded = report.grids[0];
+    assert_eq!(world.parent(loaded), Some(other));
+    let transform = world.get::<Transform>(loaded).unwrap();
+    assert!(close(transform.local_position(), Vec2::new(10.0, 0.0)));
+    assert!((transform.local_rotation().0 - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    assert_eq!(world.get::<MapGrid>(loaded).unwrap().tile_count(), 2);
+    let copy = report.uids[&saved.uids[&wall]];
+    assert_eq!(world.parent(copy), Some(loaded));
+    // Повторное сохранение загруженного грида — тот же документ.
+    let again = world.save_grid(loaded, MapSaveOptions::default()).unwrap();
+    let strip_pos = |doc: &DataNode| {
+        astrocore_data::to_yaml_string(doc)
+            .lines()
+            .filter(|l| !l.contains("pos:") && !l.contains("rot:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip_pos(&again.document), strip_pos(&saved.document));
+
+    // Файл карты — не файл грида; карты-цели нет — ошибка.
+    let map_doc = world.save_map(map, MapSaveOptions::default()).unwrap();
+    assert!(
+        world
+            .load_grid(&map_doc.document, other_id, Vec2::ZERO, Angle(0.0))
+            .is_err()
+    );
+    assert!(matches!(
+        world.load_grid(&saved.document, MapId(77), Vec2::ZERO, Angle(0.0)),
+        Err(MapLoadError::MapMissing(_))
+    ));
 }
