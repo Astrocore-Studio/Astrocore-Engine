@@ -44,6 +44,9 @@ pub(crate) struct EntityView {
     to: Vec2,
     /// Такт мира, на котором записано положение `to`.
     tick: GameTick,
+    /// Поворот сущности в мире: по нему выбирается направление слоёв, даже когда
+    /// изображение не поворачивается (`noRot`).
+    facing: Angle,
 }
 
 /// Сдвиг за один такт, после которого сущность считается перенесённой, а не пришедшей:
@@ -58,6 +61,7 @@ impl EntityView {
             from: position,
             to: position,
             tick,
+            facing: Angle::ZERO,
         }
     }
 
@@ -135,12 +139,47 @@ impl Views {
     }
 }
 
-/// Глаз игрока: карта, положение и этаж.
-#[derive(Resource, Debug, Clone, Copy, Default)]
+/// Глаз игрока: карта, положение, этаж, поворот и зум (`IEye` Robust).
+#[derive(Resource, Debug, Clone, Copy)]
 pub struct Eye {
     pub map: Option<bevy_ecs::entity::Entity>,
     pub position: Vec2,
     pub level: i16,
+    /// Поворот глаза (`Eye.Rotation`): минус поворот грида, на котором стоит игрок, — грид
+    /// на экране стоит ровно и поворачивается вместе с камерой.
+    pub rotation: Angle,
+    /// Во сколько раз больше обычного видно (`Eye.Zoom`): больше единицы — дальше.
+    pub zoom: f32,
+}
+
+impl Default for Eye {
+    fn default() -> Self {
+        Self {
+            map: None,
+            position: Vec2::ZERO,
+            level: 0,
+            rotation: Angle::ZERO,
+            zoom: 1.0,
+        }
+    }
+}
+
+impl Eye {
+    /// Поворот камеры мира: обратный повороту глаза.
+    pub fn camera_rotation(&self) -> Angle {
+        Angle(-self.rotation.0)
+    }
+
+    /// Половина видимого прямоугольника в координатах мира с учётом зума и поворота:
+    /// повёрнутое окно вписано в него целиком.
+    pub fn view_half_extents(&self, aspect: f32) -> Vec2 {
+        let half = Vec2::new(VIEW_TILES * aspect / 2.0, VIEW_TILES / 2.0) * self.zoom.max(0.01);
+        let (sin, cos) = self.rotation.0.sin_cos();
+        Vec2::new(
+            cos.abs() * half.x + sin.abs() * half.y,
+            sin.abs() * half.x + cos.abs() * half.y,
+        )
+    }
 }
 
 /// Камера мира, которую видит игрок (в отличие от камеры маски светящегося).
@@ -178,11 +217,15 @@ pub(crate) fn follow_player(
     ) else {
         return;
     };
-    *eye = Eye {
-        map: transform.map(),
-        position: Vec2::new(placement.position.x, placement.position.y),
-        level: placement.level,
-    };
+    // Глаз повёрнут против грида под игроком (или карты), как `EyeLerpingSystem.GetRotation`.
+    let relative = transform.grid().or(transform.map());
+    let rotation = relative
+        .and_then(|relative| world.world_transform(relative))
+        .map_or(Angle::ZERO, |placement| Angle(-placement.rotation.0));
+    eye.map = transform.map();
+    eye.position = Vec2::new(placement.position.x, placement.position.y);
+    eye.level = placement.level;
+    eye.rotation = rotation;
     // Пока у сущности игрока нет изображения, камера стоит в точке глаза; дальше её ведёт
     // `follow_view` по сглаженному положению.
     if !views.entities.contains_key(&entity) {
@@ -209,15 +252,42 @@ pub(crate) fn follow_view(
     }
 }
 
+/// Камера мира поворачивается и приближается по глазу.
+pub(crate) fn apply_eye(
+    eye: Res<Eye>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<WorldCamera>>,
+) {
+    let (transform, projection) = &mut *camera;
+    let rotation = Quat::from_rotation_z(eye.camera_rotation().0);
+    if transform.rotation != rotation {
+        transform.rotation = rotation;
+    }
+    if let Projection::Orthographic(ortho) = &mut **projection
+        && ortho.scale != eye.zoom
+    {
+        ortho.scale = eye.zoom;
+    }
+}
+
 fn bevy_color(color: astrocore_math::Color) -> Color {
     Color::srgba(color.r, color.g, color.b, color.a)
 }
 
-/// Положение сущности на экране: мировые координаты и глубина.
-fn screen_transform(placement: &WorldTransform, depth: i32, upright: bool) -> Transform {
+/// Положение сущности на экране: мировые координаты и глубина. Неповорачиваемая
+/// (`noRot`) стоит ровно на экране — повёрнута вместе с камерой.
+fn screen_transform(
+    placement: &WorldTransform,
+    depth: i32,
+    upright: bool,
+    camera_rotation: Angle,
+) -> Transform {
     // Сущности одной глубины перекрываются по Y: нижняя рисуется поверх верхней.
     let z = depth as f32 - placement.position.y * 1e-4;
-    let rotation = if upright { 0.0 } else { placement.rotation.0 };
+    let rotation = if upright {
+        camera_rotation.0
+    } else {
+        placement.rotation.0
+    };
     Transform::from_xyz(placement.position.x, placement.position.y, z)
         .with_rotation(Quat::from_rotation_z(rotation))
 }
@@ -284,7 +354,12 @@ pub(crate) fn sync_entities(
                 continue;
             }
             alive.insert(entity);
-            let target = screen_transform(&placement, sprite.drawdepth.0, sprite.no_rot);
+            let target = screen_transform(
+                &placement,
+                sprite.drawdepth.0,
+                sprite.no_rot,
+                eye.camera_rotation(),
+            );
             let changed = entity_ref
                 .get_change_ticks::<GameSprite>()
                 .map(|t| t.changed);
@@ -305,6 +380,7 @@ pub(crate) fn sync_entities(
             let rebuild = match placed.get_mut(view) {
                 Ok((mut current, mut state, mut visibility)) => {
                     let shown = state.interpolate(&target, tick, alpha);
+                    state.facing = placement.rotation;
                     if *current != shown {
                         *current = shown;
                     }
@@ -442,21 +518,25 @@ pub(crate) fn sync_entities(
 /// Выбирает кадр слоя по направлению сущности и времени анимации.
 pub(crate) fn animate_layers(
     time: Res<Time>,
-    parents: Query<&Transform, (With<EntityView>, Without<LayerView>)>,
+    eye: Res<Eye>,
+    parents: Query<(&Transform, &EntityView), Without<LayerView>>,
     mut layers: Query<(&ChildOf, &LayerView, &mut Sprite, &mut Transform)>,
 ) {
     let now = time.elapsed_secs();
     for (child_of, layer, mut sprite, mut transform) in &mut layers {
-        let Ok(parent) = parents.get(child_of.parent()) else {
+        let Ok((parent, view)) = parents.get(child_of.parent()) else {
             continue;
         };
         let directions = layer.texture.state.directions.count();
-        // Угол сущности: поворот её изображения вокруг оси Z.
-        let facing = Angle(parent.rotation.to_euler(EulerRot::ZYX).0);
+        // Направление — по углу сущности на экране: её поворот в мире плюс поворот глаза
+        // (`SpriteComponent`: `worldRotation + eyeRotation`).
+        let on_screen = Angle(view.facing.0 + eye.rotation.0);
         let direction = match layer.direction {
             Some(fixed) => usize::from(fixed).min(directions - 1),
-            None => rsi_direction(directions, facing),
+            None => rsi_direction(directions, on_screen),
         };
+        // Поворот изображения сущности вокруг оси Z.
+        let shown = Angle(parent.rotation.to_euler(EulerRot::ZYX).0);
         let frame = layer.texture.state.frame_at(direction, now - layer.start);
         let index = layer.texture.state.sheet_index(direction, frame);
         if let Some(atlas) = &mut sprite.texture_atlas
@@ -464,10 +544,10 @@ pub(crate) fn animate_layers(
         {
             atlas.index = index;
         }
-        // Состояние с несколькими направлениями рисуется без поворота: направление уже
-        // выбрано кадром. Поворот родителя снимается обратным поворотом слоя.
+        // Состояние с несколькими направлениями стоит ровно на экране: направление уже
+        // выбрано кадром. Поворот родителя снимается, поворот камеры добавляется.
         let local = if directions > 1 {
-            layer.rotation.0 - facing.0
+            layer.rotation.0 - shown.0 + eye.camera_rotation().0
         } else {
             layer.rotation.0
         };
@@ -700,4 +780,25 @@ pub(crate) fn sync_chunks(
 /// Название сущности для надписей интерфейса: на языке клиента.
 pub fn entity_label(world: &bevy_ecs::world::World, entity: bevy_ecs::entity::Entity) -> String {
     world.entity_name(entity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_grows_with_zoom_and_covers_the_turned_window() {
+        let mut eye = Eye::default();
+        let half = eye.view_half_extents(2.0);
+        assert_eq!(half, Vec2::new(VIEW_TILES, VIEW_TILES / 2.0));
+        eye.zoom = 1.44;
+        assert!((eye.view_half_extents(2.0).y - VIEW_TILES / 2.0 * 1.44).abs() < 1e-4);
+        // Поворот на четверть оборота меняет стороны местами.
+        eye.zoom = 1.0;
+        eye.rotation = Angle(std::f32::consts::FRAC_PI_2);
+        let turned = eye.view_half_extents(2.0);
+        assert!((turned.x - VIEW_TILES / 2.0).abs() < 1e-3);
+        assert!((turned.y - VIEW_TILES).abs() < 1e-3);
+        assert_eq!(eye.camera_rotation(), Angle(-std::f32::consts::FRAC_PI_2));
+    }
 }

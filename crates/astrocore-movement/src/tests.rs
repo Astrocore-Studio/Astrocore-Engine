@@ -341,3 +341,46 @@ fn off_grid_needs_a_wall_to_push_off() {
     push_right(&mut world, mob, 15);
     assert!(speed(&world, mob) > 0.5);
 }
+
+#[test]
+fn keys_follow_the_grid_axes_unless_relative_movement_is_off() {
+    use astrocore_console::ConfigWorldExt;
+    let mut world = World::new();
+    world.add_plugin(NetServerPlugin);
+    world.add_plugin(PhysicsPlugin::SERVER);
+    world.add_plugin(MovementServerPlugin);
+    setup(&mut world);
+    let (map, _) = world.create_map(true);
+    let grid = world.create_grid(map);
+    world.set_tiles(
+        grid,
+        (0..10).flat_map(|x| (0..10).map(move |y| (TileCoord::new(x, y, 0), Tile::new(1)))),
+    );
+    // Грид повёрнут на четверть оборота.
+    world
+        .set_local_rotation(grid, Angle(std::f32::consts::FRAC_PI_2))
+        .unwrap();
+    let mob = world
+        .spawn_attached("Mob", EntityCoordinates::new(grid, Vec2::new(5.5, 5.5)))
+        .unwrap();
+    world.get_mut::<InputMover>(mob).unwrap().held = MoveButtons::RIGHT;
+    for _ in 0..10 {
+        world.run_tick();
+    }
+    // «Вправо» — по оси X грида (скорость хранится в осях грида).
+    let velocity = world.get::<Physics>(mob).unwrap().linear_velocity;
+    assert!(
+        (velocity.x - 4.5).abs() < 1e-3 && velocity.y.abs() < 1e-3,
+        "{velocity}"
+    );
+    // Без относительного движения «вправо» — по оси X карты: в осях грида это −Y.
+    world.set_cvar(&RELATIVE_MOVEMENT, false).unwrap();
+    for _ in 0..30 {
+        world.run_tick();
+    }
+    let velocity = world.get::<Physics>(mob).unwrap().linear_velocity;
+    assert!(
+        (velocity.y + 4.5).abs() < 1e-2 && velocity.x.abs() < 1e-2,
+        "{velocity}"
+    );
+}

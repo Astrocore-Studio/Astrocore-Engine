@@ -144,6 +144,7 @@ impl Plugin for ClientPlugin {
                     view::sync_chunks,
                     view::sync_entities,
                     view::follow_view,
+                    view::apply_eye,
                     unshaded::follow_world_camera,
                     lighting::update_lighting,
                     view::animate_layers,

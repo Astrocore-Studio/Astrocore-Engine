@@ -65,6 +65,15 @@ pub const OFFGRID_FRICTION: CVarDef<f32> = CVarDef::new(
     "Трение тела в космосе вне гридов.",
 );
 
+/// Клавиши движения — по осям грида под сущностью, а не карты (`physics.relative_movement`):
+/// камера поворачивается вместе с гридом, и «вверх» остаётся вверх на экране.
+pub const RELATIVE_MOVEMENT: CVarDef<bool> = CVarDef::new(
+    "physics.relative_movement",
+    true,
+    FLAGS,
+    "Движение по осям грида под сущностью.",
+);
+
 /// Сущность чувствует гравитацию (`GravityAffectedComponent`): игра пишет, невесома ли она.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -287,7 +296,7 @@ pub fn mover_step(world: &mut World, entity: Entity, dt: f32) {
         && !matches!(body.body_type, BodyType::Static | BodyType::Kinematic);
     let walking = held.contains(MoveButtons::WALK);
 
-    let (wish, acceleration, mut friction, touching) = if weightless {
+    let (mut wish, acceleration, mut friction, touching) = if weightless {
         let speed = speeds.base_weightless_modifier
             * if walking {
                 speeds.base_walk_speed
@@ -325,6 +334,16 @@ pub fn mover_step(world: &mut World, entity: Entity, dt: f32) {
             true,
         )
     };
+    // Скорость хранится в осях родителя (грида): движение по ним — относительное, как
+    // `AssertValidWish` SS14. Без него ввод идёт по осям карты и переводится в оси грида.
+    if !world.cvar(&RELATIVE_MOVEMENT)
+        && let Some(root) = world
+            .get::<Transform>(entity)
+            .and_then(|t| t.grid().or(t.map()))
+        && let Some(placement) = world.world_transform(root)
+    {
+        wish = Angle(-placement.rotation.0).rotate(wish);
+    }
     if wish != Vec2::ZERO {
         friction = friction.min(acceleration);
     }
@@ -549,6 +568,7 @@ fn register_shared(world: &mut World) {
     world.register_cvar(&MIN_FRICTION);
     world.register_cvar(&AIR_FRICTION);
     world.register_cvar(&OFFGRID_FRICTION);
+    world.register_cvar(&RELATIVE_MOVEMENT);
     world.register_net_serde::<InputMover>();
     world.register_net_serde::<MovementSpeedModifier>();
     world.register_net_event::<MoveInput>();

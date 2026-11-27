@@ -119,15 +119,25 @@ pub(crate) fn spawn_camera(mut commands: Commands, mut images: ResMut<Assets<Ima
 }
 
 /// Камера маски повторяет камеру мира; картинка маски — размером с окно.
+#[allow(clippy::type_complexity)]
 pub(crate) fn follow_world_camera(
-    world_camera: Single<&Transform, (With<WorldCamera>, Without<UnshadedCamera>)>,
-    mut camera: Single<&mut Transform, With<UnshadedCamera>>,
+    world_camera: Single<(&Transform, &Projection), (With<WorldCamera>, Without<UnshadedCamera>)>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<UnshadedCamera>>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     mut target: ResMut<UnshadedTarget>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    if **camera != **world_camera {
-        **camera = **world_camera;
+    let (world_transform, world_projection) = *world_camera;
+    let (transform, projection) = &mut *camera;
+    if **transform != *world_transform {
+        **transform = *world_transform;
+    }
+    // Зум тоже повторяется: маска совпадает с экраном.
+    if let (Projection::Orthographic(own), Projection::Orthographic(world)) =
+        (&mut **projection, world_projection)
+        && own.scale != world.scale
+    {
+        own.scale = world.scale;
     }
     let Some(window) = window else {
         return;

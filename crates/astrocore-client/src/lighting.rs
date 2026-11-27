@@ -28,8 +28,8 @@ use bevy::window::PrimaryWindow;
 
 use crate::Game;
 use crate::unshaded::{UnshadedMaterial, UnshadedTarget};
+use crate::view::Eye;
 use crate::view::WorldCamera;
-use crate::view::{Eye, VIEW_TILES};
 
 /// Точек карты освещения на сторону тайла.
 pub const TEXELS_PER_TILE: i32 = 8;
@@ -292,7 +292,8 @@ pub(crate) fn update_lighting(
     let aspect = window
         .filter(|window| window.height() > 0.0)
         .map_or(16.0 / 9.0, |window| window.width() / window.height());
-    let half = Vec2::new(VIEW_TILES * aspect / 2.0 + 1.0, VIEW_TILES / 2.0 + 1.0);
+    // С зумом и поворотом камеры видно больше: прямоугольник вмещает повёрнутое окно.
+    let half = eye.view_half_extents(aspect) + Vec2::ONE;
     let center = camera.translation.truncate();
     let min = ((center - half) * scale).floor().as_ivec2();
     let size = ((half * 2.0) * scale).ceil().as_ivec2() + IVec2::ONE;
