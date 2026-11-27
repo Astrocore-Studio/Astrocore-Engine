@@ -691,6 +691,7 @@ fn build(
             let ctx = WriteContext {
                 since: base.unwrap_or(GameTick::ZERO),
                 session: session_entity,
+                attached: session.attached,
             };
             let mut components = Vec::new();
             let mut present = Vec::new();

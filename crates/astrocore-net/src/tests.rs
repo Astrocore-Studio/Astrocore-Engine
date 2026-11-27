@@ -886,3 +886,48 @@ fn replicated_cvars_travel_between_server_and_client() {
     link.pump(2);
     assert!(link.client.cvar(&SCREEN));
 }
+
+/// Метка, которую видит только управляющий сущностью (`SendOnlyToOwner`).
+#[derive(Component, Clone, Debug, PartialEq, Default)]
+struct Secret(String);
+
+impl NetComponent for Secret {
+    const NAME: &'static str = "Secret";
+
+    fn write(&self, _: &World, entity: Entity, ctx: &WriteContext, out: &mut Vec<u8>) {
+        let text = if ctx.attached == Some(entity) {
+            self.0.as_str()
+        } else {
+            ""
+        };
+        if let Ok(bytes) = postcard::to_extend(text, std::mem::take(out)) {
+            *out = bytes;
+        }
+    }
+
+    fn apply(world: &mut World, entity: Entity, bytes: &[u8]) -> Result<(), NetError> {
+        let text: String = postcard::from_bytes(bytes)?;
+        world.entity_mut(entity).insert(Secret(text));
+        Ok(())
+    }
+}
+
+#[test]
+fn write_context_names_the_receivers_entity() {
+    let mut link = Link::new();
+    link.server.register_net_component::<Secret>();
+    link.client.register_net_component::<Secret>();
+    let other = link.spawn("Player", 3.5, 2.5);
+    let player = link.player;
+    link.server
+        .entity_mut(player)
+        .insert(Secret("мои значки".into()));
+    link.server
+        .entity_mut(other)
+        .insert(Secret("чужие значки".into()));
+    link.join();
+    let mine = link.on_client(player).unwrap();
+    let theirs = link.on_client(other).unwrap();
+    assert_eq!(link.client.get::<Secret>(mine).unwrap().0, "мои значки");
+    assert_eq!(link.client.get::<Secret>(theirs).unwrap().0, "");
+}
