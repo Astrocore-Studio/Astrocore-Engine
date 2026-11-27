@@ -6,7 +6,7 @@
 //! подтверждена; для незнакомой — все. Поэтому потеря состояния ничего не ломает: следующее
 //! несёт те же изменения.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use astrocore_console::{CVarDef, CVarFlags, ConfigWorldExt};
 use astrocore_ecs::{ChangeHistory, EventWorldExt, GameTick, GameTime, MetaData};
@@ -43,6 +43,25 @@ pub const PVS_ENTITY_BUDGET: CVarDef<i32> = CVarDef::new(
     "Сколько новых сущностей клиент получает за один тик.",
 );
 
+/// Постоянный идентификатор игрока (`NetUserId` Robust): по нему игра хранит игроков в базе.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct NetUserId(pub uuid::Uuid);
+
+impl NetUserId {
+    /// Новый случайный идентификатор (гость без выданного идентификатора).
+    pub fn random() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for NetUserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Номер соединения транспорта.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnId(pub u64);
@@ -71,6 +90,10 @@ pub struct ServerNet {
     /// Адреса соединений: их сообщает транспорт.
     pub addresses: HashMap<ConnId, std::net::SocketAddr>,
     by_conn: HashMap<ConnId, Entity>,
+    /// Соединения, ждущие решения игры (`PlayerConnecting::deferred`): имя игрока.
+    pending: HashMap<ConnId, String>,
+    /// Соединения, которым отказано: их пакеты больше не обрабатываются.
+    rejected: HashSet<ConnId>,
     next_part: u32,
 }
 
@@ -83,6 +106,16 @@ impl ServerNet {
     /// Сессии сервера.
     pub fn sessions(&self) -> impl Iterator<Item = Entity> + '_ {
         self.by_conn.values().copied()
+    }
+
+    /// Ждёт ли соединение решения игры о входе.
+    pub fn is_pending(&self, conn: ConnId) -> bool {
+        self.pending.contains_key(&conn)
+    }
+
+    /// Отказано ли соединению.
+    pub fn is_rejected(&self, conn: ConnId) -> bool {
+        self.rejected.contains(&conn)
     }
 
     /// Адрес соединения, если транспорт его сообщил.
@@ -233,6 +266,7 @@ impl SessionSync {
 #[derive(Component, Debug)]
 pub struct Session {
     pub conn: ConnId,
+    pub user_id: NetUserId,
     pub name: String,
     /// Сущность, которой управляет игрок.
     pub attached: Option<Entity>,
@@ -245,6 +279,20 @@ pub struct Session {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Actor {
     pub session: Entity,
+}
+
+/// Игрок подключается (`NetConnectingArgs` Robust): сессии ещё нет. Широковещательно.
+/// Обработчик может отказать (`denied`) или отложить решение (`deferred`) и потом вызвать
+/// [`complete_connection`] — например, когда ответит база данных.
+#[derive(Debug, Clone)]
+pub struct PlayerConnecting {
+    pub conn: ConnId,
+    pub name: String,
+    pub address: Option<std::net::SocketAddr>,
+    /// Отказ с причиной для игрока (`Deny`).
+    pub denied: Option<String>,
+    /// Решение придёт позже через [`complete_connection`].
+    pub deferred: bool,
 }
 
 /// Игрок вошёл. Широковещательно.
@@ -342,7 +390,17 @@ pub fn receive(world: &mut World) {
 }
 
 fn disconnect(world: &mut World, conn: ConnId) {
+    {
+        let mut net = world.resource_mut::<ServerNet>();
+        net.pending.remove(&conn);
+        net.rejected.remove(&conn);
+    }
+    close_session(world, conn);
     world.resource_mut::<ServerNet>().addresses.remove(&conn);
+}
+
+/// Закрывает сессию соединения, если она есть.
+fn close_session(world: &mut World, conn: ConnId) {
     let Some(session) = world.resource_mut::<ServerNet>().by_conn.remove(&conn) else {
         return;
     };
@@ -355,37 +413,100 @@ fn disconnect(world: &mut World, conn: ConnId) {
     world.despawn(session);
 }
 
+/// Отказать соединению: причина уходит клиенту, его пакеты больше не обрабатываются.
+pub fn reject_connection(world: &mut World, conn: ConnId, reason: &str) {
+    let mut net = world.resource_mut::<ServerNet>();
+    net.pending.remove(&conn);
+    net.rejected.insert(conn);
+    net.send(conn, true, &ServerMessage::Rejected(reason.to_owned()));
+    close_session(world, conn);
+}
+
+/// Решение игры о подключении, отложенном в [`PlayerConnecting`]: впустить с выданным
+/// идентификатором или отказать. `false` — соединение уже не ждёт (ушло или решено).
+pub fn complete_connection(
+    world: &mut World,
+    conn: ConnId,
+    result: Result<NetUserId, String>,
+) -> bool {
+    let Some(name) = world.resource_mut::<ServerNet>().pending.remove(&conn) else {
+        return false;
+    };
+    match result {
+        Ok(user_id) => admit(world, conn, name, user_id),
+        Err(reason) => reject_connection(world, conn, &reason),
+    }
+    true
+}
+
+/// Впустить: создаётся сессия. Прежняя сессия того же пользователя закрывается.
+fn admit(world: &mut World, conn: ConnId, name: String, user_id: NetUserId) {
+    let previous: Vec<ConnId> = world
+        .query::<&Session>()
+        .iter(world)
+        .filter(|s| s.user_id == user_id)
+        .map(|s| s.conn)
+        .collect();
+    for old in previous {
+        reject_connection(
+            world,
+            old,
+            "С вашей учётной записью вошли с другого подключения.",
+        );
+    }
+    let session = world
+        .spawn(Session {
+            conn,
+            user_id,
+            name,
+            attached: None,
+            last_input: 0,
+            sync: SessionSync::default(),
+        })
+        .id();
+    let time = world.resource::<GameTime>();
+    let welcome = ServerMessage::Welcome {
+        tick_rate: time.tick_rate,
+        tick: time.tick,
+    };
+    let mut net = world.resource_mut::<ServerNet>();
+    net.by_conn.insert(conn, session);
+    net.send(conn, true, &welcome);
+    world.raise_broadcast(&mut PlayerConnected { session });
+}
+
 fn handle(world: &mut World, conn: ConnId, message: ClientMessage) {
+    {
+        let net = world.resource::<ServerNet>();
+        // Ждущие решения и отвергнутые соединения не обрабатываются.
+        if net.pending.contains_key(&conn) || net.rejected.contains(&conn) {
+            return;
+        }
+    }
     let session = world.resource::<ServerNet>().session(conn);
     match (message, session) {
         (ClientMessage::Hello { name, fingerprint }, None) => {
             let expected = world.resource::<NetRegistry>().fingerprint();
             if fingerprint != expected {
-                world.resource_mut::<ServerNet>().send(
-                    conn,
-                    true,
-                    &ServerMessage::Rejected("у клиента другой набор сетевых компонентов".into()),
-                );
+                reject_connection(world, conn, "у клиента другой набор сетевых компонентов");
                 return;
             }
-            let session = world
-                .spawn(Session {
-                    conn,
-                    name,
-                    attached: None,
-                    last_input: 0,
-                    sync: SessionSync::default(),
-                })
-                .id();
-            let time = world.resource::<GameTime>();
-            let welcome = ServerMessage::Welcome {
-                tick_rate: time.tick_rate,
-                tick: time.tick,
+            let address = world.resource::<ServerNet>().address(conn);
+            let mut connecting = PlayerConnecting {
+                conn,
+                name: name.clone(),
+                address,
+                denied: None,
+                deferred: false,
             };
-            let mut net = world.resource_mut::<ServerNet>();
-            net.by_conn.insert(conn, session);
-            net.send(conn, true, &welcome);
-            world.raise_broadcast(&mut PlayerConnected { session });
+            world.raise_broadcast(&mut connecting);
+            if let Some(reason) = connecting.denied {
+                reject_connection(world, conn, &reason);
+            } else if connecting.deferred {
+                world.resource_mut::<ServerNet>().pending.insert(conn, name);
+            } else {
+                admit(world, conn, name, NetUserId::random());
+            }
         }
         (ClientMessage::Ack(tick), Some(session)) => {
             world.resource_scope(|world, deletions: bevy_ecs::world::Mut<DeletionLog>| {

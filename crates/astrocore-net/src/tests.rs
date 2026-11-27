@@ -725,3 +725,114 @@ fn large_states_travel_compressed() {
     };
     assert_eq!(decode_state(lying), None);
 }
+
+#[derive(Resource, Default)]
+struct Connecting(Vec<(ConnId, String)>);
+
+/// Приветствие от соединения мимо клиента теста.
+fn hello(server: &mut World, conn: ConnId, name: &str) {
+    let fingerprint = server.resource::<NetRegistry>().fingerprint();
+    let bytes = postcard::to_allocvec(&ClientMessage::Hello {
+        name: name.into(),
+        fingerprint,
+    })
+    .unwrap();
+    server
+        .resource_mut::<ServerNet>()
+        .incoming
+        .push(Incoming::Packet(conn, bytes));
+    server.run_tick();
+}
+
+/// Сообщения сервера соединению, ещё не забранные транспортом.
+fn sent_to(server: &mut World, conn: ConnId) -> Vec<ServerMessage> {
+    let outgoing = std::mem::take(&mut server.resource_mut::<ServerNet>().outgoing);
+    outgoing
+        .into_iter()
+        .filter(|p| p.conn == conn)
+        .filter_map(|p| postcard::from_bytes(&p.bytes).ok())
+        .collect()
+}
+
+#[test]
+fn connecting_is_denied_deferred_or_admitted_with_user_id() {
+    let mut link = Link::new();
+    link.server.init_resource::<Connecting>();
+    link.server
+        .subscribe_broadcast::<PlayerConnecting>(|world, event| {
+            if event.name == "Banned" {
+                event.denied = Some("бан".into());
+                return;
+            }
+            event.deferred = true;
+            let entry = (event.conn, event.name.clone());
+            world.resource_mut::<Connecting>().0.push(entry);
+        });
+    link.client.net_connect("Urist");
+    link.pump(2);
+    // Решения ещё нет: сессии нет, пакеты соединения не обрабатываются.
+    assert_eq!(
+        link.server.resource::<Connecting>().0,
+        [(CONN, "Urist".into())]
+    );
+    assert!(link.server.resource::<ServerNet>().is_pending(CONN));
+    assert!(link.server.resource::<ServerNet>().session(CONN).is_none());
+    let user = NetUserId::random();
+    assert!(complete_connection(&mut link.server, CONN, Ok(user)));
+    assert!(!complete_connection(&mut link.server, CONN, Ok(user)));
+    link.pump(2);
+    assert_eq!(
+        link.client.resource::<ClientNet>().status,
+        ClientStatus::Connected
+    );
+    let session = link.server.resource::<ServerNet>().session(CONN).unwrap();
+    assert_eq!(link.server.get::<Session>(session).unwrap().user_id, user);
+
+    // Тот же пользователь с другого соединения вытесняет прежнюю сессию.
+    let second = ConnId(CONN.0 + 1);
+    hello(&mut link.server, second, "Urist");
+    complete_connection(&mut link.server, second, Ok(user));
+    assert!(link.server.get_entity(session).is_err());
+    assert!(link.server.resource::<ServerNet>().is_rejected(CONN));
+    assert!(
+        sent_to(&mut link.server, CONN)
+            .iter()
+            .any(|m| matches!(m, ServerMessage::Rejected(_)))
+    );
+    let replaced = link.server.resource::<ServerNet>().session(second).unwrap();
+    assert_eq!(link.server.get::<Session>(replaced).unwrap().user_id, user);
+
+    // Отказ сразу и отказ после ожидания.
+    let banned = ConnId(CONN.0 + 2);
+    hello(&mut link.server, banned, "Banned");
+    assert!(link.server.resource::<ServerNet>().is_rejected(banned));
+    assert_eq!(
+        sent_to(&mut link.server, banned),
+        [ServerMessage::Rejected("бан".into())]
+    );
+    let late = ConnId(CONN.0 + 3);
+    hello(&mut link.server, late, "Late");
+    complete_connection(&mut link.server, late, Err("сервер полон".into()));
+    assert!(link.server.resource::<ServerNet>().session(late).is_none());
+    // Ушедшее до решения соединение забывается.
+    let gone = ConnId(CONN.0 + 4);
+    hello(&mut link.server, gone, "Gone");
+    link.server
+        .resource_mut::<ServerNet>()
+        .incoming
+        .push(Incoming::Disconnected(gone));
+    link.server.run_tick();
+    assert!(!complete_connection(
+        &mut link.server,
+        gone,
+        Ok(NetUserId::random())
+    ));
+}
+
+#[test]
+fn without_deferral_players_get_random_user_ids() {
+    let mut link = Link::new();
+    let session = link.join();
+    let first = link.server.get::<Session>(session).unwrap().user_id;
+    assert_ne!(first, NetUserId::random());
+}

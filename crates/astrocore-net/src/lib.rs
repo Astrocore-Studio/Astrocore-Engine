@@ -43,9 +43,9 @@ pub use remote_console::{
     RemoteConsoleWorldExt,
 };
 pub use server::{
-    Actor, ConnId, Incoming, Outgoing, PVS_ENTITY_BUDGET, PVS_RANGE, PlayerAttached,
-    PlayerConnected, PlayerDetached, PlayerDisconnected, ServerNet, Session, SessionSync,
-    SessionWorldExt,
+    Actor, ConnId, Incoming, NetUserId, Outgoing, PVS_ENTITY_BUDGET, PVS_RANGE, PlayerAttached,
+    PlayerConnected, PlayerConnecting, PlayerDetached, PlayerDisconnected, ServerNet, Session,
+    SessionSync, SessionWorldExt, complete_connection, reject_connection,
 };
 pub use sync::NetSet;
 pub use visibility::{
