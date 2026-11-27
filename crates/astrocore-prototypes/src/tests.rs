@@ -353,3 +353,34 @@ fn create_variants_expands_one_record_into_several() {
     assert_eq!(collection, ["Pump", "PumpAlt1", "PumpAlt2"]);
     assert!(prototypes.variants(ENTITY_KIND, "Missing").is_none());
 }
+
+#[test]
+fn parents_of_any_kind_are_kept() {
+    let mut prototypes = Prototypes::default();
+    let mut report = LoadReport::default();
+    prototypes.load_str(
+        "groups.yml",
+        DataFormat::Yaml,
+        r#"
+- type: markingsGroup
+  id: Base
+  limits: { Top: 1 }
+- type: markingsGroup
+  id: Child
+  parent: Base
+  limits: { Hair: 2 }
+- type: markingsGroup
+  id: Both
+  parent: [ Base, Child ]
+"#,
+        &mut report,
+    );
+    prototypes.resolve(&ComponentRegistry::default(), &mut report);
+    assert_eq!(prototypes.parents("markingsGroup", "Child"), ["Base"]);
+    assert_eq!(
+        prototypes.parents("markingsGroup", "Both"),
+        ["Base", "Child"]
+    );
+    assert!(prototypes.parents("markingsGroup", "Base").is_empty());
+    assert!(prototypes.parents("markingsGroup", "Missing").is_empty());
+}

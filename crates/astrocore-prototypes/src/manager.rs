@@ -709,6 +709,15 @@ impl Prototypes {
         self.kinds.get(kind)?.resolved.get(id).map(Arc::as_ref)
     }
 
+    /// Родители записи, как они заданы в данных (`Parents` в Robust). Для полей, которые
+    /// складываются с родительскими (`[AlwaysPushInheritance]`) вне прототипов сущностей.
+    pub fn parents(&self, kind: &str, id: &str) -> &[String] {
+        self.kinds
+            .get(kind)
+            .and_then(|k| k.raw.get(id))
+            .map_or(&[], |entry| entry.parents.as_slice())
+    }
+
     /// Идентификаторы записей вида, включая абстрактные.
     pub fn ids(&self, kind: &str) -> impl Iterator<Item = &str> {
         self.kinds
