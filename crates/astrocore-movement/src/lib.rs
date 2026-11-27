@@ -2,7 +2,9 @@
 //!
 //! Расчёт скорости — `SharedMoverController.HandleMobMovement` из
 //! `Content.Shared/Movement/Systems` SS14 @ 2f4a2aad: трение, затем разгон к желаемой
-//! скорости. Невесомость, передача управления и звуки шагов — задачи игры (фаза 3 плана).
+//! скорости. Без гравитации (`GravityAffected.weightless`, его считает игра) — свои трение и
+//! разгон; разгоняться можно, только касаясь грида или твёрдой стены рядом. Передача
+//! управления и звуки шагов — задачи игры.
 //!
 //! Клиент каждый такт отправляет серверу кадр ввода с номером и сразу считает его у себя.
 //! Сервер обрабатывает по кадру за такт и сообщает номер последнего обработанного. Получив
@@ -16,13 +18,13 @@ use astrocore_console::{CVarDef, CVarFlags, ConfigWorldExt};
 use astrocore_ecs::{
     EventWorldExt, GamePlugin, GameTime, GameWorldExt, Paused, PreUpdate, RegistryWorldExt, Update,
 };
-use astrocore_map::{Placement, Transform, TransformWorldExt};
-use astrocore_math::{Angle, Vec2};
+use astrocore_map::{Map, MapWorldExt, Placement, Transform, TransformWorldExt};
+use astrocore_math::{Angle, Box2, Vec2};
 use astrocore_net::{
     ClientNet, NetEvent, NetEventWorldExt, NetRegistryWorldExt, PlayerDisconnected, Session,
     StateApplied, StateApplying,
 };
-use astrocore_physics::{Physics, PhysicsWorldExt, step_physics};
+use astrocore_physics::{BodyType, Fixtures, Physics, PhysicsWorldExt, Pose, step_physics};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Has;
@@ -40,6 +42,64 @@ pub const TILE_FRICTION: CVarDef<f32> = CVarDef::new(
         .union(CVarFlags::ARCHIVE),
     "Множитель трения персонажей и предметов о пол.",
 );
+
+const FLAGS: CVarFlags = CVarFlags::SERVER
+    .union(CVarFlags::REPLICATED)
+    .union(CVarFlags::ARCHIVE);
+
+/// Наименьшее затухание (`physics.min_friction`).
+pub const MIN_FRICTION: CVarDef<f32> = CVarDef::new(
+    "physics.min_friction",
+    0.0,
+    FLAGS,
+    "Наименьшее трение тела.",
+);
+/// Трение в воздухе и в невесомости на гриде (`physics.air_friction`).
+pub const AIR_FRICTION: CVarDef<f32> =
+    CVarDef::new("physics.air_friction", 0.2, FLAGS, "Трение тела в воздухе.");
+/// Трение в космосе вне гридов (`physics.offgrid_friction`).
+pub const OFFGRID_FRICTION: CVarDef<f32> = CVarDef::new(
+    "physics.offgrid_friction",
+    0.05,
+    FLAGS,
+    "Трение тела в космосе вне гридов.",
+);
+
+/// Сущность чувствует гравитацию (`GravityAffectedComponent`): игра пишет, невесома ли она.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GravityAffected {
+    pub weightless: bool,
+    /// Невесомость от грида или карты, а не от снаряжения.
+    pub grid_weightless_status: bool,
+}
+
+impl Default for GravityAffected {
+    fn default() -> Self {
+        Self {
+            weightless: true,
+            grid_weightless_status: false,
+        }
+    }
+}
+
+/// Существо отталкивается от стен рядом (`MobMoverComponent`).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MobMover {
+    /// На каком расстоянии от тела можно оттолкнуться.
+    pub grab_range: f32,
+}
+
+impl Default for MobMover {
+    fn default() -> Self {
+        Self { grab_range: 1.0 }
+    }
+}
+
+/// В невесомости всегда есть опора (`MovementAlwaysTouchingComponent`).
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MovementAlwaysTouching {}
 
 /// Удерживаемые клавиши движения (`MoveButtons` SS14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -122,6 +182,10 @@ pub struct MovementSpeedModifier {
     /// Множители скорости от снаряжения, ранений и эффектов.
     pub walk_speed_modifier: f32,
     pub sprint_speed_modifier: f32,
+    /// Невесомость: множитель трения, доля скорости ходьбы и разгон.
+    pub base_weightless_friction: f32,
+    pub base_weightless_modifier: f32,
+    pub base_weightless_acceleration: f32,
 }
 
 impl Default for MovementSpeedModifier {
@@ -134,6 +198,9 @@ impl Default for MovementSpeedModifier {
             minimum_friction_speed: 0.005,
             walk_speed_modifier: 1.0,
             sprint_speed_modifier: 1.0,
+            base_weightless_friction: 1.0,
+            base_weightless_modifier: 0.7,
+            base_weightless_acceleration: 1.0,
         }
     }
 }
@@ -141,6 +208,61 @@ impl Default for MovementSpeedModifier {
 /// Сущность не поворачивается по направлению движения (`NoRotateOnMove` SS14).
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct NoRotateOnMove;
+
+/// Есть ли рядом твёрдая закреплённая опора (`IsAroundCollider`): статичное тело, с которым
+/// сталкивается тело сущности, ближе `grab_range` от его краёв.
+fn is_around_collider(world: &World, entity: Entity, grab_range: f32) -> bool {
+    let Some(at) = world.map_coordinates(entity) else {
+        return false;
+    };
+    let fixtures = world.get::<Fixtures>(entity);
+    let mask = fixtures.map_or(0, |f| f.fixtures.values().fold(0, |m, x| m | x.mask.0));
+    let pose = Pose {
+        position: Vec2::ZERO,
+        rotation: Angle(0.0),
+    };
+    let half = fixtures
+        .and_then(|f| {
+            f.fixtures
+                .values()
+                .map(|x| x.shape.at(&pose).aabb())
+                .reduce(|a, b| a.union(&b))
+        })
+        .map_or(Vec2::splat(0.35), |b| b.size() * 0.5);
+    let size = (half + Vec2::splat(grab_range)) * 2.0;
+    let Some(map) = world.map_entity(at.map) else {
+        return false;
+    };
+    let mut roots: Vec<(Entity, Vec2, i16)> = vec![(map, at.position, at.z)];
+    if let Some(grids) = world.get::<Map>(map).map(|m| m.grids().to_vec()) {
+        for grid in grids {
+            if let Some(placement) = world.world_transform(grid) {
+                roots.push((
+                    grid,
+                    placement.to_local(at.position),
+                    at.z - placement.level,
+                ));
+            }
+        }
+    }
+    roots.into_iter().any(|(root, local, z)| {
+        world
+            .entities_intersecting(root, z, Box2::centered(local, size))
+            .into_iter()
+            .any(|other| {
+                if other == entity {
+                    return false;
+                }
+                let Some(body) = world.get::<Physics>(other) else {
+                    return false;
+                };
+                let layer = world
+                    .get::<Fixtures>(other)
+                    .map_or(0, |f| f.fixtures.values().fold(0, |l, x| l | x.layer.0));
+                body.body_type == BodyType::Static && body.can_collide && mask & layer != 0
+            })
+    })
+}
 
 /// Один такт движения сущности: скорость по удерживаемым клавишам и поворот по ходу.
 pub fn mover_step(world: &mut World, entity: Entity, dt: f32) {
@@ -159,27 +281,62 @@ pub fn mover_step(world: &mut World, entity: Entity, dt: f32) {
         .get::<MovementSpeedModifier>(entity)
         .cloned()
         .unwrap_or_default();
-    let friction_scale = world.cvar(&TILE_FRICTION);
+    let weightless = world
+        .get::<GravityAffected>(entity)
+        .is_some_and(|g| g.weightless)
+        && !matches!(body.body_type, BodyType::Static | BodyType::Kinematic);
+    let walking = held.contains(MoveButtons::WALK);
 
-    let speed = if held.contains(MoveButtons::WALK) {
-        speeds.base_walk_speed * speeds.walk_speed_modifier
+    let (wish, acceleration, mut friction, touching) = if weightless {
+        let speed = speeds.base_weightless_modifier
+            * if walking {
+                speeds.base_walk_speed
+            } else {
+                speeds.base_sprint_speed
+            };
+        let touching = world.get::<MovementAlwaysTouching>(entity).is_some()
+            || world
+                .get::<Transform>(entity)
+                .is_some_and(|t| t.grid().is_some())
+            || world
+                .get::<MobMover>(entity)
+                .is_some_and(|m| is_around_collider(world, entity, m.grab_range));
+        let damping = if touching {
+            world.cvar(&AIR_FRICTION)
+        } else {
+            world.cvar(&OFFGRID_FRICTION)
+        };
+        (
+            held.direction() * speed,
+            speeds.base_weightless_acceleration,
+            damping * speeds.base_weightless_friction,
+            touching,
+        )
     } else {
-        speeds.base_sprint_speed * speeds.sprint_speed_modifier
+        let speed = if walking {
+            speeds.base_walk_speed * speeds.walk_speed_modifier
+        } else {
+            speeds.base_sprint_speed * speeds.sprint_speed_modifier
+        };
+        (
+            held.direction() * speed,
+            speeds.base_acceleration,
+            speeds.base_friction * world.cvar(&TILE_FRICTION),
+            true,
+        )
     };
-    let wish = held.direction() * speed;
-    let acceleration = speeds.base_acceleration;
-    let mut friction = speeds.base_friction * friction_scale;
     if wish != Vec2::ZERO {
         friction = friction.min(acceleration);
     }
+    friction = friction.max(world.cvar(&MIN_FRICTION));
 
     // Трение.
     if velocity.length() >= speeds.minimum_friction_speed {
         velocity *= (1.0 - dt * friction).clamp(0.0, 1.0);
     }
-    // Разгон к желаемой скорости.
+    // Разгон к желаемой скорости: в невесомости — только от опоры.
     let wish_speed = wish.length();
-    if wish_speed > 0.0 {
+    if wish_speed > 0.0 && (!weightless || touching) {
         let direction = wish / wish_speed;
         let missing = wish_speed - velocity.dot(direction);
         if missing > 0.0 {
@@ -384,6 +541,14 @@ fn register_shared(world: &mut World) {
     world.register_data_component::<InputMover>();
     world.register_data_component::<MovementSpeedModifier>();
     world.register_data_component::<NoRotateOnMove>();
+    world.register_data_component::<GravityAffected>();
+    world.register_data_component::<MobMover>();
+    world.register_data_component::<MovementAlwaysTouching>();
+    world.register_net_serde::<GravityAffected>();
+    world.register_net_serde::<MovementAlwaysTouching>();
+    world.register_cvar(&MIN_FRICTION);
+    world.register_cvar(&AIR_FRICTION);
+    world.register_cvar(&OFFGRID_FRICTION);
     world.register_net_serde::<InputMover>();
     world.register_net_serde::<MovementSpeedModifier>();
     world.register_net_event::<MoveInput>();

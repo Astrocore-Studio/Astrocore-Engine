@@ -267,3 +267,77 @@ fn predicted_mob_is_stopped_by_wall_on_both_sides() {
     let session = link.server.resource::<ServerNet>().session(CONN).unwrap();
     assert!(link.server.get::<Session>(session).unwrap().last_input > 100);
 }
+
+/// Сервер без клиента: моб в точке карты или грида.
+fn lone_mob(on_grid: bool, x: f32) -> (World, Entity) {
+    let mut world = World::new();
+    world.add_plugin(NetServerPlugin);
+    world.add_plugin(PhysicsPlugin::SERVER);
+    world.add_plugin(MovementServerPlugin);
+    setup(&mut world);
+    let (map, _) = world.create_map(true);
+    let grid = world.create_grid(map);
+    let floor = (0..10).flat_map(|x| (0..10).map(move |y| (TileCoord::new(x, y, 0), Tile::new(1))));
+    world.set_tiles(grid, floor);
+    world
+        .spawn_attached("Wall", EntityCoordinates::new(grid, Vec2::new(9.5, 5.5)))
+        .unwrap();
+    let at = if on_grid {
+        EntityCoordinates::new(grid, Vec2::new(x, 5.5))
+    } else {
+        EntityCoordinates::new(map, Vec2::new(x, 5.5))
+    };
+    let mob = world.spawn_attached("Mob", at).unwrap();
+    (world, mob)
+}
+
+fn push_right(world: &mut World, mob: Entity, ticks: u32) {
+    world.get_mut::<InputMover>(mob).unwrap().held = MoveButtons::RIGHT;
+    for _ in 0..ticks {
+        mover_step(world, mob, 1.0 / 30.0);
+    }
+}
+
+fn speed(world: &World, mob: Entity) -> f32 {
+    world.get::<Physics>(mob).unwrap().linear_velocity.length()
+}
+
+#[test]
+fn weightless_on_a_grid_accelerates_slowly_and_drifts() {
+    let (mut world, mob) = lone_mob(true, 2.5);
+    world.entity_mut(mob).insert(GravityAffected {
+        weightless: true,
+        grid_weightless_status: true,
+    });
+    push_right(&mut world, mob, 15);
+    let weightless = speed(&world, mob);
+    // Разгон 1 вместо 20: за полсекунды далеко от скорости бега.
+    assert!(weightless > 0.5 && weightless < 2.5, "{weightless}");
+    // Без ввода скорость гаснет медленно (трение воздуха 0.2).
+    world.get_mut::<InputMover>(mob).unwrap().held = MoveButtons::NONE;
+    for _ in 0..30 {
+        mover_step(&mut world, mob, 1.0 / 30.0);
+    }
+    assert!(speed(&world, mob) > weightless * 0.75);
+
+    // С гравитацией тот же ввод даёт полную скорость.
+    let (mut world, mob) = lone_mob(true, 2.5);
+    push_right(&mut world, mob, 15);
+    assert!((speed(&world, mob) - 4.5).abs() < 0.1);
+}
+
+#[test]
+fn off_grid_needs_a_wall_to_push_off() {
+    // Вдали от станции разогнаться нельзя.
+    let (mut world, mob) = lone_mob(false, 30.0);
+    world.entity_mut(mob).insert(GravityAffected::default());
+    world.entity_mut(mob).insert(MobMover::default());
+    push_right(&mut world, mob, 15);
+    assert_eq!(speed(&world, mob), 0.0);
+    // У стены — можно.
+    let (mut world, mob) = lone_mob(false, 10.6);
+    world.entity_mut(mob).insert(GravityAffected::default());
+    world.entity_mut(mob).insert(MobMover::default());
+    push_right(&mut world, mob, 15);
+    assert!(speed(&world, mob) > 0.5);
+}
