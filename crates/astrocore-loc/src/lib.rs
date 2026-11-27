@@ -1,9 +1,11 @@
 //! Локализация: сообщения Fluent (`.ftl`) из `Locale/<язык>/` каталогов ресурсов.
-//! Образец — `Robust.Shared/Localization/LocalizationManager.cs` @ 1afd692.
+//! Образец — `Robust.Shared/Localization/LocalizationManager.cs` @ 1afd692. Расширения
+//! синтаксиса Linguini, которыми пользуются файлы SS14, готовит `compat` (ADR-0018).
 //!
 //! Сообщение ищется в основном языке, затем в запасном. Ненайденное сообщение возвращает свой
 //! идентификатор — так пропуски видны в игре и ничего не падает.
 
+mod compat;
 mod names;
 
 pub use names::{EntityNameWorldExt, EntityNames, EntityText};
@@ -170,15 +172,22 @@ impl Loc {
         let files = resources
             .find_files(&format!("Locale/{code}"))
             .unwrap_or_default();
+        let mut texts = Vec::new();
         for path in files.iter().filter(|path| path.ends_with(".ftl")) {
             report.files += 1;
-            let text = match resources.read_to_string(path) {
-                Ok(text) => text,
-                Err(error) => {
-                    report.errors.push(format!("{path}: {error}"));
-                    continue;
-                }
-            };
+            match resources.read_to_string(path) {
+                Ok(text) => texts.push((path, compat::strip_bom(&text).to_owned())),
+                Err(error) => report.errors.push(format!("{path}: {error}")),
+            }
+        }
+        // Термины всех файлов языка: вызов может стоять в другом файле, чем определение.
+        let mut terms = HashMap::new();
+        for (_, text) in &texts {
+            compat::collect_terms(text, &mut terms);
+        }
+        let mut generated_count = 0;
+        for (path, text) in texts {
+            let (text, generated) = compat::rewrite_term_calls(&text, &terms, &mut generated_count);
             let resource = match FluentResource::try_new(text) {
                 Ok(resource) => resource,
                 Err((resource, errors)) => {
@@ -188,10 +197,12 @@ impl Loc {
                     resource
                 }
             };
+            // Служебные сообщения из вызовов терминов не считаются.
             report.messages += resource
                 .entries()
                 .filter(|entry| matches!(entry, fluent_syntax::ast::Entry::Message(_)))
-                .count();
+                .count()
+                .saturating_sub(generated);
             if let Err(errors) = bundle.add_resource(resource) {
                 for error in errors {
                     if let FluentError::Overriding { id, .. } = error {
@@ -315,6 +326,44 @@ mod tests {
         let mut resources = Resources::default();
         resources.mount(dir.path());
         (dir, resources)
+    }
+
+    #[test]
+    fn term_calls_with_variables_and_bom_load_like_linguini() {
+        let dir = tempfile::tempdir().unwrap();
+        let locale = dir.path().join("Locale/en-US");
+        std::fs::create_dir_all(&locale).unwrap();
+        std::fs::write(
+            locale.join("terms.ftl"),
+            "-selection = { $selectable ->\n    [one] one more\n   *[other] { $selectable } more\n}\n-verb = { $satiated ->\n    [true] {\" \"}No { $verb }.\n  *[false] {\"\"}\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            locale.join("uses.ftl"),
+            "\u{FEFF}limits = Up to { $count }. { -selection(selectable: $left) }\nnom = Nom.{ -verb(satiated: $satiated, verb: \"eat\") }\n",
+        )
+        .unwrap();
+        let mut resources = Resources::default();
+        resources.mount(dir.path());
+        let mut loc = Loc::default();
+        let report = loc.load_culture(&resources, "en-US").unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.messages, 2);
+        assert_eq!(
+            loc.format(
+                "limits",
+                &[("count", LocArg::from(3)), ("left", LocArg::from(2))]
+            ),
+            "Up to 3. 2 more"
+        );
+        assert_eq!(
+            loc.format("nom", &[("satiated", LocArg::from("true"))]),
+            "Nom. No eat."
+        );
+        assert_eq!(
+            loc.format("nom", &[("satiated", LocArg::from("false"))]),
+            "Nom."
+        );
     }
 
     #[test]
