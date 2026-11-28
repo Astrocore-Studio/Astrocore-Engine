@@ -158,10 +158,14 @@ fn player_rebinds_survive_save_and_load() {
 #[derive(Resource, Default)]
 struct Seen(Vec<InputArgs>);
 
+#[derive(Resource, Default)]
+struct UseSeen(usize);
+
 #[test]
 fn input_command_reaches_server_handlers() {
     let prototypes = "- type: entity\n  id: Player\n- type: entity\n  id: Lever\n  components:\n  - type: Clickable\n";
-    let setup = |world: &mut World| {
+    // `handled`: обработчик клиента забирает команду себе — на сервер она не идёт.
+    let setup = |world: &mut World, handled: bool| {
         world.add_plugin(InputPlugin);
         let mut loaded = Prototypes::default();
         let mut report = astrocore_prototypes::LoadReport::default();
@@ -180,12 +184,19 @@ fn input_command_reaches_server_handlers() {
         world.init_resource::<Seen>();
         world.bind_input("ActivateItemInWorld", |world, args| {
             world.resource_mut::<Seen>().0.push(args.clone());
-            true
+            false
         });
+        // Отложенный щелчок (как у перетаскивания): забирается, кроме повтора.
+        world.bind_input("Use", move |_, args| handled && !args.replay);
     };
     let mut server = World::new();
     server.add_plugin(NetServerPlugin);
-    setup(&mut server);
+    setup(&mut server, false);
+    server.init_resource::<UseSeen>();
+    server.bind_input("Use", |world, _| {
+        world.resource_mut::<UseSeen>().0 += 1;
+        false
+    });
     let (map, map_id) = server.create_map(true);
     let grid = server.create_grid(map);
     server.set_tiles(
@@ -198,7 +209,7 @@ fn input_command_reaches_server_handlers() {
 
     let mut client = World::new();
     client.add_plugin(NetClientPlugin);
-    setup(&mut client);
+    setup(&mut client, true);
     client.net_connect("Urist");
     let conn = ConnId(1);
     let mut attached = false;
@@ -228,19 +239,23 @@ fn input_command_reaches_server_handlers() {
     let client_lever = client.resource::<NetEntities>().entity(lever_net).unwrap();
     assert!(client.get::<Clickable>(client_lever).is_some());
 
-    // Клиент: свой обработчик срабатывает сразу, команда уходит серверу.
-    assert!(client.send_input(
+    // Клиент: свой обработчик срабатывает сразу, необработанная команда уходит серверу.
+    assert!(!client.send_input(
         "ActivateItemInWorld",
         Down,
         Some(Vec2::new(3.5, 0.5)),
         Some(client_lever)
     ));
     assert!(!client.send_input("Unbound", Down, None, None));
+    // Обработанная клиентом — нет; её повтор — да.
+    assert!(client.send_input("Use", Down, None, Some(client_lever)));
+    assert!(!client.replay_input("Use", Down, None, Some(client_lever)));
     assert_eq!(client.resource::<Seen>().0.len(), 1);
     assert_eq!(client.resource::<Seen>().0[0].target, Some(client_lever));
     pump(&mut server, &mut client);
     let seen = &server.resource::<Seen>().0;
     assert_eq!(seen.len(), 1);
+    assert_eq!(server.resource::<UseSeen>().0, 1);
     assert_eq!(seen[0].player, Some(player));
     assert_eq!(seen[0].target, Some(lever));
     assert!(seen[0].session.is_some());

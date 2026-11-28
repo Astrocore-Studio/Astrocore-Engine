@@ -44,6 +44,9 @@ pub struct InputArgs {
     pub coordinates: Option<MapCoordinates>,
     /// Сущность под курсором.
     pub target: Option<Entity>,
+    /// Повтор отложенной команды (`FullInputCmdMessage` с `replay`): обработчик, отложивший
+    /// её (перетаскивание), второй раз её не берёт.
+    pub replay: bool,
 }
 
 type Handler = Arc<dyn Fn(&mut World, &InputArgs) -> bool + Send + Sync>;
@@ -67,8 +70,18 @@ pub trait InputWorldExt {
     /// Вызывает обработчики функции. Возвращает `true`, если ввод обработан.
     fn handle_input(&mut self, args: &InputArgs) -> bool;
 
-    /// Клиент: вызывает свои обработчики функции и отправляет команду серверу.
+    /// Клиент: вызывает свои обработчики функции; необработанную команду отправляет серверу
+    /// (`InputSystem.HandleInputCommand` Robust: обработанное клиентом на сервер не идёт).
     fn send_input(
+        &mut self,
+        function: &str,
+        state: BoundKeyState,
+        position: Option<Vec2>,
+        target: Option<Entity>,
+    ) -> bool;
+
+    /// Клиент: повторить отложенную команду (`HandleInputCommand(..., replay: true)`).
+    fn replay_input(
         &mut self,
         function: &str,
         state: BoundKeyState,
@@ -114,26 +127,52 @@ impl InputWorldExt for World {
         position: Option<Vec2>,
         target: Option<Entity>,
     ) -> bool {
-        let player = self
-            .get_resource::<ClientNet>()
-            .and_then(|net| net.attached);
-        let handled = self.handle_input(&InputArgs {
-            function: function.to_owned(),
-            state,
-            session: None,
-            player,
-            coordinates: position.and_then(|point| on_player_map(self, player, point)),
-            target,
-        });
-        let target = target.and_then(|entity| self.get::<NetEntity>(entity).copied());
-        self.send_net_event_to_server(&InputCommand {
-            function: function.to_owned(),
-            state,
-            position,
-            target,
-        });
-        handled
+        client_input(self, function, state, position, target, false)
     }
+
+    fn replay_input(
+        &mut self,
+        function: &str,
+        state: BoundKeyState,
+        position: Option<Vec2>,
+        target: Option<Entity>,
+    ) -> bool {
+        client_input(self, function, state, position, target, true)
+    }
+}
+
+/// Обработчики клиента, затем — серверу, если никто не обработал.
+fn client_input(
+    world: &mut World,
+    function: &str,
+    state: BoundKeyState,
+    position: Option<Vec2>,
+    target: Option<Entity>,
+    replay: bool,
+) -> bool {
+    let player = world
+        .get_resource::<ClientNet>()
+        .and_then(|net| net.attached);
+    let handled = world.handle_input(&InputArgs {
+        function: function.to_owned(),
+        state,
+        session: None,
+        player,
+        coordinates: position.and_then(|point| on_player_map(world, player, point)),
+        target,
+        replay,
+    });
+    if handled {
+        return true;
+    }
+    let target = target.and_then(|entity| world.get::<NetEntity>(entity).copied());
+    world.send_net_event_to_server(&InputCommand {
+        function: function.to_owned(),
+        state,
+        position,
+        target,
+    });
+    false
 }
 
 /// Самое длинное имя функции ввода, которое сервер принимает от клиента.
@@ -163,6 +202,7 @@ fn receive(world: &mut World, event: &mut NetEvent<InputCommand>) {
             .position
             .and_then(|point| on_player_map(world, player, point)),
         target,
+        replay: false,
     };
     world.handle_input(&args);
 }
